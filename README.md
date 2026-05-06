@@ -1,6 +1,6 @@
 # Argus
 
-**An AI-native code security scanner that proves exploitability at runtime.**
+**An AI-native code security scanner <mark>that proves exploitability at runtime</mark>.**
 
 Argus combines a cost-graduated LLM cascade (Gemini Flash-Lite → Sonnet 4.6 → Opus 4.6) with a sandbox tier that *executes* suspect code in a Firecracker microVM and observes what it actually does. Static-analysis findings get promoted to **CONFIRMED** only when the sandbox captures concrete runtime evidence — a network call, a file write, a process spawn. Findings that cannot be triggered are marked **UNREACHED**; findings the file's own defenses block are **BLOCKED**. No more "the LLM said it might be malicious."
 
@@ -38,6 +38,27 @@ A `CONFIRMED` finding looks like this in `argus scan` output:
 ```
 
 This is the moat. Static scanners report *suspicion*; Argus reports *what the code actually did*.
+
+---
+
+## Benchmark — Argus vs frontier single-call scanners
+
+On a 23-file regression suite, scored against a **3-voter consensus oracle** (GPT-5.4 + Gemini 3.1 Pro + Grok 4.3 — Opus 4.6 deliberately excluded, since Argus uses Opus internally and same-model grading would be circular):
+
+```
+                       Verdict-exact (higher = better)         Cost
+Argus (cascade + DAST) ████████████████████  91.3%  (21/23)    $4.20
+Gemini 3.1 Pro         █████████████████░░░  82.6%  (19/23)    $0.41
+Grok 4.3               █████████████████░░░  82.6%  (19/23)    $0.59
+Opus 4.6               █████████████████░░░  78.3%  (18/23)    $7.56
+GPT 5.4                ████████████████░░░░  73.9%  (17/23)    $4.78
+```
+
+Argus is **+13.0pp more accurate than Opus 4.6 at 44% lower cost**, and **+17.4pp more accurate than GPT-5.4 at 12% lower cost**. On the rich-oracle subset (n=5 files with hand-validated CWE + capability labels) Argus also leads on finding quality: **CWE F1 0.297 vs Opus 0.180** (+65% lift) and **capability F1 0.771 vs Opus 0.720**. Mean verdict-distance: **0.087 vs Opus 0.217**.
+
+But the differentiator the single-call scanners can't produce is **runtime evidence**. On the same 23-file suite, Argus's DAST tier observed **25 CONFIRMED exploits + 1 BLOCKED** with concrete sandbox-captured artefacts — network calls, exfil POST bodies, process traces. Voters describe vulnerabilities; Argus shows you the file actually doing it.
+
+Methodology + per-file breakdown: [`bench_results/v1_1_launch/launch_report.md`](bench_results/v1_1_launch/launch_report.md). Sample size is small (23 files for verdict-exact; 5 for F1) — re-run is one command: `python -m methodology.run_phase_a_report`.
 
 ---
 
@@ -92,26 +113,6 @@ pip install argus-ai-scanner
 export ANTHROPIC_API_KEY=...
 export GEMINI_API_KEY=...
 argus scan path/to/your/file.py
-```
-
-Or with Docker:
-
-```bash
-docker run --rm \
-  -e ANTHROPIC_API_KEY -e GEMINI_API_KEY \
-  -v "$PWD:/workspace" \
-  ghcr.io/dshochat/argus_scanner:latest \
-  scan-repo /workspace
-```
-
-For development:
-
-```bash
-git clone git@github.com:dshochat/Argus_Scanner.git
-cd Argus_Scanner
-uv sync --extra dev
-cp .env.example .env       # add ANTHROPIC_API_KEY + GEMINI_API_KEY
-uv run argus scan path/to/your/file.py
 ```
 
 Requirements:
