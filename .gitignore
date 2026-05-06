@@ -27,7 +27,10 @@ logs/
 *.log
 journals/
 results/
-bench_results/
+bench_results/*
+!bench_results/v1_1_launch/
+bench_results/v1_1_launch/*
+!bench_results/v1_1_launch/launch_report.md
 _eval_*.json
 _phase_*_evaluation.json
 _full_regression_*.json
