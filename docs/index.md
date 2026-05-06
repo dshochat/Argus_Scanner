@@ -4,7 +4,7 @@
 
 Argus combines a cost-graduated LLM cascade (Gemini Flash-Lite triage → Sonnet 4.6 → Opus 4.6) with a Firecracker-microVM sandbox tier that *executes* suspect code and observes what it does. Static-analysis findings get promoted to **CONFIRMED** only when the sandbox captures concrete runtime evidence — a network call, a file write, a process spawn. Findings that cannot be triggered are marked **UNREACHED**; findings the file's own defenses block are **BLOCKED**.
 
-Open source, Apache 2.0, BYOK. Argus collects nothing — you pay Anthropic and Google directly on your own keys.
+Open source, Apache 2.0, BYOK. Argus collects nothing — you pay your providers directly on your own keys: Anthropic + Google for the cascade, Fly.io for the optional DAST sandbox.
 
 ## What you get per finding
 
@@ -56,4 +56,4 @@ Full instructions: [Install & first scan](install.md). DAST sandbox setup: [DAST
 
 Apache 2.0. See [LICENSE](https://github.com/dshochat/Argus_Scanner/blob/main/LICENSE).
 
-Copyright © 2026 Dudy Shochat and contributors.
+Copyright © 2026 David Shochat and contributors.

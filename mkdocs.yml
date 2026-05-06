@@ -3,7 +3,7 @@ site_description: AI-native code security scanner — cascade analysis + DAST ve
 site_url: https://dshochat.github.io/Argus_Scanner/
 repo_url: https://github.com/dshochat/Argus_Scanner
 repo_name: dshochat/Argus_Scanner
-copyright: Copyright &copy; 2026 Dudy Shochat and contributors. Apache-2.0 licensed.
+copyright: Copyright &copy; 2026 David Shochat and contributors. Apache-2.0 licensed.
 
 theme:
   name: material

@@ -1,10 +1,10 @@
 # Argus
 
-**An AI-native code security scanner <mark>that proves exploitability at runtime</mark>.**
+**An AI-native code security scanner (Semantic Deep Analysis) <mark>that proves exploitability at runtime</mark>.**
 
 Argus combines a cost-graduated LLM cascade (Gemini Flash-Lite → Sonnet 4.6 → Opus 4.6) with a sandbox tier that *executes* suspect code in a Firecracker microVM and observes what it actually does. Static-analysis findings get promoted to **CONFIRMED** only when the sandbox captures concrete runtime evidence — a network call, a file write, a process spawn. Findings that cannot be triggered are marked **UNREACHED**; findings the file's own defenses block are **BLOCKED**. No more "the LLM said it might be malicious."
 
-Open source, Apache 2.0, BYOK. You pay Anthropic and Google directly — Argus collects nothing.
+Open source, Apache 2.0, BYOK. You pay your providers directly — Anthropic + Google for the cascade, Fly.io for the optional DAST sandbox. Argus collects nothing.
 
 ---
 
@@ -18,6 +18,14 @@ Most scanners stop at "this code matches a vulnerability pattern." Argus runs th
 | `BLOCKED` | The attack was tested; the file's own code defended against it (sanitization, escaping, allowlist, etc.). |
 | `UNREACHED` | The attack was tested; the code path is genuinely unreachable. |
 | `NOT_TESTED` | Sandbox couldn't execute the test (with a sub-reason: `infra_stub` / `inconclusive` / `not_planned`). |
+
+### vs. other approaches
+
+| Approach | Output | False-positive burden | Evidence type |
+|---|---|---|---|
+| Pattern-match scanner (regex / AST) | Syntactic match | High | None |
+| Single frontier LLM (single-call) | Probabilistic opinion (semantic) | Medium-high | LLM reasoning |
+| **Argus** | **Runtime-verified verdict** | **Low** | **Sandbox traces** |
 
 A `CONFIRMED` finding looks like this in `argus scan` output:
 
@@ -37,7 +45,9 @@ A `CONFIRMED` finding looks like this in `argus scan` output:
 }
 ```
 
-This is the moat. Static scanners report *suspicion*; Argus reports *what the code actually did*.
+> **This is Argus's moat.**
+> Static and single-LLM scanners report *suspicion*.
+> Argus reports **what the code actually did** — with concrete evidence, or clear proof it didn't.
 
 ---
 
@@ -56,7 +66,7 @@ GPT 5.4                ████████████████░░░
 
 Argus is **+13.0pp more accurate than Opus 4.6** and **+17.4pp more accurate than GPT-5.4**. On the rich-oracle subset Argus also leads on finding quality: **CWE F1 0.297 vs Opus 0.180** (+65% lift) and **capability F1 0.771 vs Opus 0.720**. Mean verdict-distance: **0.087 vs Opus 0.217**.
 
-But the differentiator the single-call scanners can't produce is **runtime evidence**. On the same suite, Argus's DAST tier observed **25 CONFIRMED exploits + 1 BLOCKED** with concrete sandbox-captured artefacts — network calls, exfil POST bodies, process traces. By verifying which findings are **actually exploitable** versus mere pattern matches, Argus minimizes the false-positive flood that drowns security teams using static-only scanners. Voters describe vulnerabilities; Argus shows you the file actually doing it — and prunes the rest.
+But the differentiator the single-call scanners can't produce is **runtime evidence**. On the same suite, Argus's DAST tier observed **25 CONFIRMED exploits + 1 BLOCKED** with concrete sandbox-captured artefacts — network calls, exfil POST bodies, process traces. By verifying which findings are **actually exploitable** versus mere pattern matches, Argus minimizes the false-positive flood that drowns security teams using static-only scanners. Unlike single-call LLMs that must guess exploitability, Argus's DAST tier tests it — turning many "maybe" findings into proven CONFIRMED exploits or clean UNREACHED / BLOCKED resolutions.
 
 Methodology + per-file breakdown: [`bench_results/v1_1_launch/launch_report.md`](bench_results/v1_1_launch/launch_report.md). Re-run is one command: `python -m methodology.run_phase_a_report`.
 
@@ -253,4 +263,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full PR process.
 
 [Apache License 2.0](LICENSE).
 
-Copyright © 2026 Dudy Shochat and contributors.
+Copyright © 2026 David Shochat and contributors.

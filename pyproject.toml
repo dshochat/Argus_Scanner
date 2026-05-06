@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
-    { name = "David Sho", email = "davidsho1131@gmail.com" },
+    { name = "David Shochat", email = "davidsho1131@gmail.com" },
 ]
 keywords = [
     "security",
