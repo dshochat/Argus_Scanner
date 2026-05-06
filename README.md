@@ -46,17 +46,17 @@ This is the moat. Static scanners report *suspicion*; Argus reports *what the co
 Scored against a ground-truth oracle derived from external security research and a multi-vendor LLM consensus (majority agreement):
 
 ```
-                       Verdict-exact (higher = better)              Cost
-Argus (cascade + DAST) ████████████████████  91.3%                  $4.20
-Gemini 3.1 Pro         █████████████████░░░  82.6%                  $0.41
-Grok 4.3               █████████████████░░░  82.6%                  $0.59
-Opus 4.6               █████████████████░░░  78.3%                  $7.56
-GPT 5.4                ████████████████░░░░  73.9%                  $4.78
+                       Verdict-exact (higher = better)
+Argus (cascade + DAST) ████████████████████  91.3%
+Gemini 3.1 Pro         █████████████████░░░  82.6%
+Grok 4.3               █████████████████░░░  82.6%
+Opus 4.6               █████████████████░░░  78.3%
+GPT 5.4                ████████████████░░░░  73.9%
 ```
 
-Argus is **+13.0pp more accurate than Opus 4.6 at 44% lower cost**, and **+17.4pp more accurate than GPT-5.4 at 12% lower cost**. On the rich-oracle subset Argus also leads on finding quality: **CWE F1 0.297 vs Opus 0.180** (+65% lift) and **capability F1 0.771 vs Opus 0.720**. Mean verdict-distance: **0.087 vs Opus 0.217**.
+Argus is **+13.0pp more accurate than Opus 4.6** and **+17.4pp more accurate than GPT-5.4**. On the rich-oracle subset Argus also leads on finding quality: **CWE F1 0.297 vs Opus 0.180** (+65% lift) and **capability F1 0.771 vs Opus 0.720**. Mean verdict-distance: **0.087 vs Opus 0.217**.
 
-But the differentiator the single-call scanners can't produce is **runtime evidence**. On the same suite, Argus's DAST tier observed **25 CONFIRMED exploits + 1 BLOCKED** with concrete sandbox-captured artefacts — network calls, exfil POST bodies, process traces. Voters describe vulnerabilities; Argus shows you the file actually doing it.
+But the differentiator the single-call scanners can't produce is **runtime evidence**. On the same suite, Argus's DAST tier observed **25 CONFIRMED exploits + 1 BLOCKED** with concrete sandbox-captured artefacts — network calls, exfil POST bodies, process traces. By verifying which findings are **actually exploitable** versus mere pattern matches, Argus minimizes the false-positive flood that drowns security teams using static-only scanners. Voters describe vulnerabilities; Argus shows you the file actually doing it — and prunes the rest.
 
 Methodology + per-file breakdown: [`bench_results/v1_1_launch/launch_report.md`](bench_results/v1_1_launch/launch_report.md). Re-run is one command: `python -m methodology.run_phase_a_report`.
 
