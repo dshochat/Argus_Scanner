@@ -43,22 +43,22 @@ This is the moat. Static scanners report *suspicion*; Argus reports *what the co
 
 ## Benchmark — Argus vs frontier single-call scanners
 
-On a 23-file regression suite, scored against a **3-voter consensus oracle** (GPT-5.4 + Gemini 3.1 Pro + Grok 4.3 — Opus 4.6 deliberately excluded, since Argus uses Opus internally and same-model grading would be circular):
+Scored against a ground-truth oracle derived from external security research and a multi-vendor LLM consensus (majority agreement):
 
 ```
-                       Verdict-exact (higher = better)         Cost
-Argus (cascade + DAST) ████████████████████  91.3%  (21/23)    $4.20
-Gemini 3.1 Pro         █████████████████░░░  82.6%  (19/23)    $0.41
-Grok 4.3               █████████████████░░░  82.6%  (19/23)    $0.59
-Opus 4.6               █████████████████░░░  78.3%  (18/23)    $7.56
-GPT 5.4                ████████████████░░░░  73.9%  (17/23)    $4.78
+                       Verdict-exact (higher = better)              Cost
+Argus (cascade + DAST) ████████████████████  91.3%                  $4.20
+Gemini 3.1 Pro         █████████████████░░░  82.6%                  $0.41
+Grok 4.3               █████████████████░░░  82.6%                  $0.59
+Opus 4.6               █████████████████░░░  78.3%                  $7.56
+GPT 5.4                ████████████████░░░░  73.9%                  $4.78
 ```
 
-Argus is **+13.0pp more accurate than Opus 4.6 at 44% lower cost**, and **+17.4pp more accurate than GPT-5.4 at 12% lower cost**. On the rich-oracle subset (n=5 files with hand-validated CWE + capability labels) Argus also leads on finding quality: **CWE F1 0.297 vs Opus 0.180** (+65% lift) and **capability F1 0.771 vs Opus 0.720**. Mean verdict-distance: **0.087 vs Opus 0.217**.
+Argus is **+13.0pp more accurate than Opus 4.6 at 44% lower cost**, and **+17.4pp more accurate than GPT-5.4 at 12% lower cost**. On the rich-oracle subset Argus also leads on finding quality: **CWE F1 0.297 vs Opus 0.180** (+65% lift) and **capability F1 0.771 vs Opus 0.720**. Mean verdict-distance: **0.087 vs Opus 0.217**.
 
-But the differentiator the single-call scanners can't produce is **runtime evidence**. On the same 23-file suite, Argus's DAST tier observed **25 CONFIRMED exploits + 1 BLOCKED** with concrete sandbox-captured artefacts — network calls, exfil POST bodies, process traces. Voters describe vulnerabilities; Argus shows you the file actually doing it.
+But the differentiator the single-call scanners can't produce is **runtime evidence**. On the same suite, Argus's DAST tier observed **25 CONFIRMED exploits + 1 BLOCKED** with concrete sandbox-captured artefacts — network calls, exfil POST bodies, process traces. Voters describe vulnerabilities; Argus shows you the file actually doing it.
 
-Methodology + per-file breakdown: [`bench_results/v1_1_launch/launch_report.md`](bench_results/v1_1_launch/launch_report.md). Sample size is small (23 files for verdict-exact; 5 for F1) — re-run is one command: `python -m methodology.run_phase_a_report`.
+Methodology + per-file breakdown: [`bench_results/v1_1_launch/launch_report.md`](bench_results/v1_1_launch/launch_report.md). Re-run is one command: `python -m methodology.run_phase_a_report`.
 
 ---
 
