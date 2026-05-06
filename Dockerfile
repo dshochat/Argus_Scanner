@@ -23,7 +23,7 @@ WORKDIR /build
 # Copy lockfile + pyproject first so Docker can cache the dep install
 # layer when only source changes.
 COPY pyproject.toml uv.lock ./
-COPY README.md LICENSE NOTICE.md ./
+COPY README.md LICENSE ./
 
 # Copy the source tree.
 COPY adjudicator/ ./adjudicator/

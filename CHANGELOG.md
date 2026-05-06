@@ -111,10 +111,6 @@ Required: Python 3.12+, an Anthropic API key, a Google AI Studio key. DAST sandb
 - **v1.2** scope: `gh`-based PR shortcut (`--from-pr <num>`), per-finding cost cap with graceful degradation, structured DAST validator rejection categories (replaces today's regex heuristic), Go / Rust / .NET DAST support.
 - **Active backlog**: tracked in [GitHub Issues](https://github.com/dshochat/Argus_Scanner/issues).
 
-## Acknowledgements
-
-Argus lifts code from two prior codebases by the same team: **CNAPPPOC** (scanner core, prompts, multi-provider adapters, verdict adjudicator) and **echoDefense** (preprocessing pipeline, DAST sandbox + orchestrator, methodology runner). Full per-file lineage in [`NOTICE.md`](NOTICE.md).
-
 ## License
 
 Apache License 2.0 — [`LICENSE`](LICENSE).

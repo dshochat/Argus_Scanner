@@ -248,17 +248,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full PR process.
 
 ---
 
-## Origin
-
-Argus is a new project that lifts code from two prior codebases authored by the same team:
-
-- **CNAPPPOC** — scanner core, prompts, multi-provider adapters, verdict adjudicator
-- **echoDefense** — preprocessing pipeline, DAST sandbox + orchestrator, methodology runner
-
-Full per-file lineage: [NOTICE.md](NOTICE.md).
-
----
-
 ## License
 
 [Apache License 2.0](LICENSE).

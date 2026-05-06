@@ -5,7 +5,7 @@ description = "AI-native code security scanner with cascade analysis and Firecra
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE.md"]
+license-files = ["LICENSE"]
 authors = [
     { name = "David Sho", email = "davidsho1131@gmail.com" },
 ]
@@ -129,7 +129,6 @@ include = [
     "/docs",
     "/samples/regression_v1",
     "LICENSE",
-    "NOTICE.md",
     "README.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
