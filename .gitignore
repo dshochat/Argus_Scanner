@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# uv / venvs
+.venv/
+venv/
+.python-version
+uv.lock
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs / runtime
+logs/
+*.log
+journals/
+results/
+bench_results/
+_eval_*.json
+_phase_*_evaluation.json
+_full_regression_*.json
+_baseline_run_*.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local-only
+TODO.local.md
+NOTES.local.md
+.claude/settings.local.json

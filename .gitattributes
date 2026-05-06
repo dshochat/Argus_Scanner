@@ -1,0 +1,11 @@
+# Force LF endings on files that ship into the Linux DAST sandbox.
+# CRLF in dast-init.sh broke the Firecracker entrypoint (bash chokes
+# on \r in shebang continuation; discovered live during DAST-107).
+# Cross-platform contributors should not have to remember this.
+*.sh         text eol=lf
+*.py         text eol=lf
+Dockerfile*  text eol=lf
+*.toml       text eol=lf
+
+# Host-side: leave PowerShell as-is (Windows-native).
+*.ps1        text eol=crlf

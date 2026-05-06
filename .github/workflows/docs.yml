@@ -1,0 +1,44 @@
+# OSS-103 — auto-deploy docs site to GitHub Pages on push to main.
+#
+# Builds the MkDocs Material site from the docs/ directory, pushes
+# the built HTML to the gh-pages branch, GitHub serves it from
+# https://dshochat.github.io/Argus/.
+
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+      - "README.md"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docs
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # mkdocs needs full history for git-based plugins
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.4.x"
+      - name: Install docs deps
+        run: uv sync --extra docs
+      - name: Build site
+        run: uv run mkdocs build --strict --site-dir _site
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./_site
+          force_orphan: true

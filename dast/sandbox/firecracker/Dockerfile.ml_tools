@@ -1,0 +1,94 @@
+# Sandbox image for Argus DAST — `ml_tools` variant (DAST-014).
+#
+# Strict superset of `networked`. Adds Python ML packages so DAST plans
+# can confirm exploits whose chain runs through a model loader:
+#
+#   * torch (CPU-only)        — required by transformers; covers
+#                                 load_distributed_checkpoint,
+#                                 megatron_gpt2_loader, perceiver_model_loader
+#   * transformers            — high-level loader API; PerceiverModel,
+#                                 GPT2 etc. import from here
+#   * safetensors             — alternate-format loader for newer FT files
+#   * huggingface_hub         — pulls models from HF hub (sandbox
+#                                 supplies offline cache; no real downloads)
+#
+# DELIBERATELY OMITTED:
+#   * tensorflow / tensorflow-cpu — none of the campaign targets are
+#     TF-based. TF adds ~500 MB compressed; reintroduce if a TF-specific
+#     malicious-loader file lands in the corpus.
+#   * scikit-learn, xgboost, etc. — same reason; add when a target file
+#     justifies it.
+#
+# Image size delta vs networked: ~2-2.5 GB compressed. The bulk is torch
+# CPU wheels. Boot time delta: ~3-5 seconds extra (cold kernel module
+# load on first import).
+#
+# Cost note: per-call Fly Firecracker boot time depends on image size
+# linearly. ml_tools should ONLY be selected by plans that genuinely
+# need it (per the planner-prompt rule: "smallest sufficient image").
+
+FROM python:3.13-slim
+
+# Multi-language toolchain + networked tools.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        coreutils \
+        inotify-tools \
+        nodejs \
+        npm \
+        default-jre-headless \
+        curl \
+        util-linux \
+        wget \
+        netcat-openbsd \
+        dnsutils \
+        openssl \
+        && rm -rf /var/lib/apt/lists/*
+
+# Python ML stack — CPU-only wheels.
+#
+# We pin to specific versions so re-builds are reproducible and the
+# image hash is stable. Bump these explicitly when refreshing the image.
+#
+# ``--index-url`` for torch points at the CPU-only wheel server. This
+# avoids pulling the 2.5 GB CUDA-bundled wheel by accident.
+#
+# ``--no-cache-dir`` shaves ~600 MB off the image because pip's wheel
+# cache is no longer needed after install.
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch==2.5.1 && \
+    pip install --no-cache-dir \
+        transformers==4.46.3 \
+        safetensors==0.4.5 \
+        huggingface_hub==0.26.2
+
+# Pre-warm the import path so the first plan call doesn't pay the
+# initial-import latency. ``-c`` ensures we surface any wheel-
+# incompatibility issues at build time, not at first plan execution.
+RUN python -c "import torch, transformers, safetensors, huggingface_hub; print('ml_tools image OK:', torch.__version__)"
+
+# Non-root runner. Same as minimal/networked.
+RUN useradd -m -u 1000 -s /bin/bash runner && \
+    mkdir -p /workspace && \
+    chown runner:runner /workspace
+
+# Disable HF hub network calls by default — the sandbox is air-gapped
+# and HF would just hang on DNS hijack. Plans that need a specific
+# model must populate /workspace/.cache/huggingface/ before invocation.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HOME=/workspace/.cache/huggingface
+
+# Same entrypoint stack as minimal/networked.
+COPY entrypoint.py /usr/local/bin/dast-entrypoint
+RUN chmod 755 /usr/local/bin/dast-entrypoint
+
+COPY dast-capture-server.py /usr/local/bin/dast-capture-server
+COPY dast-init.sh /usr/local/bin/dast-init.sh
+RUN chmod 755 /usr/local/bin/dast-capture-server /usr/local/bin/dast-init.sh
+
+WORKDIR /workspace
+ENTRYPOINT ["bash", "/usr/local/bin/dast-init.sh"]

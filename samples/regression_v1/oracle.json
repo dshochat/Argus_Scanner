@@ -1,0 +1,32 @@
+{
+  "_comment": "Hand-labeled oracle for ARG-002 / Phase 1 verdict-exact validation. expected_verdicts is a SET of acceptable verdicts (model judgment varies); the test passes if the actual verdict is any member. min_vulnerabilities / max_vulnerabilities bound the count to catch dramatic miscategorization without forcing exact-match brittleness.",
+  "files": {
+    "clean.py": {
+      "description": "Pure utility functions — no I/O, no syscalls, no network",
+      "expected_verdicts": ["clean"],
+      "min_vulnerabilities": 0,
+      "max_vulnerabilities": 0
+    },
+    "low.py": {
+      "description": "Benign request-handler with safe input parsing — clean or trivial findings",
+      "expected_verdicts": ["clean", "informational"],
+      "min_vulnerabilities": 0,
+      "max_vulnerabilities": 2
+    },
+    "high_with_vuln.py": {
+      "description": "Two command-injection vulns (shell=True with user input)",
+      "expected_verdicts": ["malicious", "critical_malicious"],
+      "min_vulnerabilities": 1
+    },
+    "high_stakes_crypto.py": {
+      "description": "Hardcoded IV + MD5 password hashing — high-stakes crypto antipatterns",
+      "expected_verdicts": ["suspicious", "malicious", "critical_malicious"],
+      "min_vulnerabilities": 1
+    },
+    "known_malware.py": {
+      "description": "Reads /etc/passwd, base64-encodes, exfils to attacker domain",
+      "expected_verdicts": ["malicious", "critical_malicious"],
+      "min_vulnerabilities": 2
+    }
+  }
+}

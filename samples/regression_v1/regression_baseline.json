@@ -1,0 +1,362 @@
+{
+  "n_files": 23,
+  "n_oracle_match": 10,
+  "verdict_exact_pct": 43.5,
+  "tier_breakdown": {
+    "miss": 11,
+    "win": 10,
+    "fragile": 2
+  },
+  "tracking_breakdown": {
+    "tier3": 11,
+    "tier1": 10,
+    "tier2": 2
+  },
+  "files": [
+    {
+      "file_name": "audit_log_compression.py",
+      "stratum": "existing_augmented",
+      "oracle_verdict": "malicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 3,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "variance_characterization"
+    },
+    {
+      "file_name": "consistency_variable.py",
+      "stratum": "existing_augmented",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "critical_malicious",
+      "variance_band": [
+        "critical_malicious",
+        "critical_malicious"
+      ],
+      "is_stable": true,
+      "n_runs": 3,
+      "tier": "win",
+      "tracking": "tier1",
+      "source": "variance_characterization"
+    },
+    {
+      "file_name": "event_stream_flatmap_compromise.js",
+      "stratum": "existing_augmented",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 3,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "variance_characterization"
+    },
+    {
+      "file_name": "litellm_obfuscated.py",
+      "stratum": "existing_augmented",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "critical_malicious",
+      "variance_band": [
+        "critical_malicious",
+        "critical_malicious"
+      ],
+      "is_stable": true,
+      "n_runs": 3,
+      "tier": "win",
+      "tracking": "tier1",
+      "source": "variance_characterization"
+    },
+    {
+      "file_name": "multi_layer_b64.py",
+      "stratum": "existing_augmented",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "critical_malicious",
+      "variance_band": [
+        "critical_malicious",
+        "critical_malicious"
+      ],
+      "is_stable": true,
+      "n_runs": 3,
+      "tier": "win",
+      "tracking": "tier1",
+      "source": "variance_characterization"
+    },
+    {
+      "file_name": "sitecustomize_inject.pth",
+      "stratum": "existing_augmented",
+      "oracle_verdict": "suspicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 3,
+      "tier": "win",
+      "tracking": "tier1",
+      "source": "variance_characterization"
+    },
+    {
+      "file_name": "12_gh_bot_automerge_backdoor.py",
+      "stratum": "supplement_supply_chain",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "malicious"
+      ],
+      "is_stable": false,
+      "n_runs": 3,
+      "tier": "fragile",
+      "tracking": "tier2",
+      "source": "variance_characterization"
+    },
+    {
+      "file_name": "docker_entrypoint_init.py",
+      "stratum": "supplement_supply_chain",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "clean",
+      "variance_band": [
+        "clean",
+        "clean"
+      ],
+      "is_stable": true,
+      "n_runs": 3,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "variance_characterization"
+    },
+    {
+      "file_name": "init__.py",
+      "stratum": "supplement_supply_chain",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 3,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "variance_characterization"
+    },
+    {
+      "file_name": "preinstall.py",
+      "stratum": "supplement_supply_chain",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "malicious",
+      "variance_band": [
+        "suspicious",
+        "malicious"
+      ],
+      "is_stable": false,
+      "n_runs": 3,
+      "tier": "fragile",
+      "tracking": "tier2",
+      "source": "variance_characterization"
+    },
+    {
+      "file_name": "12_glpi_sso_session_fixation.py",
+      "stratum": "supplement_vulnerable",
+      "oracle_verdict": "malicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "db2_query_health_check.py",
+      "stratum": "supplement_vulnerable",
+      "oracle_verdict": "suspicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "win",
+      "tracking": "tier1",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "load_distributed_checkpoint.py",
+      "stratum": "supplement_vulnerable",
+      "oracle_verdict": "malicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "megatron_gpt2_loader.py",
+      "stratum": "supplement_vulnerable",
+      "oracle_verdict": "suspicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "win",
+      "tracking": "tier1",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "perceiver_model_loader.py",
+      "stratum": "supplement_vulnerable",
+      "oracle_verdict": "suspicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "win",
+      "tracking": "tier1",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "sandbox_runner.js",
+      "stratum": "supplement_vulnerable",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "tenda_device_audit.py",
+      "stratum": "supplement_vulnerable",
+      "oracle_verdict": "clean",
+      "baseline_verdict": "clean",
+      "variance_band": [
+        "clean",
+        "clean"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "win",
+      "tracking": "tier1",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "tpm_symmetric_cipher.py",
+      "stratum": "supplement_vulnerable",
+      "oracle_verdict": "suspicious",
+      "baseline_verdict": "clean",
+      "variance_band": [
+        "clean",
+        "clean"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "wvr30_admin_provisioning.py",
+      "stratum": "supplement_vulnerable",
+      "oracle_verdict": "suspicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "win",
+      "tracking": "tier1",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "xrechnung_visualizer.py",
+      "stratum": "supplement_vulnerable",
+      "oracle_verdict": "suspicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "win",
+      "tracking": "tier1",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "backup_manager.py",
+      "stratum": "supplement_malware",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "suspicious",
+      "variance_band": [
+        "suspicious",
+        "suspicious"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "compat_hooks.pth",
+      "stratum": "supplement_malware",
+      "oracle_verdict": "critical_malicious",
+      "baseline_verdict": "malicious",
+      "variance_band": [
+        "malicious",
+        "malicious"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "cross_stratum"
+    },
+    {
+      "file_name": "photoshow_ffmpeg_config.py",
+      "stratum": "supplement_malware",
+      "oracle_verdict": "suspicious",
+      "baseline_verdict": "clean",
+      "variance_band": [
+        "clean",
+        "clean"
+      ],
+      "is_stable": true,
+      "n_runs": 1,
+      "tier": "miss",
+      "tracking": "tier3",
+      "source": "cross_stratum"
+    }
+  ]
+}

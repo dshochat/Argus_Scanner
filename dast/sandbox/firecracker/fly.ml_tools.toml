@@ -1,0 +1,10 @@
+# Argus DAST Firecracker sandbox — `ml_tools` variant.
+#
+# Same Fly app as the minimal/networked variants; differs only in the
+# Dockerfile reference. Use via `flyctl deploy --config fly.ml_tools.toml`.
+
+app = "argus-dast-sandbox"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.ml_tools"

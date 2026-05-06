@@ -1,0 +1,10 @@
+# Argus DAST Firecracker sandbox — `networked` variant.
+#
+# Same Fly app as the minimal/ml_tools variants; differs only in the
+# Dockerfile reference. Use via `flyctl deploy --config fly.networked.toml`.
+
+app = "argus-dast-sandbox"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.networked"

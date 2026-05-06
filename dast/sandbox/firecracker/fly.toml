@@ -1,0 +1,22 @@
+# Argus DAST Firecracker sandbox — Fly.io app config (minimal variant).
+#
+# This is a Fly Machines app (no services, no public IPs, no autoscaling).
+# Each plan execution creates a one-shot ephemeral machine via the Fly
+# Machines API with `auto_destroy=true`. Per-machine resources (CPU,
+# memory, network) are set at the API call site, not here.
+#
+# Why no services / no http handlers: this app receives ZERO inbound
+# traffic. Plans are pushed in via env vars at machine-creation time;
+# results come back via stdout / Fly logs API. Inbound exposure would
+# violate the sandbox safety boundary.
+
+app = "argus-dast-sandbox"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# No `[[services]]` blocks — app has no inbound network surface.
+# No `[[http_service]]` blocks — same reason.
+# No `[[mounts]]` — no persistent state across machine lifetimes.
+# No `[experimental] auto_rollback` — deploys must be deliberate.

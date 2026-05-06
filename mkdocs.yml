@@ -1,0 +1,54 @@
+site_name: Argus
+site_description: AI-native code security scanner — cascade analysis + DAST verification
+site_url: https://dshochat.github.io/Argus_Scanner/
+repo_url: https://github.com/dshochat/Argus_Scanner
+repo_name: dshochat/Argus_Scanner
+copyright: Copyright &copy; 2026 Dudy Shochat and contributors. Apache-2.0 licensed.
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - content.code.copy
+    - content.action.edit
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Install & first scan: install.md
+  - Architecture: architecture.md
+  - Cost guide: cost-guide.md
+  - DAST setup: dast-setup.md
+  - API keys: api-keys.md
+  - Contributing: contributing.md
+
+plugins:
+  - search

@@ -1,0 +1,44 @@
+# Build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+site/
+_site/
+
+# VCS + IDE
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+
+# Local working files — never go into the published image
+.env*
+!.env.example
+bench_results/
+samples/debug/
+*.log
+*.tmp
+
+# Tests + dev-only artifacts
+tests/
+methodology/
+samples/
+prompts/advisories/
+
+# Docs source (built site is generated separately)
+docs/
+mkdocs.yml
+
+# Internal repo state — public users don't need this
+CLAUDE.md
+roadmap.md
+tasks.md

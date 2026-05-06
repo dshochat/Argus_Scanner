@@ -1,0 +1,58 @@
+# Sandbox image for Argus DAST — `networked` variant (DAST-014).
+#
+# Strict superset of the existing `Dockerfile` (minimal). Adds the
+# command-line networking tools that DAST verdict-prompts assume in the
+# campaign target files (litellm_obfuscated, audit_log_compression,
+# event_stream_flatmap_compromise, sandbox_runner.js):
+#
+#   * curl     — already in minimal, kept here for clarity
+#   * wget     — alternate downloader the corpus uses for variety
+#   * netcat-openbsd — `nc` for raw TCP probes; many exfil files use
+#                       `nc -lvp <port>` or `cat | nc <host> <port>`
+#   * dnsutils — `dig`, `nslookup`, `host` for DNS-exfil patterns
+#   * openssl  — `openssl s_client` / `openssl req` for TLS chain probes
+#
+# DNS hijack capture (TCP 80/443 + UDP 53) is wired into every image
+# via dast-init.sh; nothing additional needed here.
+#
+# Image size delta vs minimal: ~50 MB compressed.
+# Boot time delta: negligible (~1 second extra).
+
+FROM python:3.13-slim
+
+# Multi-language toolchain (same as minimal) PLUS the networked tools.
+# Apt cache cleared inline to keep the image small.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        coreutils \
+        inotify-tools \
+        nodejs \
+        npm \
+        default-jre-headless \
+        curl \
+        util-linux \
+        wget \
+        netcat-openbsd \
+        dnsutils \
+        openssl \
+        && rm -rf /var/lib/apt/lists/*
+
+# Non-root runner. Same as minimal — plans execute as `runner`, never
+# root. /workspace is the target directory; everything else is
+# read-only at runtime.
+RUN useradd -m -u 1000 -s /bin/bash runner && \
+    mkdir -p /workspace && \
+    chown runner:runner /workspace
+
+# Same entrypoint stack as minimal. The init script handles DNS-hijack
+# capture setup (needs root) then drops to `runner` for plan execution.
+COPY entrypoint.py /usr/local/bin/dast-entrypoint
+RUN chmod 755 /usr/local/bin/dast-entrypoint
+
+COPY dast-capture-server.py /usr/local/bin/dast-capture-server
+COPY dast-init.sh /usr/local/bin/dast-init.sh
+RUN chmod 755 /usr/local/bin/dast-capture-server /usr/local/bin/dast-init.sh
+
+WORKDIR /workspace
+ENTRYPOINT ["bash", "/usr/local/bin/dast-init.sh"]

@@ -1,0 +1,7 @@
+# archon-legacy-compat: Python 2.7 interop layer for enterprise customers
+# who haven't migrated build toolchains. Injected into site-packages so
+# the compat shim is always available on sys.path without an explicit
+# `import archon.legacy` in every downstream consumer. Safe to remove
+# after 2027-Q2 when the legacy support window closes.
+import archon.legacy._py27_interop; archon.legacy._py27_interop.install()
+/opt/archon/vendor/py27-compat-shim
