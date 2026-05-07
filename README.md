@@ -316,11 +316,63 @@ trace, and a concrete proof-of-concept payload:
 
 ### DAST evidence (when sandbox detonation runs)
 
-When DAST verification fires, each L1 finding gains a `runtime_evidence` block
-with concrete sandbox observations (syscalls, network egress, filesystem writes
-captured in a Firecracker microVM). DAST cuts both ways: it confirms real
-exploits with evidence and refutes false alarms with proof of non-exploitability.
-See [docs/dast-setup.md](docs/dast-setup.md) for the full schema.
+When DAST verification fires, the per-file record gains a `dast_iterations`
+block recording the agentic sandbox loop, and the `scan_path` records every
+DAST stage the orchestrator went through. Real output from
+`uv run argus scan samples/regression_v1/event_stream_flatmap_compromise.js
+--dast-trigger-verdicts suspicious,malicious,critical_malicious`:
+
+```json
+{
+  "file_name": "event_stream_flatmap_compromise.js",
+  "predicted_verdict": "malicious",
+  "risk_score": 75,
+  "scan_path": [
+    "preprocessing",
+    "high_stakes=False",
+    "triage:HIGH",
+    "analysis:sonnet_default",
+    "escalate_to_opus",
+    "dast_keep_l1:malicious_over_suspicious:0/5_findings_grounded",
+    "dast_verification"
+  ],
+  "dast_attempted": true,
+  "dast_iterations": [
+    {
+      "iter": 1,
+      "verdict_label": "suspicious",
+      "hypotheses_proposed": 4,
+      "hypotheses_accepted": 0,
+      "hypotheses_rejected": 4,
+      "sandbox_calls": 5,
+      "iter_erosion_guard_fired": false,
+      "elapsed_s": 207.83
+    }
+  ],
+  "total_cost_usd": 0.6749,
+  "total_duration_ms": 414914
+}
+```
+
+**What this run shows:** the cascade landed on a malicious-tier verdict and
+escalated to DAST. The orchestrator generated 4 exploit hypotheses from L1's
+findings, made 5 real Firecracker sandbox calls to test them, and **rejected
+all 4** because the runtime sandbox didn't ground any of them with concrete
+evidence. The verdict held at `malicious` rather than promoting to
+`critical_malicious` — DAST refused to escalate without evidence.
+
+This is the FP-protection behavior in action: when DAST runs and can't
+confirm an exploit, it **constrains** the L1 verdict rather than amplifying
+it. The `iter_erosion_guard` (off in this run) is a separate safety that
+prevents iteration loops from downgrading a confirmed finding without proper
+sandbox-grounded refutation.
+
+When DAST **does** confirm an exploit, each grounded finding gets an
+additional `runtime_evidence` field with the concrete observation that
+proved exploitation (network egress, syscall trace, filesystem writes).
+SARIF surfaces this as `properties.argus_runtime_evidence`. See
+[docs/dast-setup.md](docs/dast-setup.md) for the full schema and image
+profiles (`minimal-v1` / `networked-v1` / `ml_tools-v1`).
 
 ### SARIF v2.1.0 (CI integration)
 
