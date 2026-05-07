@@ -238,6 +238,7 @@ The non-negotiable design rules — break these in a PR and expect a long review
 | Cascade architecture | [docs/architecture.md](docs/architecture.md) |
 | Cost guide + budget knobs | [docs/cost-guide.md](docs/cost-guide.md) |
 | DAST sandbox setup (Fly.io) | [docs/dast-setup.md](docs/dast-setup.md) |
+| Roadmap | [ROADMAP.md](ROADMAP.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Security disclosures | [SECURITY.md](SECURITY.md) |
 
