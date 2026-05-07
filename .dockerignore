@@ -28,9 +28,9 @@ samples/debug/
 *.log
 *.tmp
 
-# Tests + dev-only artifacts
+# Tests + dev-only artifacts (NOT methodology/ — it's a runtime import
+# for `argus bench` and the launch-report builder)
 tests/
-methodology/
 samples/
 prompts/advisories/
 

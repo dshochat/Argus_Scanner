@@ -8,9 +8,10 @@
 #     scan-repo /workspace
 #
 # Note: the DAST sandbox tier requires a Fly.io account + flyctl auth that
-# this container does NOT carry by default. Pass FLY_API_TOKEN +
-# ECHO_DAST_IMAGE_* env vars (and, optionally, a flyctl binary mounted in)
-# to enable DAST. Without those, Argus runs L1-only.
+# this container does NOT carry by default. Set FLY_API_TOKEN +
+# ECHO_DAST_IMAGE_MINIMAL/NETWORKED/ML_TOOLS env vars (and optionally
+# mount a flyctl binary) to enable DAST. Without those, Argus runs the
+# L1 cascade only — `argus scan` and `argus scan-repo` work fine.
 
 FROM python:3.12-slim AS builder
 
@@ -68,7 +69,7 @@ LABEL org.opencontainers.image.title="argus-ai-scanner" \
       org.opencontainers.image.url="https://github.com/dshochat/Argus_Scanner" \
       org.opencontainers.image.source="https://github.com/dshochat/Argus_Scanner" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.vendor="Dudy Shochat"
+      org.opencontainers.image.vendor="David Shochat"
 
 USER argus
 
