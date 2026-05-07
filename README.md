@@ -183,6 +183,207 @@ uv run argus scan-repo . --exclude "vendor/**" --exclude "**/*.generated.*"
 
 ---
 
+## What you get back
+
+Argus produces three output formats — markdown for terminals, JSON for pipelines and tooling, SARIF v2.1.0 for GitHub Code Scanning. All three carry the same evidence, shaped for different consumers.
+
+### Markdown summary (default)
+
+Real output from `uv run argus scan samples/regression_v1/audit_log_compression.py --no-dast`:
+
+```markdown
+# audit_log_compression.py
+
+**Verdict:** `critical_malicious`
+**Risk:** 95/100 (critical)
+**Language:** python
+**Triage:** HIGH — The code contains an 'exec()' call that executes decompressed
+base64-encoded data from a hardcoded string (_REGRESSION_FIXTURE), which
+constitutes an arbitrary code execution pattern.
+
+**Cost:** $0.4168  **Time:** 198811 ms
+
+**Scan path:** preprocessing → high_stakes=False → triage:HIGH → analysis:sonnet_default → escalate_to_opus
+
+## Vulnerabilities (3)
+
+- **code_injection** (severity: critical, line 171)
+  - An opaque, compressed, base64-encoded blob is decompressed and executed via
+    `exec()`. The true contents of `_REGRESSION_FIXTURE` are hidden from static
+    inspection. This is the canonical pattern for embedding obfuscated malicious
+    payloads in otherwise-legitimate-looking utility code.
+  - **Fix:** Remove the `exec()` call entirely. If a regression fixture is
+    genuinely needed, store it as a plain-text Python module in the test
+    directory and import it normally.
+- **insecure_deserialization** (severity: critical, line 144)
+  - A large opaque binary blob is embedded in source code with comments
+    explicitly discouraging modification or inspection ("DO NOT modify the
+    fixture literal below"). The blob's actual content is unverifiable without
+    runtime decompression, providing ideal cover for arbitrary payload delivery.
+  - **Fix:** Remove the embedded blob. Any test data should be stored as
+    readable, version-controlled fixtures in a dedicated test-data directory.
+- **prompt_injection** (severity: high, line 136)
+  - Comments surrounding the obfuscated payload employ social engineering to
+    deter code review. Phrases like "DO NOT modify," the elaborate backstory
+    about "regression baselines" and "testing scaffolding," and the framing of
+    `exec()` as routine maintenance are designed to make human and automated
+    reviewers accept the hidden payload without inspection.
+  - **Fix:** Remove the social-engineering comments and the obfuscated code
+    they protect.
+
+## Attack chains (3)
+
+- Attacker invokes CLI with --regenerate-baseline flag (no privilege required
+  beyond file access)
+  - _regenerate_baseline() is called unconditionally
+  - base64.b64decode(_REGRESSION_FIXTURE) decodes the embedded opaque blob
+  - zlib.decompress() expands blob with no size cap
+  - exec() executes the resulting Python code in the caller's process with full
+    interpreter access
+  - Payload may exfiltrate audit records, establish persistence, or pivot to
+    connected systems
+- ... (2 more chains: scheduled-job and path-traversal exfil)
+
+## Behavioral summary
+
+- Sensitivity: **critical**
+- Purpose: Ostensibly a CSV audit-log compression utility, but contains an
+  obfuscated Python payload executed via exec(). The legitimate compression
+  functionality appears to serve as camouflage for the hidden payload.
+```
+
+### JSON output (full per-finding record)
+
+Run with `--output json` for the full structured record. Each finding carries
+the actual offending code, CWE code, model confidence, attacker data-flow
+trace, and a concrete proof-of-concept payload:
+
+```json
+{
+  "file_name": "audit_log_compression.py",
+  "predicted_verdict": "critical_malicious",
+  "cost_usd": 0.508,
+  "duration_ms": 253958,
+  "scan_path": [
+    "preprocessing",
+    "high_stakes=False",
+    "triage:HIGH",
+    "analysis:sonnet_default",
+    "escalate_to_opus"
+  ],
+  "dast_attempted": false,
+  "n_vulnerabilities": 3,
+  "vulnerabilities": [
+    {
+      "type": "code_injection",
+      "severity": "critical",
+      "line": 164,
+      "code": "exec(zlib.decompress(base64.b64decode(_REGRESSION_FIXTURE)))",
+      "cwe": "CWE-94",
+      "confidence": 0.97,
+      "explanation": "Arbitrary Python code hidden inside a zlib-compressed, base64-encoded blob is executed via `exec()`. The payload contents cannot be audited by reading the source, and the surrounding comments actively misrepresent the behavior as a benign 'test harness'. This is the canonical supply-chain obfuscated-payload pattern.",
+      "data_flow_trace": "_REGRESSION_FIXTURE (opaque blob) → base64.b64decode → zlib.decompress → exec() (arbitrary code execution)",
+      "proof_of_concept": "python -m auditlog.compression --in /dev/null --out /dev/null --regenerate-baseline",
+      "fix": "Remove the `exec()` call and the opaque blob entirely. If a regression fixture is genuinely needed, store it as readable Python source in a dedicated test module and import it normally."
+    }
+  ]
+}
+```
+
+**What's in each finding:**
+
+| Field | What it tells you |
+|---|---|
+| `type` | Vulnerability class (`code_injection`, `insecure_deserialization`, `prompt_injection`, `path_traversal`, …) |
+| `severity` | `critical` / `high` / `medium` / `low` |
+| `line` + `code` | Exact location and the offending snippet |
+| `cwe` | Standard CWE identifier for tool integration |
+| `confidence` | 0.0–1.0 model-reported confidence |
+| `explanation` | Why this is a vulnerability, in plain prose |
+| `data_flow_trace` | The actual attacker path through the code (input → sinks) |
+| `proof_of_concept` | Concrete reproduction command/payload (when applicable) |
+| `fix` | Recommended remediation |
+
+**What's in each per-file record:**
+
+| Field | What it tells you |
+|---|---|
+| `predicted_verdict` | 4-tier: `clean` / `suspicious` / `malicious` / `critical_malicious` |
+| `scan_path` | Cascade trace — which stages this file went through (triage → cascade → DAST → adjudicator) |
+| `dast_attempted` | Whether the file got sandbox detonation |
+| `cost_usd` | Per-file API spend, fully traceable |
+| `n_vulnerabilities` | Count of distinct findings |
+
+### DAST evidence (when sandbox detonation runs)
+
+When DAST verification fires, each L1 finding gains a `runtime_evidence` block
+with concrete sandbox observations (syscalls, network egress, filesystem writes
+captured in a Firecracker microVM). DAST cuts both ways: it confirms real
+exploits with evidence and refutes false alarms with proof of non-exploitability.
+See [docs/dast-setup.md](docs/dast-setup.md) for the full schema.
+
+### SARIF v2.1.0 (CI integration)
+
+Drop directly into GitHub Code Scanning, GitLab SAST, or any SARIF-aware
+pipeline:
+
+```bash
+uv run argus scan-repo . --output sarif --output-file findings.sarif
+```
+
+Each finding becomes a SARIF result with stable `ruleId` (CWE), severity-mapped
+`level`, and an `argus_*` property block preserving the data-flow trace, PoC,
+and runtime evidence:
+
+```json
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Argus",
+          "informationUri": "https://github.com/dshochat/Argus_Scanner",
+          "rules": [
+            {
+              "id": "CWE-94",
+              "shortDescription": { "text": "code_injection" },
+              "fullDescription": { "text": "Arbitrary Python code hidden inside a zlib-compressed, base64-encoded blob is executed via `exec()`. ..." },
+              "defaultConfiguration": { "level": "error" },
+              "properties": { "tags": ["security"], "cwe": "CWE-94" },
+              "help": { "text": "Remove the `exec()` call and the opaque blob entirely. ..." }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "CWE-94",
+          "level": "error",
+          "message": { "text": "Arbitrary Python code hidden inside a zlib-compressed, base64-encoded blob is executed via `exec()`. ..." },
+          "locations": [{
+            "physicalLocation": {
+              "artifactLocation": { "uri": "audit_log_compression.py", "uriBaseId": "REPO_ROOT" },
+              "region": { "startLine": 164 }
+            }
+          }],
+          "properties": {
+            "argus_status": "L1_ONLY",
+            "argus_severity": "critical",
+            "argus_confidence": 0.97,
+            "argus_verdict": "critical_malicious",
+            "argus_risk_score": 95,
+            "cwe": "CWE-94"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
 ## DAST sandbox tier
 
 DAST is **optional**. Without it, Argus ships verdicts using the L1 cascade alone. With it, you get per-finding `CONFIRMED` / `BLOCKED` / `UNREACHED` evidence backed by real runtime traces.
