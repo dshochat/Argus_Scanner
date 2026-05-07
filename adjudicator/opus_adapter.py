@@ -4,10 +4,11 @@ opus_verdict_adapter.py — Opus 4.6 adapter for the Verdict Agent.
 Uses Claude Opus 4.6 with thinking DISABLED for fast, focused verdicts.
 """
 
-import anthropic
 import json
-import time
 import logging
+import time
+
+import anthropic
 
 log = logging.getLogger("verdict-agent")
 
@@ -32,18 +33,13 @@ class OpusVerdictAdapter:
                     temperature=0,
                     thinking={"type": "disabled"},
                     system=system_prompt,
-                    messages=[
-                        {"role": "user", "content": user_message}
-                    ],
+                    messages=[{"role": "user", "content": user_message}],
                 )
 
                 elapsed_ms = int((time.time() - start) * 1000)
 
                 # Extract text — no thinking blocks with thinking disabled
-                raw_text = "".join(
-                    block.text for block in message.content
-                    if block.type == "text"
-                )
+                raw_text = "".join(block.text for block in message.content if block.type == "text")
 
                 # Parse JSON
                 clean = raw_text.strip()
@@ -66,8 +62,11 @@ class OpusVerdictAdapter:
 
                 log.info(
                     "Verdict: %s | Confidence: %.2f | %dms | %din/%dout",
-                    verdict["verdict"], verdict["confidence"], elapsed_ms,
-                    message.usage.input_tokens, message.usage.output_tokens,
+                    verdict["verdict"],
+                    verdict["confidence"],
+                    elapsed_ms,
+                    message.usage.input_tokens,
+                    message.usage.output_tokens,
                 )
 
                 return verdict

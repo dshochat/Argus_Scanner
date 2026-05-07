@@ -13,7 +13,6 @@ from typing import Any
 
 from dast.inference import build_anthropic_kwargs, parse_anthropic_response
 
-
 # ── Fake Anthropic response objects ────────────────────────────────────────
 
 
@@ -106,9 +105,7 @@ def test_build_kwargs_drops_thinking_when_schema_forces_tool_choice() -> None:
         model_id="claude-sonnet-4-6",
         thinking_budget=8000,
     )
-    assert "thinking" not in out, (
-        "thinking must NOT be set when tool_choice forces a tool"
-    )
+    assert "thinking" not in out, "thinking must NOT be set when tool_choice forces a tool"
     # Forced tool_choice still in place
     assert out["tool_choice"] == {"type": "tool", "name": "emit_response"}
 
@@ -116,9 +113,7 @@ def test_build_kwargs_drops_thinking_when_schema_forces_tool_choice() -> None:
 def test_build_kwargs_default_max_tokens_and_budget() -> None:
     """max_tokens defaults to 6144; thinking_budget defaults to 8000;
     final max_tokens (no-schema path) sums to 14144."""
-    out = build_anthropic_kwargs(
-        prompt="x", options={}, schema=None, model_id="claude-sonnet-4-6"
-    )
+    out = build_anthropic_kwargs(prompt="x", options={}, schema=None, model_id="claude-sonnet-4-6")
     assert out["max_tokens"] == 6144 + 8000
     assert out["thinking"] == {"type": "enabled", "budget_tokens": 8000}
 

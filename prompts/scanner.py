@@ -71,7 +71,9 @@ If clean, return empty arrays.\
 # CALL 1: Vulnerabilities + Composite Risk (Critical Path)
 # ============================================================
 
-SCAN_PROMPT_VULNS = SCAN_PROMPT_SYSTEM + """
+SCAN_PROMPT_VULNS = (
+    SCAN_PROMPT_SYSTEM
+    + """
 
 Analyze this file for security vulnerabilities and provide an overall risk assessment.
 
@@ -132,13 +134,16 @@ is actively attacking or just has a parser bug.
 
 Include exact line numbers and vulnerable code snippets.\
 """
+)
 
 
 # ============================================================
 # CALL 2: Behavioral Profile + Shield Policy
 # ============================================================
 
-SCAN_PROMPT_BEHAVIORAL = SCAN_PROMPT_SYSTEM + """
+SCAN_PROMPT_BEHAVIORAL = (
+    SCAN_PROMPT_SYSTEM
+    + """
 
 Analyze this file's runtime behavior. Trace every capability: what it reads, writes, \
 connects to, executes, and accesses. Compare actual behavior against declarations.
@@ -200,13 +205,16 @@ OUTPUT SCHEMA:
   }
 }\
 """
+)
 
 
 # ============================================================
 # CALL 3: AI Tool Analysis + Attack Chains
 # ============================================================
 
-SCAN_PROMPT_CHAINS = SCAN_PROMPT_SYSTEM + """
+SCAN_PROMPT_CHAINS = (
+    SCAN_PROMPT_SYSTEM
+    + """
 
 Analyze this file for AI tool security issues and multi-step attack chains.
 
@@ -242,13 +250,16 @@ OUTPUT SCHEMA:
   ]
 }\
 """
+)
 
 
 # ============================================================
 # COMBINED — single-call mode (benchmarks, batch scoring)
 # ============================================================
 
-SECURITY_SCAN_PROMPT = SCAN_PROMPT_SYSTEM + """
+SECURITY_SCAN_PROMPT = (
+    SCAN_PROMPT_SYSTEM
+    + """
 
 Analyze this file for security vulnerabilities, behavioral profile, AI tool issues, \
 attack chains, and generate runtime enforcement policy.
@@ -350,3 +361,4 @@ is actively attacking or just has a parser bug.
 
 Include exact line numbers and vulnerable code snippets.\
 """
+)

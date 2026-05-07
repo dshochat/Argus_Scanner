@@ -119,11 +119,15 @@ def test_gate_lift_pp() -> None:
 
 def test_dast_evidence_count_tallies() -> None:
     rows = [
-        _row("a.py", "critical_malicious", "critical_malicious",
-             dast_attempted=True, scan_path=["triage", "sonnet", "dast_verification"]),
+        _row(
+            "a.py",
+            "critical_malicious",
+            "critical_malicious",
+            dast_attempted=True,
+            scan_path=["triage", "sonnet", "dast_verification"],
+        ),
         _row("b.py", "clean", "clean"),
-        _row("c.py", "malicious", "malicious",
-             dast_attempted=True, scan_path=["dast_iter3_opus"]),
+        _row("c.py", "malicious", "malicious", dast_attempted=True, scan_path=["dast_iter3_opus"]),
     ]
     counts = _dast_evidence_count(rows)
     assert counts["n_dast_attempted"] == 2
@@ -173,14 +177,10 @@ def test_load_judgments_handles_malformed(tmp_path: Path) -> None:
 
 def test_render_launch_report_passes_gate_when_lift_ge_15() -> None:
     # Argus 80%, Opus 60% → 20pp lift, gate PASS.
-    argus_rows = [
-        _row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(8)
-    ] + [
+    argus_rows = [_row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(8)] + [
         _row(f"f{i}.py", "critical_malicious", "suspicious") for i in range(8, 10)
     ]
-    opus_rows = [
-        _row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(6)
-    ] + [
+    opus_rows = [_row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(6)] + [
         _row(f"f{i}.py", "critical_malicious", "suspicious") for i in range(6, 10)
     ]
     diff_records = [
@@ -203,9 +203,7 @@ def test_render_launch_report_passes_gate_when_lift_ge_15() -> None:
 
 def test_render_launch_report_fails_gate_when_lift_lt_15() -> None:
     # Argus 60%, Opus 60% → 0pp lift, gate FAIL.
-    argus_rows = [
-        _row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(6)
-    ] + [
+    argus_rows = [_row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(6)] + [
         _row(f"f{i}.py", "critical_malicious", "suspicious") for i in range(6, 10)
     ]
     opus_rows = list(argus_rows)
@@ -259,20 +257,12 @@ def test_render_launch_report_includes_cwe_overlap_section() -> None:
             opus="critical_malicious",
             oracle="critical_malicious",
             cwe_overlap={
-                "argus_vs_oracle": {
-                    "precision": 0.8, "recall": 1.0, "f1": 0.889, "jaccard": 0.8
-                },
-                "opus_vs_oracle": {
-                    "precision": 0.6, "recall": 0.5, "f1": 0.545, "jaccard": 0.4
-                },
+                "argus_vs_oracle": {"precision": 0.8, "recall": 1.0, "f1": 0.889, "jaccard": 0.8},
+                "opus_vs_oracle": {"precision": 0.6, "recall": 0.5, "f1": 0.545, "jaccard": 0.4},
             },
             cap_overlap={
-                "argus_vs_oracle": {
-                    "precision": 0.7, "recall": 0.9, "f1": 0.789, "jaccard": 0.6
-                },
-                "opus_vs_oracle": {
-                    "precision": 0.5, "recall": 0.4, "f1": 0.444, "jaccard": 0.3
-                },
+                "argus_vs_oracle": {"precision": 0.7, "recall": 0.9, "f1": 0.789, "jaccard": 0.6},
+                "opus_vs_oracle": {"precision": 0.5, "recall": 0.4, "f1": 0.444, "jaccard": 0.3},
             },
             rich_oracle_findings=[{"cwe": "CWE-78"}],
         ),
@@ -306,8 +296,13 @@ def test_render_launch_report_includes_mythos_footer() -> None:
 
 def test_render_launch_report_dast_section_counts_correctly() -> None:
     argus_rows = [
-        _row("a.py", "critical_malicious", "critical_malicious",
-             dast_attempted=True, scan_path=["dast_verification"]),
+        _row(
+            "a.py",
+            "critical_malicious",
+            "critical_malicious",
+            dast_attempted=True,
+            scan_path=["dast_verification"],
+        ),
         _row("b.py", "clean", "clean"),
     ]
     md = render_launch_report(argus_rows, [], [], [])

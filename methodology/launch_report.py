@@ -135,14 +135,9 @@ def _dast_evidence_count(rows: list[BenchRow]) -> dict[str, int]:
     don't always set the legacy ``dast_attempted`` flag, so the flag
     alone undercounts.
     """
-    n_attempted = sum(
-        1 for r in rows if r.dast_attempted or r.per_finding_validation
-    )
+    n_attempted = sum(1 for r in rows if r.dast_attempted or r.per_finding_validation)
     n_with_dast_stage = sum(
-        1
-        for r in rows
-        if any(p.startswith("dast_") for p in (r.scan_path or []))
-        or r.per_finding_validation
+        1 for r in rows if any(p.startswith("dast_") for p in (r.scan_path or [])) or r.per_finding_validation
     )
     return {
         "n_dast_attempted": n_attempted,
@@ -184,7 +179,7 @@ def _per_tier_accuracy(rows: list[BenchRow]) -> dict[str, dict[str, Any]]:
         out[tier]["n"] += 1
         if r.predicted_verdict == r.oracle_verdict:
             out[tier]["correct"] += 1
-    for t, d in out.items():
+    for _t, d in out.items():
         d["pct"] = round(d["correct"] / d["n"] * 100, 1) if d["n"] else 0.0
     return out
 
@@ -196,9 +191,7 @@ def _confusion_matrix(rows: list[BenchRow]) -> dict[str, dict[str, int]]:
     ``informational`` / ``low_concern``) are folded into ``suspicious``
     for the matrix — the grid stays 4x4, matching the oracle vocabulary.
     """
-    matrix: dict[str, dict[str, int]] = {
-        p: {o: 0 for o in _ORACLE_TIERS} for p in _ORACLE_TIERS
-    }
+    matrix: dict[str, dict[str, int]] = {p: {o: 0 for o in _ORACLE_TIERS} for p in _ORACLE_TIERS}
     for r in rows:
         oracle = r.oracle_verdict or ""
         if oracle not in matrix[_ORACLE_TIERS[0]]:
@@ -266,7 +259,7 @@ def _render_scoreboard_headline(
     lines.append("│  ARGUS v1 — REGRESSION BENCH                                             │")
     lines.append("│                                                                          │")
     label_w = max(len(name) for name, _, _ in stats)
-    for name, st, rows in stats:
+    for name, st, _rows in stats:
         bar = _bar(st["exact_pct"], max_value=100, width=20)
         lift = st["exact_pct"] - baseline_pct
         lift_str = f"{lift:+.1f}pp" if name != stats[-1][0] else "baseline"
@@ -313,10 +306,7 @@ def _render_scoreboard_headline(
         jb = judge_summary["judge_picked_both"]
         jn = judge_summary["judge_picked_neither"]
         lines.append("│                                                                          │")
-        judge_line = (
-            f"│  Judge ({n_dis} disagreements):  "
-            f"Argus={ja}  Opus={jo}  both={jb}  neither={jn}"
-        )
+        judge_line = f"│  Judge ({n_dis} disagreements):  Argus={ja}  Opus={jo}  both={jb}  neither={jn}"
         judge_line = judge_line.ljust(75) + "│"
         lines.append(judge_line)
     lines.append("└──────────────────────────────────────────────────────────────────────────┘")
@@ -379,11 +369,7 @@ def _render_head_to_head(
     is_three_way = n_configs == 3
 
     lines: list[str] = []
-    title = (
-        "## Head-to-head (3-way comparison)"
-        if is_three_way
-        else "## Head-to-head (Argus vs raw Opus 4.6)"
-    )
+    title = "## Head-to-head (3-way comparison)" if is_three_way else "## Head-to-head (Argus vs raw Opus 4.6)"
     lines.append(title + "\n")
 
     # Table header
@@ -424,10 +410,7 @@ def _render_head_to_head(
     o_cwe_f1 = _mean(rich, "opus_vs_oracle", "f1")
     if a_cwe_f1 is not None:
         if is_three_way:
-            row = (
-                f"| CWE F1 (n={n_rich}) | {a_cwe_f1} | _(same as col 1)_ "
-                f"| {o_cwe_f1}"
-            )
+            row = f"| CWE F1 (n={n_rich}) | {a_cwe_f1} | _(same as col 1)_ | {o_cwe_f1}"
         else:
             row = f"| CWE F1 (rich subset, n={n_rich}) | {a_cwe_f1} | {o_cwe_f1}"
         winner_idx = 0 if (a_cwe_f1 is not None and o_cwe_f1 is not None and a_cwe_f1 > o_cwe_f1) else (n_configs - 1)
@@ -721,19 +704,11 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
     rows: list[str] = []
     rows.append(_section_header("5. DAST runtime evidence (Argus only)"))
     counts = _dast_evidence_count(argus_rows)
-    rows.append(
-        f"- DAST attempted: **{counts['n_dast_attempted']}**/{len(argus_rows)} files"
-    )
-    rows.append(
-        f"- DAST stages reached scan path: "
-        f"**{counts['n_with_dast_stage']}**/{len(argus_rows)} files"
-    )
+    rows.append(f"- DAST attempted: **{counts['n_dast_attempted']}**/{len(argus_rows)} files")
+    rows.append(f"- DAST stages reached scan path: **{counts['n_with_dast_stage']}**/{len(argus_rows)} files")
 
     # Tier 1.5: per-finding validation aggregate (4-status breakdown)
-    rows_with_pf = [
-        r for r in argus_rows
-        if r.per_finding_validation
-    ]
+    rows_with_pf = [r for r in argus_rows if r.per_finding_validation]
     if rows_with_pf:
         total_findings = 0
         n_conf = 0
@@ -766,10 +741,18 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
         rows.append("```")
         rows.append(f"Across {len(rows_with_pf)} files with DAST validation, {total_findings} L1 findings:")
         rows.append("")
-        rows.append(f"  CONFIRMED   {_bar(conf_pct, max_value=100, width=20)}  {conf_pct:>5.1f}%  ({n_conf})  runtime-confirmed exploitable")
-        rows.append(f"  BLOCKED     {_bar(blk_pct, max_value=100, width=20)}  {blk_pct:>5.1f}%  ({n_blocked})  defended in-code (sanitization/validation)")
-        rows.append(f"  UNREACHED   {_bar(unr_pct, max_value=100, width=20)}  {unr_pct:>5.1f}%  ({n_unreached})  code path not reachable from tested input")
-        rows.append(f"  NOT_TESTED  {_bar(nt_pct, max_value=100, width=20)}  {nt_pct:>5.1f}%  ({n_not_tested})  DAST didn't generate a test or rejection inconclusive")
+        rows.append(
+            f"  CONFIRMED   {_bar(conf_pct, max_value=100, width=20)}  {conf_pct:>5.1f}%  ({n_conf})  runtime-confirmed exploitable"
+        )
+        rows.append(
+            f"  BLOCKED     {_bar(blk_pct, max_value=100, width=20)}  {blk_pct:>5.1f}%  ({n_blocked})  defended in-code (sanitization/validation)"
+        )
+        rows.append(
+            f"  UNREACHED   {_bar(unr_pct, max_value=100, width=20)}  {unr_pct:>5.1f}%  ({n_unreached})  code path not reachable from tested input"
+        )
+        rows.append(
+            f"  NOT_TESTED  {_bar(nt_pct, max_value=100, width=20)}  {nt_pct:>5.1f}%  ({n_not_tested})  DAST didn't generate a test or rejection inconclusive"
+        )
         rows.append("```")
         rows.append("")
         rows.append(
@@ -793,9 +776,7 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
             b = sum(1 for pf in r.per_finding_validation if pf.get("status") == "BLOCKED")
             u = sum(1 for pf in r.per_finding_validation if pf.get("status") == "UNREACHED")
             nt = n - c - b - u
-            rows.append(
-                f"| `{r.file_name}` | {n} | **{c}** | {b} | {u} | {nt} |"
-            )
+            rows.append(f"| `{r.file_name}` | {n} | **{c}** | {b} | {u} | {nt} |")
 
         # NOT_TESTED sub-reason breakdown (DAST-203 visibility).
         nt_reasons: dict[str, int] = {"infra_stub": 0, "inconclusive": 0, "not_planned": 0}
@@ -829,9 +810,7 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
         confirmed_with_poc: list[tuple[str, dict[str, Any]]] = []
         for r in rows_with_pf:
             for pf in r.per_finding_validation:
-                if pf.get("status") == "CONFIRMED" and (
-                    pf.get("proof_of_concept") or pf.get("runtime_evidence")
-                ):
+                if pf.get("status") == "CONFIRMED" and (pf.get("proof_of_concept") or pf.get("runtime_evidence")):
                     confirmed_with_poc.append((r.file_name, pf))
 
         if confirmed_with_poc:
@@ -854,7 +833,9 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
                     rows.append(f"- Runtime evidence: _{ev[:240]}_")
                 rows.append("")
             if len(confirmed_with_poc) > 30:
-                rows.append(f"_({len(confirmed_with_poc) - 30} more CONFIRMED findings with PoCs omitted for brevity.)_")
+                rows.append(
+                    f"_({len(confirmed_with_poc) - 30} more CONFIRMED findings with PoCs omitted for brevity.)_"
+                )
 
     rows.append(
         "\n_Vanilla Opus is a single static call and produces no runtime "
@@ -881,11 +862,7 @@ def _render_section_5b_effective_cwe_f1(argus_rows: list[BenchRow]) -> str:
     for r in argus_rows:
         seen_raw: set[str] = set()
         seen_eff: set[str] = set()
-        confirmed_ids = {
-            pf.get("finding_id")
-            for pf in r.per_finding_validation
-            if pf.get("status") == "CONFIRMED"
-        }
+        confirmed_ids = {pf.get("finding_id") for pf in r.per_finding_validation if pf.get("status") == "CONFIRMED"}
         for i, v in enumerate(r.vulnerabilities):
             if not isinstance(v, dict):
                 continue
@@ -910,10 +887,7 @@ def _render_section_5b_effective_cwe_f1(argus_rows: list[BenchRow]) -> str:
     lines.append(f"- Effective CWE count (CONFIRMED only): **{n_eff_cwes}**")
     if n_raw_cwes:
         retention = round(n_eff_cwes / n_raw_cwes * 100, 1)
-        lines.append(
-            f"- Retention rate: {retention}% "
-            f"({n_eff_cwes}/{n_raw_cwes} CWEs survived runtime validation)"
-        )
+        lines.append(f"- Retention rate: {retention}% ({n_eff_cwes}/{n_raw_cwes} CWEs survived runtime validation)")
     lines.append("")
     lines.append(
         "_Interpretation: The unconfirmed CWEs aren't necessarily false "
@@ -981,17 +955,10 @@ def _render_section_7_cost(
     judge_total = round(sum(j.cost_usd for j in judgments), 4)
     rows.append("| Run | Total | Per-file mean |")
     rows.append("|---|---|---|")
-    rows.append(
-        f"| Argus pipeline | ${argus_total:.4f} | ${argus_total / n_files:.4f} |"
-    )
-    rows.append(
-        f"| Vanilla Opus single-call | ${opus_total:.4f} | "
-        f"${opus_total / n_files:.4f} |"
-    )
+    rows.append(f"| Argus pipeline | ${argus_total:.4f} | ${argus_total / n_files:.4f} |")
+    rows.append(f"| Vanilla Opus single-call | ${opus_total:.4f} | ${opus_total / n_files:.4f} |")
     if judge_total > 0:
-        rows.append(
-            f"| GPT-5.5 judge (BENCH-011) | ${judge_total:.4f} | — |"
-        )
+        rows.append(f"| GPT-5.5 judge (BENCH-011) | ${judge_total:.4f} | — |")
     rows.append(
         "\n_Expert-Opus labeling — i.e., what it cost to produce the "
         "oracle in the first place — was significantly higher per file "
@@ -1006,13 +973,8 @@ def _render_section_8_sample_size(diff_records: list[dict[str, Any]]) -> str:
     rows.append(_section_header("8. Sample-size honesty"))
     n_total = len(diff_records)
     n_rich = sum(1 for r in diff_records if r.get("cwe_overlap") is not None)
-    rows.append(
-        f"- Verdict-match (Tier 1): **n={n_total}** files — primary signal."
-    )
-    rows.append(
-        f"- CWE / capability overlap (Tier 2): **n={n_rich}** files — "
-        "directional signal only."
-    )
+    rows.append(f"- Verdict-match (Tier 1): **n={n_total}** files — primary signal.")
+    rows.append(f"- CWE / capability overlap (Tier 2): **n={n_rich}** files — directional signal only.")
     rows.append(
         "- 18 of the 23 oracle labels are `variance_characterization` "
         "(reproduced via repeated runs); 5 are `opus_confirmed` (expert "
@@ -1021,8 +983,7 @@ def _render_section_8_sample_size(diff_records: list[dict[str, Any]]) -> str:
         "`opus_confirmed` labels."
     )
     rows.append(
-        "- The judge (Section 6) is the strongest tiebreaker — it reads "
-        "the actual code and casts an independent vote."
+        "- The judge (Section 6) is the strongest tiebreaker — it reads the actual code and casts an independent vote."
     )
     return "\n".join(rows) + "\n"
 
@@ -1062,11 +1023,6 @@ def render_launch_report(
     ``argus_rows`` argument is treated as Argus's "no-DAST" run by
     convention (matches Plan A's run order).
     """
-    argus_stats = _verdict_match_stats(argus_rows)
-    opus_stats = _verdict_match_stats(opus_rows)
-    lift = _gate_lift_pp(argus_stats["exact_pct"], opus_stats["exact_pct"])
-    gate_pass = lift >= 15.0
-
     # Build the configs list. Order matters: non-baseline first, baseline LAST.
     # Lift is computed against the last entry.
     configs: list[tuple[str, list[BenchRow]]] = [(argus_label, argus_rows)]
@@ -1083,9 +1039,7 @@ def render_launch_report(
         "`gpt5_judgments.json` (BENCH-011)._"
     )
     if argus_with_dast_rows is not None:
-        sources_note += (
-            "\n_Three-config mode: Argus no-DAST + Argus +DAST + Raw Opus side-by-side._"
-        )
+        sources_note += "\n_Three-config mode: Argus no-DAST + Argus +DAST + Raw Opus side-by-side._"
     parts.append(sources_note + "\n")
 
     # ── Top-of-report scoreboard panels (visual, scannable) ────────────────
@@ -1105,9 +1059,7 @@ def render_launch_report(
     # ``per_finding_validation`` and ``dast_*`` fields. Use the +DAST
     # rows when provided — the no-DAST run has no DAST artefacts to
     # report on.
-    dast_rows_for_section_5 = (
-        argus_with_dast_rows if argus_with_dast_rows is not None else argus_rows
-    )
+    dast_rows_for_section_5 = argus_with_dast_rows if argus_with_dast_rows is not None else argus_rows
     parts.append(_render_section_5_dast_evidence(dast_rows_for_section_5))
     eff_panel = _render_section_5b_effective_cwe_f1(dast_rows_for_section_5)
     if eff_panel:
@@ -1184,17 +1136,13 @@ def build_launch_report(
         "lift_pp": _gate_lift_pp(argus_stats["exact_pct"], opus_stats["exact_pct"]),
         "n_argus_rows": len(argus_rows),
         "n_opus_rows": len(opus_rows),
-        "n_disagreements": sum(
-            1 for r in diff_records if r.get("judge_payload") is not None
-        ),
+        "n_disagreements": sum(1 for r in diff_records if r.get("judge_payload") is not None),
         "n_judgments": len(judgments),
     }
     if argus_with_dast_rows is not None:
         with_dast_stats = _verdict_match_stats(argus_with_dast_rows)
         summary["argus_with_dast_exact_pct"] = with_dast_stats["exact_pct"]
-        summary["lift_with_dast_pp"] = _gate_lift_pp(
-            with_dast_stats["exact_pct"], opus_stats["exact_pct"]
-        )
+        summary["lift_with_dast_pp"] = _gate_lift_pp(with_dast_stats["exact_pct"], opus_stats["exact_pct"])
         summary["n_argus_with_dast_rows"] = len(argus_with_dast_rows)
     return summary
 

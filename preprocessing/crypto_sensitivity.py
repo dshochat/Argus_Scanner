@@ -74,7 +74,6 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass, field
-from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -109,9 +108,7 @@ _MISUSE_NAME_FRAGMENTS: tuple[str, ...] = (
 )
 
 # Sensitive variable names whose hardcoded literal assignment is a smell.
-_SENSITIVE_VAR_NAMES: frozenset[str] = frozenset(
-    {"key", "iv", "salt", "secret", "token", "password"}
-)
+_SENSITIVE_VAR_NAMES: frozenset[str] = frozenset({"key", "iv", "salt", "secret", "token", "password"})
 
 # AES-key / AES-IV byte-length anchors. A bytes literal of these lengths
 # assigned to a variable in ``_SENSITIVE_VAR_NAMES`` is considered
@@ -199,9 +196,7 @@ def _walk_hardcoded_crypto_material(tree: ast.AST) -> list[str]:
             tnames = _target_names(target)
             for tn in tnames:
                 if tn.lower() in _SENSITIVE_VAR_NAMES:
-                    hits.append(
-                        f"hardcoded_{tn.lower()}_{len(v)}b"
-                    )
+                    hits.append(f"hardcoded_{tn.lower()}_{len(v)}b")
     return hits
 
 
@@ -270,12 +265,7 @@ def analyze_python_module(content: str) -> CryptoSensitivitySignal:
         # ``hashlib``/``hmac`` only counts when paired with misuse markers.
         reasons.extend(f"import:{m}" for m in sorted(maybe_imports))
 
-    detected = bool(
-        sensitive_imports
-        or misuse_names
-        or hardcoded
-        or content_hits
-    )
+    detected = bool(sensitive_imports or misuse_names or hardcoded or content_hits)
     return CryptoSensitivitySignal(detected=detected, reasons=sorted(set(reasons)))
 
 

@@ -57,7 +57,6 @@ from typing import Any, Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict
 
-
 SANDBOX_IMAGE_HINTS: tuple[str, ...] = ("minimal", "networked", "ml_tools")
 """Allowed values for ``SandboxPlan.image_hint`` (DAST-005).
 
@@ -160,9 +159,7 @@ class StubSandboxClient:
 
     def _next_event_id(self, plan: SandboxPlan, idx: int) -> str:
         # Deterministic per-plan event IDs
-        digest = hashlib.sha256(
-            f"{plan.plan_id}|{plan.hypothesis_id}|{idx}".encode()
-        ).hexdigest()[:6]
+        digest = hashlib.sha256(f"{plan.plan_id}|{plan.hypothesis_id}|{idx}".encode()).hexdigest()[:6]
         return f"evt-{digest}"
 
     async def submit(self, plan: SandboxPlan) -> SandboxTrace:
@@ -234,8 +231,7 @@ class StubSandboxClient:
                 stderr_excerpt="",
                 elapsed_ms=2,
                 stub_synthesis_note=(
-                    f"Pattern observed: {cond} at {evid_loc}. "
-                    f"Exploit NOT demonstrated. (Stub has no runtime data.)"
+                    f"Pattern observed: {cond} at {evid_loc}. Exploit NOT demonstrated. (Stub has no runtime data.)"
                 ),
             )
 
@@ -250,9 +246,7 @@ class StubSandboxClient:
             stderr_excerpt="",
             elapsed_ms=1,
             is_stub_no_trace=True,
-            stub_synthesis_note=(
-                "no canned scenario and no oracle-confirmed upstream anchor"
-            ),
+            stub_synthesis_note=("no canned scenario and no oracle-confirmed upstream anchor"),
         )
 
     def to_jsonable_scenario(self) -> dict:
@@ -293,39 +287,19 @@ def build_scenario_from_l1_and_oracle(
     sr = l1_record.get("scan_report") or {}
     l1_findings = (sr.get("analysis") or {}).get("findings") or []
     l1_hyps = (sr.get("analysis") or {}).get("hypotheses") or []
-    oracle_findings = (
-        ((oracle_record.get("full_label") or {}).get("analysis") or {}).get(
-            "findings"
-        )
-        or []
-    )
-    oracle_verdict = (
-        ((oracle_record.get("full_label") or {}).get("verdict") or {}).get(
-            "verdict_label"
-        )
-        or "clean"
-    )
+    oracle_findings = ((oracle_record.get("full_label") or {}).get("analysis") or {}).get("findings") or []
+    oracle_verdict = ((oracle_record.get("full_label") or {}).get("verdict") or {}).get("verdict_label") or "clean"
 
     # Two views of the oracle: by L1-style finding ID (sometimes oracles
     # re-emit F### with different numbering), and by CWE+type fingerprint.
-    oracle_cwe_set = {
-        (f.get("cwe") or "").strip().upper()
-        for f in oracle_findings
-        if isinstance(f, dict)
-    }
-    oracle_type_set = {
-        (f.get("type") or "").strip()
-        for f in oracle_findings
-        if isinstance(f, dict)
-    }
+    oracle_cwe_set = {(f.get("cwe") or "").strip().upper() for f in oracle_findings if isinstance(f, dict)}
+    oracle_type_set = {(f.get("type") or "").strip() for f in oracle_findings if isinstance(f, dict)}
 
     confirmed_l1_finding_ids: set[str] = set()
     for f in l1_findings:
         cwe = (f.get("cwe") or "").strip().upper()
         ftype = (f.get("type") or "").strip()
-        if cwe and cwe in oracle_cwe_set:
-            confirmed_l1_finding_ids.add(f.get("id", ""))
-        elif ftype and ftype in oracle_type_set:
+        if cwe and cwe in oracle_cwe_set or ftype and ftype in oracle_type_set:
             confirmed_l1_finding_ids.add(f.get("id", ""))
 
     # Oracle disagreement gates (see stub_design.md):
@@ -360,13 +334,9 @@ def build_scenario_from_l1_and_oracle(
                     "finding_ref": fid,
                     "synth_status": "exploit_demonstrated",
                     "expected_test_steps": [
-                        {"action": s.get("action"), "expected_state": s.get("expected_state")}
-                        for s in evidence
+                        {"action": s.get("action"), "expected_state": s.get("expected_state")} for s in evidence
                     ],
-                    "note": (
-                        "Runtime side-effect observed; exploit "
-                        "demonstrated."
-                    ),
+                    "note": ("Runtime side-effect observed; exploit demonstrated."),
                 },
             }
             ev_pattern = {
@@ -540,9 +510,7 @@ class FlyMachinesClient:
                 headers=self._headers,
             )
             if r.status_code >= 400:
-                raise FlyMachinesError(
-                    f"create_machine {r.status_code}: {r.text[:500]}"
-                )
+                raise FlyMachinesError(f"create_machine {r.status_code}: {r.text[:500]}")
             return r.json()
 
     async def wait_for_state(
@@ -558,14 +526,10 @@ class FlyMachinesClient:
             "timeout": timeout_s,
             "instance_id": instance_id,
         }
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_s + 30, connect=15.0)
-        ) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s + 30, connect=15.0)) as client:
             r = await client.get(url, params=params, headers=self._headers)
             if r.status_code >= 400:
-                raise FlyMachinesError(
-                    f"wait_for_state {r.status_code}: {r.text[:500]}"
-                )
+                raise FlyMachinesError(f"wait_for_state {r.status_code}: {r.text[:500]}")
             return r.json()
 
     async def get_machine(self, machine_id: str) -> dict[str, Any]:
@@ -575,9 +539,7 @@ class FlyMachinesClient:
                 headers=self._headers,
             )
             if r.status_code >= 400:
-                raise FlyMachinesError(
-                    f"get_machine {r.status_code}: {r.text[:300]}"
-                )
+                raise FlyMachinesError(f"get_machine {r.status_code}: {r.text[:300]}")
             return r.json()
 
     async def destroy_machine(self, machine_id: str, force: bool = True) -> None:
@@ -589,9 +551,7 @@ class FlyMachinesClient:
             )
             # 200 / 404 both acceptable (404 = already gone)
             if r.status_code not in (200, 204, 404):
-                raise FlyMachinesError(
-                    f"destroy_machine {r.status_code}: {r.text[:300]}"
-                )
+                raise FlyMachinesError(f"destroy_machine {r.status_code}: {r.text[:300]}")
 
 
 def _find_flyctl() -> str | None:
@@ -697,31 +657,26 @@ class FirecrackerSandboxClient:
             env={**os.environ, "FLY_API_TOKEN": self.fly_client.api_token},
         )
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(), timeout=20.0
-            )
-        except asyncio.TimeoutError:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=20.0)
+        except TimeoutError:
             proc.kill()
-            raise FlyMachinesError("flyctl releases timed out")
+            raise FlyMachinesError("flyctl releases timed out") from None
         if proc.returncode != 0:
             err = stderr_b.decode("utf-8", errors="replace")[:400]
             raise FlyMachinesError(f"flyctl releases failed: {err}")
         try:
             data = json.loads(stdout_b.decode("utf-8", errors="replace"))
         except json.JSONDecodeError as e:
-            raise FlyMachinesError(f"flyctl releases JSON parse: {e}")
+            raise FlyMachinesError(f"flyctl releases JSON parse: {e}") from e
         if not isinstance(data, list) or not data:
             raise FlyMachinesError(
-                f"flyctl releases returned no rows for app "
-                f"{self.fly_client.app_name!r} — has it ever been deployed?"
+                f"flyctl releases returned no rows for app {self.fly_client.app_name!r} — has it ever been deployed?"
             )
         # First record is the most recent release.
         latest = data[0] if isinstance(data[0], dict) else {}
         ref = latest.get("ImageRef") or latest.get("imageRef") or ""
         if not ref or ":" not in ref:
-            raise FlyMachinesError(
-                f"flyctl releases returned no usable ImageRef: {latest!r}"
-            )
+            raise FlyMachinesError(f"flyctl releases returned no usable ImageRef: {latest!r}")
         self._resolved_image = ref
         return self._resolved_image
 
@@ -768,9 +723,7 @@ class FirecrackerSandboxClient:
 
             # Retrieve stdout (which contains JSON event lines from entrypoint.py)
             log_lines = await self._get_logs(machine_id)
-            events, exit_code, stdout_excerpt, stderr_excerpt, elapsed_ms = (
-                self._parse_log_lines(log_lines, plan)
-            )
+            events, exit_code, stdout_excerpt, stderr_excerpt, elapsed_ms = self._parse_log_lines(log_lines, plan)
             return SandboxTrace(
                 plan_id=plan.plan_id,
                 file_id=plan.file_id,
@@ -844,11 +797,7 @@ class FirecrackerSandboxClient:
             "FILE_CONTENT_B64GZ": encoded,
             "PLAN_COMMANDS": json.dumps(plan.commands),
             "PLAN_TIMEOUT_SEC": str(plan.timeout_sec),
-            "EXPECTED_EVIDENCE": (
-                ctx.get("expected_evidence")
-                if isinstance(ctx, dict)
-                else ""
-            ) or "",
+            "EXPECTED_EVIDENCE": (ctx.get("expected_evidence") if isinstance(ctx, dict) else "") or "",
             "EXPECTED_PATTERNS": json.dumps(patterns) if patterns else "",
         }
         # Fly env values must be strings; drop empty values to keep
@@ -882,7 +831,7 @@ class FirecrackerSandboxClient:
         # array). We use json.JSONDecoder.raw_decode in a loop to parse.
         last_messages: list[str] = []
         delay = self.log_retrieval_initial_delay_s
-        for attempt in range(self.log_retrieval_retries):
+        for _attempt in range(self.log_retrieval_retries):
             await asyncio.sleep(delay)
             proc = await asyncio.create_subprocess_exec(
                 self.flyctl_path,
@@ -896,10 +845,8 @@ class FirecrackerSandboxClient:
                 env={**os.environ, "FLY_API_TOKEN": self.fly_client.api_token},
             )
             try:
-                stdout_b, _stderr_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=45.0
-                )
-            except asyncio.TimeoutError:
+                stdout_b, _stderr_b = await asyncio.wait_for(proc.communicate(), timeout=45.0)
+            except TimeoutError:
                 proc.kill()
                 delay *= 1.3
                 continue
@@ -930,10 +877,7 @@ class FirecrackerSandboxClient:
             if messages:
                 last_messages = messages
                 # Sentinel check
-                if any(
-                    '"event_id": "evt-final"' in m or '"kind": "execution_complete"' in m
-                    for m in messages
-                ):
+                if any('"event_id": "evt-final"' in m or '"kind": "execution_complete"' in m for m in messages):
                     return messages
             delay *= 1.3
         return last_messages
@@ -1040,7 +984,7 @@ class MultiImageSandboxClient:
         )
     """
 
-    inner_by_hint: dict[str, "SandboxClient"]
+    inner_by_hint: dict[str, SandboxClient]
     fallback_hint: str = "minimal"
 
     def __post_init__(self) -> None:

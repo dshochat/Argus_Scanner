@@ -96,9 +96,7 @@ def _load_run_results(path: Path) -> list[dict]:
         doc = json.load(f)
     rows = doc.get("results")
     if not isinstance(rows, list):
-        raise ValueError(
-            f"{path}: missing 'results' list (got {type(rows).__name__})"
-        )
+        raise ValueError(f"{path}: missing 'results' list (got {type(rows).__name__})")
     return rows
 
 
@@ -135,11 +133,7 @@ def evaluate_fix(
             if fn not in per_file_oracle and isinstance(r.get("oracle_verdict"), str):
                 per_file_oracle[fn] = r["oracle_verdict"]
             base = r.get("baseline") or {}
-            if (
-                fn not in per_file_tier
-                and isinstance(base, dict)
-                and isinstance(base.get("tracking"), str)
-            ):
+            if fn not in per_file_tier and isinstance(base, dict) and isinstance(base.get("tracking"), str):
                 per_file_tier[fn] = base["tracking"]
 
     for run in after_rows:
@@ -175,20 +169,11 @@ def evaluate_fix(
         #                 distribution + so same mean)
         #   "unknown"   — oracle missing on either side
         change_status: str
-        if (
-            before_band.mean_distance_to_oracle is None
-            or after_band.mean_distance_to_oracle is None
-        ):
+        if before_band.mean_distance_to_oracle is None or after_band.mean_distance_to_oracle is None:
             change_status = "unknown"
-        elif (
-            after_band.mean_distance_to_oracle
-            < before_band.mean_distance_to_oracle
-        ):
+        elif after_band.mean_distance_to_oracle < before_band.mean_distance_to_oracle:
             change_status = "improved"
-        elif (
-            after_band.mean_distance_to_oracle
-            > before_band.mean_distance_to_oracle
-        ):
+        elif after_band.mean_distance_to_oracle > before_band.mean_distance_to_oracle:
             change_status = "regressed"
         else:
             change_status = "unchanged"
@@ -259,10 +244,7 @@ def _print_report(report: dict) -> None:
         f"z={report['z_distance'] if report['z_distance'] is not None else 'N/A'})"
     )
     print(f"  min_z threshold: {report['min_z_threshold']:.1f} sigma")
-    print(
-        f"  Lift detected: "
-        f"{'YES' if report['lift_detected'] else 'NO'}"
-    )
+    print(f"  Lift detected: {'YES' if report['lift_detected'] else 'NO'}")
     print(f"  Rationale: {report['rationale']}")
 
     # Per-file: what improved, what didn't, what regressed
@@ -282,13 +264,12 @@ def _print_report(report: dict) -> None:
         improved.sort(
             key=lambda x: (
                 x[1]["before_mean_distance"] - x[1]["after_mean_distance"]
-                if (x[1]["before_mean_distance"] is not None
-                    and x[1]["after_mean_distance"] is not None)
+                if (x[1]["before_mean_distance"] is not None and x[1]["after_mean_distance"] is not None)
                 else 0
             ),
             reverse=True,
         )
-        print(f"\n  Files that improved (mean distance dropped):")
+        print("\n  Files that improved (mean distance dropped):")
         for fn, c in improved[:10]:
             print(
                 f"    {fn:42s}  oracle={c['oracle']}  "
@@ -297,7 +278,7 @@ def _print_report(report: dict) -> None:
             )
 
     if regressed:
-        print(f"\n  Files that regressed (mean distance grew):")
+        print("\n  Files that regressed (mean distance grew):")
         for fn, c in regressed[:10]:
             print(
                 f"    {fn:42s}  oracle={c['oracle']}  "
@@ -316,20 +297,29 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--before", nargs="+", required=True, type=Path,
+        "--before",
+        nargs="+",
+        required=True,
+        type=Path,
         help="N regression-run JSONs from the BEFORE state (recommended N=3)",
     )
     parser.add_argument(
-        "--after", nargs="+", required=True, type=Path,
+        "--after",
+        nargs="+",
+        required=True,
+        type=Path,
         help="N regression-run JSONs from the AFTER state (recommended N=3)",
     )
     parser.add_argument(
-        "--min-z", type=float, default=1.0,
-        help="Minimum z-score for lift detection (default 1.0σ; try 1.96σ "
-             "for ~95% confidence)",
+        "--min-z",
+        type=float,
+        default=1.0,
+        help="Minimum z-score for lift detection (default 1.0σ; try 1.96σ for ~95% confidence)",
     )
     parser.add_argument(
-        "--output", "-o", type=Path,
+        "--output",
+        "-o",
+        type=Path,
         default=Path(__file__).parent / "_per_fix_evaluation.json",
         help="Output report JSON path",
     )

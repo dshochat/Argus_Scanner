@@ -37,8 +37,8 @@ from shared.utils.tokens import approx_token_count
 
 from .ai_file_patterns import detect_ai_file
 from .attack_vector_extensions import detect_attack_vector_extension
-from .crypto_sensitivity import analyze_file as analyze_crypto_sensitivity
 from .binary_detect import classify_binary_or_empty
+from .crypto_sensitivity import analyze_file as analyze_crypto_sensitivity
 from .deobfuscation import deobfuscate
 from .framework_markers import detect_framework
 from .imperative_install import analyze_file as analyze_imperative_install
@@ -161,9 +161,7 @@ class Preprocessor:
 
         signal = analyze_imperative_install(p, raw_text)
 
-        prompt_injection_indicators = detect_prompt_injection(
-            raw_text, decoded_content=deob.content
-        )
+        prompt_injection_indicators = detect_prompt_injection(raw_text, decoded_content=deob.content)
         ai_file_match = detect_ai_file(p)
         framework_hint = detect_framework(deob.content)
         attack_vector_extension = detect_attack_vector_extension(p)

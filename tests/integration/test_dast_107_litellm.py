@@ -98,20 +98,14 @@ async def test_dast_107_litellm_obfuscated() -> None:
     # Verdict matches oracle (allowing variance_band = same verdict twice
     # in litellm's case, both critical_malicious)
     expected = set(oracle["variance_band"])
-    assert result.final_verdict in expected, (
-        f"verdict {result.final_verdict!r} not in oracle band {expected}"
-    )
+    assert result.final_verdict in expected, f"verdict {result.final_verdict!r} not in oracle band {expected}"
 
     # DAST actually fired
     assert result.dast_attempted, "DAST stage was not attempted"
-    assert "dast_verification" in result.scan_path, (
-        f"scan_path missing dast_verification: {result.scan_path}"
-    )
+    assert "dast_verification" in result.scan_path, f"scan_path missing dast_verification: {result.scan_path}"
 
     # DAST produced at least one iteration of structured output
     assert len(result.dast_iterations) >= 1, "DAST ran zero iterations"
 
     # Cost is within the soft envelope we expect for a Tier-1 win
-    assert result.total_cost_usd < 5.0, (
-        f"unexpectedly expensive scan: ${result.total_cost_usd:.4f}"
-    )
+    assert result.total_cost_usd < 5.0, f"unexpectedly expensive scan: ${result.total_cost_usd:.4f}"

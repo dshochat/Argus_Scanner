@@ -59,9 +59,7 @@ def classify_binary_or_empty(content: bytes) -> BinaryEmptyVerdict:
     if b"\x00" in sample:
         return BinaryEmptyVerdict(should_skip=True, skip_reason="binary")
 
-    non_printable = sum(
-        1 for b in sample if b < 0x20 and b not in _PRINTABLE_WHITELIST
-    )
+    non_printable = sum(1 for b in sample if b < 0x20 and b not in _PRINTABLE_WHITELIST)
     if non_printable / len(sample) > _NON_PRINTABLE_RATIO_MAX:
         return BinaryEmptyVerdict(should_skip=True, skip_reason="binary")
 

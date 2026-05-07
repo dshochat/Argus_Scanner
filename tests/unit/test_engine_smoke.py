@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from scanner.engine import ScanConfig, is_high_stakes, scan_file, verdict_to_risk
 from preprocessing import preprocess_file
-
+from scanner.engine import ScanConfig, is_high_stakes, scan_file, verdict_to_risk
 
 # ─── Stub runners ─────────────────────────────────────────────────────────────
 
@@ -329,10 +328,9 @@ async def test_dast_105_v2_grounded_downgrade_accepted():
     assert pf[0]["status"] == "BLOCKED"
     # All findings BLOCKED -> grounded downgrade accepted
     assert result.final_verdict == "suspicious"
-    assert any(
-        p.startswith("dast_downgrade_grounded:malicious->suspicious")
-        for p in result.scan_path
-    ), f"expected dast_downgrade_grounded marker, got {result.scan_path}"
+    assert any(p.startswith("dast_downgrade_grounded:malicious->suspicious") for p in result.scan_path), (
+        f"expected dast_downgrade_grounded marker, got {result.scan_path}"
+    )
 
 
 @pytest.mark.asyncio
@@ -357,8 +355,7 @@ async def test_dast_105_v2_partial_grounded_downgrade_refused():
     # L1's malicious must be kept
     assert result.final_verdict == "malicious"
     assert any(
-        p.startswith("dast_keep_l1:malicious_over_suspicious")
-        and "1/2_findings_grounded" in p
+        p.startswith("dast_keep_l1:malicious_over_suspicious") and "1/2_findings_grounded" in p
         for p in result.scan_path
     ), f"expected dast_keep_l1 with 1/2 marker, got {result.scan_path}"
 
@@ -368,6 +365,7 @@ async def test_dast_105_v2_no_findings_keeps_l1():
     """Edge case: DAST wants to downgrade but L1 produced zero
     vulnerabilities. There's no per-finding evidence in either direction.
     Conservative: keep L1's verdict."""
+
     async def stub_sonnet_no_vulns(filename, content, pp, classification):
         return {
             "verdict_label": "malicious",  # verdict without supporting findings
@@ -380,6 +378,7 @@ async def test_dast_105_v2_no_findings_keeps_l1():
             "cost_usd": 0.05,
             "duration_ms": 1200,
         }
+
     result = await scan_file(
         filename="empty.py",
         content=b"x = 1\n",
@@ -408,10 +407,9 @@ async def test_dast_105_guard_accepts_dast_upgrade():
     )
     assert result.dast_attempted is True
     assert result.final_verdict == "critical_malicious"
-    assert any(
-        p.startswith("dast_upgrade:malicious->critical_malicious")
-        for p in result.scan_path
-    ), f"expected dast_upgrade marker, got {result.scan_path}"
+    assert any(p.startswith("dast_upgrade:malicious->critical_malicious") for p in result.scan_path), (
+        f"expected dast_upgrade marker, got {result.scan_path}"
+    )
 
 
 @pytest.mark.asyncio

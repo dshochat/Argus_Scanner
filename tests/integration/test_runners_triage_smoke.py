@@ -89,6 +89,4 @@ async def test_triage_runner_classifies_malicious_sample() -> None:
     )
 
     assert out["error"] is None
-    assert out["classification"] == "HIGH", (
-        f"obvious /etc/passwd exfil should triage HIGH, got {out['classification']}"
-    )
+    assert out["classification"] == "HIGH", f"obvious /etc/passwd exfil should triage HIGH, got {out['classification']}"

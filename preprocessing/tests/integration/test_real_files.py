@@ -242,8 +242,7 @@ def test_manifest_parsers_extract_dependencies(db_conn: Any) -> None:
         if non_stub >= 10:
             rate = extracted / non_stub
             assert rate >= 0.8, (
-                f"{name}: only {extracted}/{non_stub} non-stub files extracted deps ({rate:.0%}) "
-                f"— below 80% threshold"
+                f"{name}: only {extracted}/{non_stub} non-stub files extracted deps ({rate:.0%}) — below 80% threshold"
             )
 
 

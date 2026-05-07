@@ -75,7 +75,7 @@ def parse_tls_clienthello(data: bytes) -> str | None:
         pos += 1 + sid_len
         if pos + 2 > len(data):
             return None
-        cs_len = struct.unpack(">H", data[pos:pos + 2])[0]
+        cs_len = struct.unpack(">H", data[pos : pos + 2])[0]
         pos += 2 + cs_len
         if pos + 1 > len(data):
             return None
@@ -83,18 +83,18 @@ def parse_tls_clienthello(data: bytes) -> str | None:
         pos += 1 + cm_len
         if pos + 2 > len(data):
             return None
-        ext_total_len = struct.unpack(">H", data[pos:pos + 2])[0]
+        ext_total_len = struct.unpack(">H", data[pos : pos + 2])[0]
         pos += 2
         end = min(pos + ext_total_len, len(data))
         while pos + 4 <= end:
-            ext_type = struct.unpack(">H", data[pos:pos + 2])[0]
-            ext_data_len = struct.unpack(">H", data[pos + 2:pos + 4])[0]
+            ext_type = struct.unpack(">H", data[pos : pos + 2])[0]
+            ext_data_len = struct.unpack(">H", data[pos + 2 : pos + 4])[0]
             pos += 4
             if ext_type == 0x00:
                 if pos + 5 > end:
                     return None
-                name_len = struct.unpack(">H", data[pos + 3:pos + 5])[0]
-                return data[pos + 5:pos + 5 + name_len].decode("utf-8", errors="replace")
+                name_len = struct.unpack(">H", data[pos + 3 : pos + 5])[0]
+                return data[pos + 5 : pos + 5 + name_len].decode("utf-8", errors="replace")
             pos += ext_data_len
     except Exception:
         return None
@@ -137,7 +137,7 @@ def handle_tcp(conn: socket.socket, addr: tuple, listen_port: int) -> None:
         while len(data) < MAX_READ_BYTES:
             try:
                 chunk = conn.recv(4096)
-            except socket.timeout:
+            except TimeoutError:
                 break
             except Exception:
                 break
@@ -167,11 +167,7 @@ def handle_tcp(conn: socket.socket, addr: tuple, listen_port: int) -> None:
 
         try:
             conn.sendall(
-                b"HTTP/1.1 200 OK\r\n"
-                b"Content-Type: application/json\r\n"
-                b"Content-Length: 16\r\n"
-                b"\r\n"
-                b'{"status":"ok"}\n'
+                b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n{"status":"ok"}\n'
             )
         except Exception:
             pass
@@ -202,9 +198,7 @@ def serve_tcp(port: int) -> None:
         except Exception as e:
             log_capture({"kind": "accept_error", "port": port, "error": str(e)})
             continue
-        threading.Thread(
-            target=handle_tcp, args=(conn, addr, port), daemon=True
-        ).start()
+        threading.Thread(target=handle_tcp, args=(conn, addr, port), daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +216,7 @@ def parse_qname(data: bytes, pos: int) -> tuple[str, int]:
         if length & 0xC0:  # compression pointer — abort
             return ".".join(parts), pos + 2
         pos += 1
-        parts.append(data[pos:pos + length].decode("ascii", errors="replace"))
+        parts.append(data[pos : pos + length].decode("ascii", errors="replace"))
         pos += length
     return ".".join(parts), pos
 
@@ -244,9 +238,9 @@ def build_dns_response(query: bytes) -> bytes | None:
     qname, end = parse_qname(query, 12)
     if end + 4 > len(query):
         return None
-    qtype = struct.unpack(">H", query[end:end + 2])[0]
-    qclass = struct.unpack(">H", query[end + 2:end + 4])[0]
-    question = query[12:end + 4]
+    qtype = struct.unpack(">H", query[end : end + 2])[0]
+    qclass = struct.unpack(">H", query[end + 2 : end + 4])[0]
+    question = query[12 : end + 4]
 
     # Only answer A (1) and AAAA (28) — for AAAA we don't have an answer
     answer = b""
@@ -291,9 +285,7 @@ def serve_dns() -> None:
     except OSError as e:
         log_capture({"kind": "dns_bind_error", "error": str(e)})
         return
-    log_capture(
-        {"kind": "dns_server_start", "listening_on": f"{LISTEN_HOST}:{DNS_PORT}"}
-    )
+    log_capture({"kind": "dns_server_start", "listening_on": f"{LISTEN_HOST}:{DNS_PORT}"})
     server.serve_forever()
 
 

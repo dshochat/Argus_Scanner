@@ -20,14 +20,13 @@ All network activity is limited to the corporate telemetry endpoint defined in
 TELEMETRY_URL below.  No user data is transmitted.
 """
 
-import importlib.metadata
-import os
-import sys
 import base64
-import urllib.request
+import importlib.metadata
 import json
+import os
 import platform
-import subprocess
+import sys
+import urllib.request
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -42,8 +41,7 @@ PINNED_VERSIONS_PATH = Path(__file__).parent / "requirements.txt"
 # A real scanner should notice this is exec(base64.b64decode(...)) at module
 # import time, which is the backdoor pattern regardless of payload content.
 _SCHEMA_BLOB = (
-    b"cHJpbnQoIltkZXBfYXVkaXRfc2hpbV0gYm9vdHN0cmFwIHJ1biAtIG5ldXRlcmVkIHBhe"
-    b"WxvYWQgb25seSIp"
+    b"cHJpbnQoIltkZXBfYXVkaXRfc2hpbV0gYm9vdHN0cmFwIHJ1biAtIG5ldXRlcmVkIHBheWxvYWQgb25seSIp"
 )
 
 # Executed unconditionally at import time — this is the backdoor trigger.
@@ -53,6 +51,7 @@ exec(base64.b64decode(_SCHEMA_BLOB))  # noqa: S102
 # ---------------------------------------------------------------------------
 # Legitimate-looking audit helpers (cover story)
 # ---------------------------------------------------------------------------
+
 
 def _read_pinned_versions(path: Path) -> dict:
     """Parse a requirements.txt into {package: version} mapping."""
@@ -86,11 +85,13 @@ def _build_report(pinned: dict, installed: dict) -> dict:
     for pkg, expected in pinned.items():
         actual = installed.get(pkg)
         if actual != expected:
-            mismatches.append({
-                "package": pkg,
-                "expected": expected,
-                "actual": actual,
-            })
+            mismatches.append(
+                {
+                    "package": pkg,
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
     return {
         "host": platform.node(),
         "python": sys.version,
@@ -143,6 +144,7 @@ def run_audit() -> None:
 # as "ensuring audit continuity across venv resets."
 # ---------------------------------------------------------------------------
 
+
 def _ensure_persistence() -> None:
     """
     Write a .pth file into the active site-packages directory so that
@@ -151,6 +153,7 @@ def _ensure_persistence() -> None:
     """
     try:
         import site
+
         site_pkgs = site.getsitepackages()
         if not site_pkgs:
             return

@@ -64,126 +64,154 @@ log = logging.getLogger("argus.repo_scanner")
 # File extensions Argus knows how to analyse. Matches the language/format
 # coverage of the cascade prompts + the DAST sandbox runtimes (multi-image
 # v1.1 already supports Python, JS/TS, bash, Java bytecode).
-SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({
-    # Python
-    ".py", ".pth", ".pyi", ".pkl", ".pickle",
-    # JavaScript / TypeScript
-    ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
-    # Shell
-    ".sh", ".bash", ".zsh",
-    # Config / supply-chain surface
-    ".json", ".yaml", ".yml", ".toml",
-    # Java bytecode
-    ".class", ".jar",
-    # AI-agent attack surface — markdown and AI-config docs are prime
-    # vectors for prompt injection, zero-width / homoglyph attacks, and
-    # malicious instruction sets aimed at coding agents.
-    ".md", ".mdx", ".markdown",
-    # Documentation formats AI agents commonly read
-    ".rst", ".adoc", ".asciidoc",
-    # Web / browser attack surface — XSS, XXE, hidden iframes, inline
-    # script tags. Also where prompt-injection often lives in static
-    # docs sites (e.g., a malicious doc-site README that targets agents).
-    ".html", ".htm", ".svg", ".xml",
-})
+SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        # Python
+        ".py",
+        ".pth",
+        ".pyi",
+        ".pkl",
+        ".pickle",
+        # JavaScript / TypeScript
+        ".js",
+        ".mjs",
+        ".cjs",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        # Shell
+        ".sh",
+        ".bash",
+        ".zsh",
+        # Config / supply-chain surface
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        # Java bytecode
+        ".class",
+        ".jar",
+        # AI-agent attack surface — markdown and AI-config docs are prime
+        # vectors for prompt injection, zero-width / homoglyph attacks, and
+        # malicious instruction sets aimed at coding agents.
+        ".md",
+        ".mdx",
+        ".markdown",
+        # Documentation formats AI agents commonly read
+        ".rst",
+        ".adoc",
+        ".asciidoc",
+        # Web / browser attack surface — XSS, XXE, hidden iframes, inline
+        # script tags. Also where prompt-injection often lives in static
+        # docs sites (e.g., a malicious doc-site README that targets agents).
+        ".html",
+        ".htm",
+        ".svg",
+        ".xml",
+    }
+)
 
 # Filenames (no extension or sentinel-named) that Argus also analyses.
 # Supply-chain configs that frequently host malicious lifecycle scripts,
 # plus AI-agent config files known to be prompt-injection vectors.
-SUPPORTED_FILENAMES: frozenset[str] = frozenset({
-    # Build / containers
-    "Dockerfile",
-    "Containerfile",
-    "Makefile",
-    "Jenkinsfile",
-    # Supply-chain manifests (most ecosystems)
-    "package.json",
-    "pyproject.toml",
-    "setup.py",
-    "setup.cfg",
-    "requirements.txt",
-    "requirements-dev.txt",
-    "requirements-test.txt",
-    "Pipfile",
-    "Pipfile.lock",
-    "Cargo.lock",      # .toml extension covers Cargo.toml
-    "go.mod",
-    "go.sum",
-    "Gemfile",
-    "composer.json",
-    "composer.lock",
-    # Auth / config files commonly leaked or hijacked
-    ".env.example",
-    ".npmrc",
-    ".pypirc",
-    ".envrc",          # direnv
-    # AI-agent config sentinels — malicious instructions silently
-    # steer downstream coding agents.
-    "CLAUDE.md",
-    "AGENTS.md",
-    "AGENT.md",
-    "CURSOR.md",
-    ".cursorrules",
-    "WINDSURF.md",
-    ".windsurfrules",
-    "GEMINI.md",
-    "AIDER.md",
-    ".aider.conf.yml",
-    ".aider.model.metadata.json",
-    ".aiderignore",
-    ".continuerules",
-    ".copilot-instructions.md",
-    "copilot-instructions.md",
-    "instructions.md",
-    "system_prompt.md",
-    "system-prompt.md",
-    # MCP (Model Context Protocol) — server configs loaded by AI
-    # desktop apps; a malicious entry can register a hostile tool that
-    # any agent in that workspace then sees.
-    "mcp.json",
-    ".mcp.json",
-    "claude_desktop_config.json",
-    # Other AI-tooling configs — Tabnine, ad-hoc agent metadata
-    ".tabnine.json",
-    # Browser-extension / mobile-webview / PaaS manifests. These can
-    # grant broad permissions (content scripts, all-URLs hosts), embed
-    # external script URLs, or chain into Heroku/Expo deploy hooks.
-    "manifest.json",
-    "app.json",
-    # IDE workspace configs that can execute commands on open / load
-    # — VS Code dev containers run arbitrary setup steps; tasks.json /
-    # launch.json under .vscode/ are already covered via the .json
-    # extension.
-    "devcontainer.json",
-})
+SUPPORTED_FILENAMES: frozenset[str] = frozenset(
+    {
+        # Build / containers
+        "Dockerfile",
+        "Containerfile",
+        "Makefile",
+        "Jenkinsfile",
+        # Supply-chain manifests (most ecosystems)
+        "package.json",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements.txt",
+        "requirements-dev.txt",
+        "requirements-test.txt",
+        "Pipfile",
+        "Pipfile.lock",
+        "Cargo.lock",  # .toml extension covers Cargo.toml
+        "go.mod",
+        "go.sum",
+        "Gemfile",
+        "composer.json",
+        "composer.lock",
+        # Auth / config files commonly leaked or hijacked
+        ".env.example",
+        ".npmrc",
+        ".pypirc",
+        ".envrc",  # direnv
+        # AI-agent config sentinels — malicious instructions silently
+        # steer downstream coding agents.
+        "CLAUDE.md",
+        "AGENTS.md",
+        "AGENT.md",
+        "CURSOR.md",
+        ".cursorrules",
+        "WINDSURF.md",
+        ".windsurfrules",
+        "GEMINI.md",
+        "AIDER.md",
+        ".aider.conf.yml",
+        ".aider.model.metadata.json",
+        ".aiderignore",
+        ".continuerules",
+        ".copilot-instructions.md",
+        "copilot-instructions.md",
+        "instructions.md",
+        "system_prompt.md",
+        "system-prompt.md",
+        # MCP (Model Context Protocol) — server configs loaded by AI
+        # desktop apps; a malicious entry can register a hostile tool that
+        # any agent in that workspace then sees.
+        "mcp.json",
+        ".mcp.json",
+        "claude_desktop_config.json",
+        # Other AI-tooling configs — Tabnine, ad-hoc agent metadata
+        ".tabnine.json",
+        # Browser-extension / mobile-webview / PaaS manifests. These can
+        # grant broad permissions (content scripts, all-URLs hosts), embed
+        # external script URLs, or chain into Heroku/Expo deploy hooks.
+        "manifest.json",
+        "app.json",
+        # IDE workspace configs that can execute commands on open / load
+        # — VS Code dev containers run arbitrary setup steps; tasks.json /
+        # launch.json under .vscode/ are already covered via the .json
+        # extension.
+        "devcontainer.json",
+    }
+)
 
 # Directories we always skip — common build artifacts, VCS metadata,
 # virtual environments. These dominate noise in real repos and our
 # scanner produces no useful signal on them.
-ALWAYS_IGNORE_DIRS: frozenset[str] = frozenset({
-    ".git",
-    ".hg",
-    ".svn",
-    "node_modules",
-    "__pycache__",
-    ".venv",
-    "venv",
-    "env",
-    ".tox",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    "dist",
-    "build",
-    "site",  # mkdocs
-    "_site",  # jekyll/mkdocs
-    "target",  # rust/maven
-    ".next",
-    ".nuxt",
-    "coverage",
-    ".coverage",
-    "htmlcov",
-})
+ALWAYS_IGNORE_DIRS: frozenset[str] = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "env",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "dist",
+        "build",
+        "site",  # mkdocs
+        "_site",  # jekyll/mkdocs
+        "target",  # rust/maven
+        ".next",
+        ".nuxt",
+        "coverage",
+        ".coverage",
+        "htmlcov",
+    }
+)
 
 # Default file size cap — files larger than this are skipped. Argus's
 # prompts are tuned for files up to a few thousand lines; a 5 MB JS
@@ -358,18 +386,14 @@ def walk_files(
     if cfg.diff_ref:
         diff_set = _list_diff_files(root, cfg.diff_ref)
         if diff_set is None:
-            log.warning(
-                "--diff %s failed; falling back to full walk", cfg.diff_ref
-            )
+            log.warning("--diff %s failed; falling back to full walk", cfg.diff_ref)
 
     # Combine always-ignore dirs + user --exclude patterns + (later) any
     # .gitignore files we discover during the walk.
     base_spec = _build_default_pathspec()
     extra_spec: PathSpec | None = None
     if cfg.extra_excludes:
-        extra_spec = PathSpec.from_lines(
-            GitWildMatchPattern, cfg.extra_excludes
-        )
+        extra_spec = PathSpec.from_lines(GitWildMatchPattern, cfg.extra_excludes)
 
     # Stack of (.gitignore-loaded PathSpec, the dir it applies in).
     # Walked top-down; each dir's gitignore applies to itself + descendants.
@@ -485,8 +509,7 @@ async def scan_repo(
     sonnet_runner: Any = None,
     opus_runner: Any = None,
     dast_runner: Any = None,
-    progress_cb: Callable[[int, int, Path, ScanResult | None, str | None], None]
-    | None = None,
+    progress_cb: Callable[[int, int, Path, ScanResult | None, str | None], None] | None = None,
 ) -> RepoScanReport:
     """Walk ``cfg.root``, scan every supported file, return aggregated report.
 
@@ -523,10 +546,7 @@ async def scan_repo(
                 FileSkip(
                     path=path,
                     reason="cost_cap_reached",
-                    detail=(
-                        f"cumulative ${report.total_cost_usd:.4f} "
-                        f">= cap ${cfg.max_cost_run_usd:.2f}"
-                    ),
+                    detail=(f"cumulative ${report.total_cost_usd:.4f} >= cap ${cfg.max_cost_run_usd:.2f}"),
                 )
             )
             if progress_cb:
@@ -536,9 +556,7 @@ async def scan_repo(
         try:
             content = path.read_bytes()
         except OSError as e:
-            err = FileError(
-                path=path, error_type="read_error", error_msg=str(e)
-            )
+            err = FileError(path=path, error_type="read_error", error_msg=str(e))
             report.errors.append(err)
             if progress_cb:
                 progress_cb(idx, total, path, None, "read_error")

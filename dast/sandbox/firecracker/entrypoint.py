@@ -266,21 +266,25 @@ def main() -> int:
                     "timestamp": rec.get("timestamp"),
                 }
                 if rec.get("kind") == "http_request":
-                    payload.update({
-                        "method": rec.get("method"),
-                        "path": rec.get("path"),
-                        "headers": rec.get("headers"),
-                        "body_excerpt": (rec.get("body_excerpt") or "")[:1500],
-                    })
+                    payload.update(
+                        {
+                            "method": rec.get("method"),
+                            "path": rec.get("path"),
+                            "headers": rec.get("headers"),
+                            "body_excerpt": (rec.get("body_excerpt") or "")[:1500],
+                        }
+                    )
                 elif rec.get("kind") == "tls_clienthello":
                     payload["sni"] = rec.get("sni")
                     payload["raw_excerpt_hex"] = (rec.get("raw_excerpt_hex") or "")[:128]
                 elif rec.get("kind") == "dns_query":
-                    payload.update({
-                        "qname": rec.get("qname"),
-                        "qtype": rec.get("qtype"),
-                        "responded_with": rec.get("responded_with"),
-                    })
+                    payload.update(
+                        {
+                            "qname": rec.get("qname"),
+                            "qtype": rec.get("qtype"),
+                            "responded_with": rec.get("responded_with"),
+                        }
+                    )
                 else:
                     payload["raw_excerpt_hex"] = (rec.get("raw_excerpt_hex") or "")[:256]
                 emit("network_call_captured", payload)

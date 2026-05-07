@@ -117,9 +117,7 @@ def test_sarif_severity_mapping() -> None:
         }
         result = _result_with_findings("f.py", [finding])
         doc = render_repo_scan_sarif(_StubReport(results=[result]))
-        assert (
-            doc["runs"][0]["results"][0]["level"] == expected_level
-        ), f"severity {arg_sev!r} → {expected_level!r}"
+        assert doc["runs"][0]["results"][0]["level"] == expected_level, f"severity {arg_sev!r} → {expected_level!r}"
 
 
 def test_sarif_multiple_findings_same_rule_dedup() -> None:
@@ -137,9 +135,7 @@ def test_sarif_multiple_findings_same_rule_dedup() -> None:
     assert len(rules) == 1
     assert rules[0]["id"] == "CWE-89"
     assert len(results) == 2
-    start_lines = {
-        r["locations"][0]["physicalLocation"]["region"]["startLine"] for r in results
-    }
+    start_lines = {r["locations"][0]["physicalLocation"]["region"]["startLine"] for r in results}
     assert start_lines == {10, 20}
 
 
@@ -210,9 +206,7 @@ def test_sarif_invalid_line_defaults_to_1() -> None:
     }
     result = _result_with_findings("f.py", [finding])
     doc = render_repo_scan_sarif(_StubReport(results=[result]))
-    line = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
-        "region"
-    ]["startLine"]
+    line = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]["startLine"]
     assert line == 1
 
 

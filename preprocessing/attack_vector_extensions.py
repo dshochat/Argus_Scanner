@@ -31,9 +31,7 @@ from pathlib import Path
 # Ordered so the emitted value is deterministic when multiple extensions
 # theoretically apply (e.g. a hypothetical ``foo.whl.spec`` — we pick the
 # rightmost-extension convention: ``.spec`` in that case).
-_ATTACK_VECTOR_EXTENSIONS: frozenset[str] = frozenset(
-    {".pth", ".egg", ".whl", ".spec"}
-)
+_ATTACK_VECTOR_EXTENSIONS: frozenset[str] = frozenset({".pth", ".egg", ".whl", ".spec"})
 
 
 def detect_attack_vector_extension(path: str | Path) -> str | None:

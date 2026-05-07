@@ -120,9 +120,9 @@ _STUB_RE = re.compile("|".join(_STUB_KEYWORDS), re.IGNORECASE)
 # Sub-reason for NOT_TESTED — surfaced in the launch report so users can
 # see WHY each finding wasn't validated.
 NotTestedReason = Literal[
-    "infra_stub",       # sandbox returned stub trace (DAST-203 case)
-    "inconclusive",     # rationale doesn't match any classification keyword
-    "not_planned",      # no journal entry for this finding
+    "infra_stub",  # sandbox returned stub trace (DAST-203 case)
+    "inconclusive",  # rationale doesn't match any classification keyword
+    "not_planned",  # no journal entry for this finding
 ]
 
 
@@ -418,9 +418,7 @@ def effective_findings(
     if include_blocked:
         keep_statuses.add("BLOCKED")
 
-    keep_ids = {
-        _id_of(p) for p in per_finding if _status_of(p) in keep_statuses
-    }
+    keep_ids = {_id_of(p) for p in per_finding if _status_of(p) in keep_statuses}
     return [
         v
         for i, v in enumerate(l1_vulnerabilities or [])

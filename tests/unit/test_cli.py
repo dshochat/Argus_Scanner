@@ -156,28 +156,35 @@ def test_parser_dast_trigger_verdicts_default_none() -> None:
 
 def test_parser_dast_trigger_verdicts_accepts_csv() -> None:
     parser = cli._build_parser()
-    args = parser.parse_args([
-        "scan", "foo.py",
-        "--dast-trigger-verdicts", "suspicious,malicious,critical_malicious",
-    ])
+    args = parser.parse_args(
+        [
+            "scan",
+            "foo.py",
+            "--dast-trigger-verdicts",
+            "suspicious,malicious,critical_malicious",
+        ]
+    )
     assert args.dast_trigger_verdicts == "suspicious,malicious,critical_malicious"
 
 
 def test_parser_dast_trigger_verdicts_strict_mode() -> None:
     """Single verdict for strictest cost-controlled mode."""
     parser = cli._build_parser()
-    args = parser.parse_args([
-        "scan", "foo.py", "--dast-trigger-verdicts", "critical_malicious",
-    ])
+    args = parser.parse_args(
+        [
+            "scan",
+            "foo.py",
+            "--dast-trigger-verdicts",
+            "critical_malicious",
+        ]
+    )
     assert args.dast_trigger_verdicts == "critical_malicious"
 
 
 # ── _run_scan with mocked engine ───────────────────────────────────────────
 
 
-def test_run_scan_missing_anthropic_key_exits_2(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_run_scan_missing_anthropic_key_exits_2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     # Block .env load by chdir to tmp dir without one
@@ -190,9 +197,7 @@ def test_run_scan_missing_anthropic_key_exits_2(
     assert rc == 2
 
 
-def test_run_scan_missing_file_exits_2(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_run_scan_missing_file_exits_2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setenv("GEMINI_API_KEY", "AI-test")
     monkeypatch.setattr(cli, "load_dotenv", lambda **kwargs: None)

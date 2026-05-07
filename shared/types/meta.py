@@ -75,8 +75,7 @@ class EntityCacheHit(BaseModel):
     cached_context: str
     context_overridden: bool = Field(
         description=(
-            "True if S3 overrode the cached classification for this file. "
-            "Override = high-value anomaly signal."
+            "True if S3 overrode the cached classification for this file. Override = high-value anomaly signal."
         ),
     )
     override_context: str | None = None

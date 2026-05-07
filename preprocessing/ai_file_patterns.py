@@ -66,9 +66,7 @@ _AI_FILE_GLOBS: dict[str, tuple[re.Pattern[str], ...]] = {
         # ``trivy-vscode-ext.clinerules`` that ship inside extensions.
         re.compile(r"(?:^|/|\.)clinerules$", re.IGNORECASE),
     ),
-    "mcp_config": (
-        re.compile(r"mcp[_-]?.*\.(json|ya?ml)$", re.IGNORECASE),
-    ),
+    "mcp_config": (re.compile(r"mcp[_-]?.*\.(json|ya?ml)$", re.IGNORECASE),),
     "tool_definition": (
         re.compile(r"tools?\.(json|ya?ml)$", re.IGNORECASE),
         re.compile(r"function[_-]?call.*\.(json|ya?ml)$", re.IGNORECASE),

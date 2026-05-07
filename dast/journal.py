@@ -17,7 +17,6 @@ short paragraph keyed on counts + IDs.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -154,34 +153,25 @@ class Journal:
             for it in range(1, up_to_iter + 1):
                 it_recs = [r for r in recs if r.iter == it]
                 it_conf = [
-                    r.claim_id
-                    for r in it_recs
-                    if r.phase == JournalPhase.PHASE_A_VERDICT
-                    and r.verdict == "confirmed"
+                    r.claim_id for r in it_recs if r.phase == JournalPhase.PHASE_A_VERDICT and r.verdict == "confirmed"
                 ]
                 it_ref = [
-                    r.claim_id
-                    for r in it_recs
-                    if r.phase == JournalPhase.PHASE_A_VERDICT
-                    and r.verdict == "refuted"
+                    r.claim_id for r in it_recs if r.phase == JournalPhase.PHASE_A_VERDICT and r.verdict == "refuted"
                 ]
                 it_inc = [
                     r.claim_id
                     for r in it_recs
-                    if r.phase == JournalPhase.PHASE_A_VERDICT
-                    and r.verdict == "inconclusive"
+                    if r.phase == JournalPhase.PHASE_A_VERDICT and r.verdict == "inconclusive"
                 ]
                 it_acc = [
                     r.claim_id
                     for r in it_recs
-                    if r.phase == JournalPhase.PHASE_B_HYPOTHESIS
-                    and r.verdict != "rejected"
+                    if r.phase == JournalPhase.PHASE_B_HYPOTHESIS and r.verdict != "rejected"
                 ]
                 it_rej = [
                     r.claim_id
                     for r in it_recs
-                    if r.phase == JournalPhase.PHASE_B_HYPOTHESIS
-                    and r.verdict == "rejected"
+                    if r.phase == JournalPhase.PHASE_B_HYPOTHESIS and r.verdict == "rejected"
                 ]
                 bits = [f"Iter {it}:"]
                 if it_conf:
@@ -199,8 +189,7 @@ class Journal:
 
         # findings list deduped from confirmed claim_ids' evidence_refs
         token_count = _approx_tokens(
-            text
-            + " ".join(confirmed + refuted + inconclusive + accepted_hyps + rejected_hyps)
+            text + " ".join(confirmed + refuted + inconclusive + accepted_hyps + rejected_hyps)
         )
 
         return JournalSummary(

@@ -61,39 +61,27 @@ def test_median_3_unanimous() -> None:
 
 def test_median_3_two_one_split() -> None:
     # 2 suspicious + 1 malicious → median is suspicious
-    assert (
-        median_verdict(["suspicious", "suspicious", "malicious"]) == "suspicious"
-    )
+    assert median_verdict(["suspicious", "suspicious", "malicious"]) == "suspicious"
     # 1 suspicious + 2 malicious → median is malicious
-    assert (
-        median_verdict(["suspicious", "malicious", "malicious"]) == "malicious"
-    )
+    assert median_verdict(["suspicious", "malicious", "malicious"]) == "malicious"
 
 
 def test_median_3_three_way_split() -> None:
     # clean / suspicious / malicious → median is suspicious (middle)
     assert median_verdict(["clean", "suspicious", "malicious"]) == "suspicious"
     # suspicious / malicious / critical → median is malicious
-    assert (
-        median_verdict(["suspicious", "malicious", "critical_malicious"])
-        == "malicious"
-    )
+    assert median_verdict(["suspicious", "malicious", "critical_malicious"]) == "malicious"
 
 
 def test_median_even_count_breaks_low() -> None:
     # 4 votes: clean, suspicious, malicious, critical_malicious
     # ranks: 0, 1, 2, 3 → middle pair is (1, 2) → take lower (1) = suspicious
-    assert (
-        median_verdict(["clean", "suspicious", "malicious", "critical_malicious"])
-        == "suspicious"
-    )
+    assert median_verdict(["clean", "suspicious", "malicious", "critical_malicious"]) == "suspicious"
 
 
 def test_median_drops_unknown_labels() -> None:
     # "informational" is not in VERDICT_RANK — should be ignored
-    assert (
-        median_verdict(["informational", "suspicious", "malicious"]) == "suspicious"
-    )
+    assert median_verdict(["informational", "suspicious", "malicious"]) == "suspicious"
 
 
 def test_median_empty_returns_none() -> None:
@@ -387,14 +375,25 @@ def test_cwe_consensus_majority_2_of_3() -> None:
 
 def test_cwe_consensus_4_voter_split() -> None:
     voters = [
-        _vr(file_name="x.py", voter_name="opus", verdict="malicious",
-            findings=[{"cwe": "CWE-78"}, {"cwe": "CWE-94"}]),
-        _vr(file_name="x.py", voter_name="gemini", verdict="malicious",
-            findings=[{"cwe": "CWE-78"}, {"cwe": "CWE-22"}]),
-        _vr(file_name="x.py", voter_name="gpt", verdict="malicious",
-            findings=[{"cwe": "CWE-94"}]),
-        _vr(file_name="x.py", voter_name="grok", verdict="malicious",
-            findings=[{"cwe": "CWE-94"}, {"cwe": "CWE-78"}]),
+        _vr(
+            file_name="x.py",
+            voter_name="opus",
+            verdict="malicious",
+            findings=[{"cwe": "CWE-78"}, {"cwe": "CWE-94"}],
+        ),
+        _vr(
+            file_name="x.py",
+            voter_name="gemini",
+            verdict="malicious",
+            findings=[{"cwe": "CWE-78"}, {"cwe": "CWE-22"}],
+        ),
+        _vr(file_name="x.py", voter_name="gpt", verdict="malicious", findings=[{"cwe": "CWE-94"}]),
+        _vr(
+            file_name="x.py",
+            voter_name="grok",
+            verdict="malicious",
+            findings=[{"cwe": "CWE-94"}, {"cwe": "CWE-78"}],
+        ),
     ]
     rec = build_consensus_record("x.py", voters)
     cwe = rec["cwe_consensus"]
@@ -519,10 +518,14 @@ def test_rich_consensus_with_no_voters_returns_empty() -> None:
 
 def test_rich_consensus_skips_errored_voters() -> None:
     voters = [
-        _vr(file_name="x.py", voter_name="opus", verdict="malicious",
-            findings=[{"cwe": "CWE-78"}]),
-        _vr(file_name="x.py", voter_name="gemini", verdict=None,
-            error="api_failed", findings=[{"cwe": "CWE-78"}, {"cwe": "CWE-22"}]),
+        _vr(file_name="x.py", voter_name="opus", verdict="malicious", findings=[{"cwe": "CWE-78"}]),
+        _vr(
+            file_name="x.py",
+            voter_name="gemini",
+            verdict=None,
+            error="api_failed",
+            findings=[{"cwe": "CWE-78"}, {"cwe": "CWE-22"}],
+        ),
     ]
     rec = build_consensus_record("x.py", voters)
     # Errored voter doesn't contribute findings -> CWE-78 only has 1 vote

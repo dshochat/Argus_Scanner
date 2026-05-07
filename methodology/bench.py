@@ -26,7 +26,6 @@ wrapper that loops over runs; this module exposes the per-run pieces.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -160,19 +159,14 @@ def make_raw_opus_baseline_runner(
 
         in_tokens = int(result.get("input_tokens", 0))
         out_tokens = int(result.get("output_tokens", 0))
-        cost = (
-            in_tokens / 1_000_000 * OPUS_46_COST_IN
-            + out_tokens / 1_000_000 * OPUS_46_COST_OUT
-        )
+        cost = in_tokens / 1_000_000 * OPUS_46_COST_IN + out_tokens / 1_000_000 * OPUS_46_COST_OUT
 
         adapter_error = result.get("error")
         runner_error: str | None = None
         if adapter_error:
             runner_error = adapter_error
         elif not json_valid:
-            runner_error = (
-                f"json_parse_failed: out_tokens={out_tokens}; possible truncation"
-            )
+            runner_error = f"json_parse_failed: out_tokens={out_tokens}; possible truncation"
 
         return BenchRow(
             file_name=filename,
@@ -224,12 +218,8 @@ async def run_argus_pipeline_one(
         config="argus_full",
         cost_usd=round(scan_result.total_cost_usd, 6),
         duration_ms=scan_result.total_duration_ms,
-        input_tokens=sum(
-            int(c.get("input_tokens", 0) or 0) for c in scan_result.model_calls
-        ),
-        output_tokens=sum(
-            int(c.get("output_tokens", 0) or 0) for c in scan_result.model_calls
-        ),
+        input_tokens=sum(int(c.get("input_tokens", 0) or 0) for c in scan_result.model_calls),
+        output_tokens=sum(int(c.get("output_tokens", 0) or 0) for c in scan_result.model_calls),
         scan_path=list(scan_result.scan_path),
         dast_attempted=scan_result.dast_attempted,
         n_vulnerabilities=len(scan_result.vulnerabilities),
@@ -396,10 +386,7 @@ async def run_suite(
 
         if row.error is not None:
             consecutive_errors += 1
-            if (
-                auto_abort_consecutive_errors is not None
-                and consecutive_errors >= auto_abort_consecutive_errors
-            ):
+            if auto_abort_consecutive_errors is not None and consecutive_errors >= auto_abort_consecutive_errors:
                 raise BenchAborted(
                     f"auto-aborted after {consecutive_errors} consecutive "
                     f"errors (last on {fn}: {row.error}). "
@@ -459,12 +446,8 @@ def compare_configs(
     return {
         "raw_opus": opus_metrics,
         "argus_full": argus_metrics,
-        "verdict_exact_pp_lift": (
-            argus_metrics["verdict_exact_pct"] - opus_metrics["verdict_exact_pct"]
-        ),
-        "mean_distance_improvement": (
-            opus_metrics["mean_distance"] - argus_metrics["mean_distance"]
-        ),
+        "verdict_exact_pp_lift": (argus_metrics["verdict_exact_pct"] - opus_metrics["verdict_exact_pct"]),
+        "mean_distance_improvement": (opus_metrics["mean_distance"] - argus_metrics["mean_distance"]),
         "cost_ratio": (
             argus_metrics["total_cost_usd"] / opus_metrics["total_cost_usd"]
             if opus_metrics["total_cost_usd"] > 0

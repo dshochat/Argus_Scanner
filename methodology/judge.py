@@ -178,10 +178,7 @@ def randomize_positions(
     """
     positions = list(payload.get("positions") or [])
     if len(positions) != 2:
-        raise ValueError(
-            f"expected 2 positions, got {len(positions)} for "
-            f"{payload.get('file_name')!r}"
-        )
+        raise ValueError(f"expected 2 positions, got {len(positions)} for {payload.get('file_name')!r}")
     rng = random.Random(seed)
     indices = [0, 1]
     rng.shuffle(indices)
@@ -251,10 +248,7 @@ def build_user_message(blinded_payload: dict[str, Any]) -> str:
                 sev = f.get("severity") or ""
                 line = f.get("line")
                 title = f.get("title") or ""
-                lines.append(
-                    f"  - [{cwe}] {ftype} ({sev}) "
-                    f"line={line} — {title}"
-                )
+                lines.append(f"  - [{cwe}] {ftype} ({sev}) line={line} — {title}")
             if len(findings) > 20:
                 lines.append(f"  ... ({len(findings) - 20} more findings omitted)")
     lines.append("")
@@ -404,10 +398,7 @@ async def judge_one(
         log.warning("judge failed on %s: %s", file_name, error)
     duration_ms = int((time.time() - t0) * 1000)
 
-    cost = (
-        in_tokens / 1_000_000 * GPT_55_COST_IN
-        + out_tokens / 1_000_000 * GPT_55_COST_OUT
-    )
+    cost = in_tokens / 1_000_000 * GPT_55_COST_IN + out_tokens / 1_000_000 * GPT_55_COST_OUT
     return JudgmentRecord(
         file_name=file_name,
         judge_model=model,
@@ -534,9 +525,7 @@ def summarize_judgments(judgments: list[JudgmentRecord]) -> dict[str, Any]:
         "judge_picked_both": counts.get("both", 0),
         "judge_picked_neither": counts.get("neither", 0),
         "judge_errors": errors,
-        "mean_confidence": (
-            round(sum(confidences) / len(confidences), 3) if confidences else None
-        ),
+        "mean_confidence": (round(sum(confidences) / len(confidences), 3) if confidences else None),
         "total_cost_usd": round(total_cost, 4),
     }
 

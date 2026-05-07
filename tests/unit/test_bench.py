@@ -183,13 +183,17 @@ async def test_run_suite_iterates_baseline_and_skips_missing(
     # 'c.py' is in the oracle but missing from disk
 
     baseline = tmp_path / "baseline.json"
-    baseline.write_text(json.dumps({
-        "files": [
-            {"file_name": "a.py", "oracle_verdict": "clean", "tracking": "tier1"},
-            {"file_name": "b.py", "oracle_verdict": "malicious", "tracking": "tier2"},
-            {"file_name": "c.py", "oracle_verdict": "suspicious", "tracking": "tier1"},
-        ]
-    }))
+    baseline.write_text(
+        json.dumps(
+            {
+                "files": [
+                    {"file_name": "a.py", "oracle_verdict": "clean", "tracking": "tier1"},
+                    {"file_name": "b.py", "oracle_verdict": "malicious", "tracking": "tier2"},
+                    {"file_name": "c.py", "oracle_verdict": "suspicious", "tracking": "tier1"},
+                ]
+            }
+        )
+    )
 
     async def stub_runner(filename, content, baseline_meta):
         return BenchRow(
@@ -217,12 +221,16 @@ async def test_run_suite_captures_runner_exception_per_file(tmp_path: Path) -> N
     (suite / "ok.py").write_text("# ok")
     (suite / "bad.py").write_text("# bad")
     baseline = tmp_path / "baseline.json"
-    baseline.write_text(json.dumps({
-        "files": [
-            {"file_name": "ok.py", "oracle_verdict": "clean", "tracking": "tier1"},
-            {"file_name": "bad.py", "oracle_verdict": "malicious", "tracking": "tier1"},
-        ]
-    }))
+    baseline.write_text(
+        json.dumps(
+            {
+                "files": [
+                    {"file_name": "ok.py", "oracle_verdict": "clean", "tracking": "tier1"},
+                    {"file_name": "bad.py", "oracle_verdict": "malicious", "tracking": "tier1"},
+                ]
+            }
+        )
+    )
 
     async def flaky_runner(filename, content, baseline_meta):
         if filename == "bad.py":

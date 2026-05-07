@@ -49,8 +49,6 @@ import httpx
 from inference.adapters import AnthropicAdapter, GoogleAdapter
 from prompts.scanner import SECURITY_SCAN_PROMPT
 from scanner.runners import (
-    GEMINI_FLASH_LITE_COST_IN,
-    GEMINI_FLASH_LITE_COST_OUT,
     OPUS_46_COST_IN,
     OPUS_46_COST_OUT,
     score_to_verdict,
@@ -182,9 +180,7 @@ def make_gemini_voter(
             },
         }
     )
-    return _make_anthropic_or_google_voter(
-        adapter, "gemini_3_1_pro", GEMINI_31_PRO_COST_IN, GEMINI_31_PRO_COST_OUT
-    )
+    return _make_anthropic_or_google_voter(adapter, "gemini_3_1_pro", GEMINI_31_PRO_COST_IN, GEMINI_31_PRO_COST_OUT)
 
 
 def _make_anthropic_or_google_voter(
@@ -213,10 +209,7 @@ def _make_anthropic_or_google_voter(
 
         in_tokens = int(result.get("input_tokens", 0))
         out_tokens = int(result.get("output_tokens", 0))
-        cost = (
-            in_tokens / 1_000_000 * cost_in_per_m
-            + out_tokens / 1_000_000 * cost_out_per_m
-        )
+        cost = in_tokens / 1_000_000 * cost_in_per_m + out_tokens / 1_000_000 * cost_out_per_m
 
         runner_error = result.get("error")
         if runner_error is None and not json_valid:
@@ -270,10 +263,7 @@ def make_gpt5_voter(api_key: str, *, model: str = "gpt-5.4") -> VoterCallable:
 
     async def voter(filename: str, content: bytes) -> VoterRecord:
         text = content.decode("utf-8", errors="replace")
-        user_message = (
-            f"Filename: {filename}\nLanguage: {_detect_language(filename)}\n\n"
-            f"```\n{text}\n```"
-        )
+        user_message = f"Filename: {filename}\nLanguage: {_detect_language(filename)}\n\n```\n{text}\n```"
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -345,19 +335,14 @@ def make_gpt5_voter(api_key: str, *, model: str = "gpt-5.4") -> VoterCallable:
             cost_in_per_m, cost_out_per_m = 2.0, 8.0
         else:
             cost_in_per_m, cost_out_per_m = GPT_55_COST_IN, GPT_55_COST_OUT
-        cost = (
-            in_tokens / 1_000_000 * cost_in_per_m
-            + out_tokens / 1_000_000 * cost_out_per_m
-        )
+        cost = in_tokens / 1_000_000 * cost_in_per_m + out_tokens / 1_000_000 * cost_out_per_m
 
         # Voter name reflects the actual model used. Examples:
         #   gpt-5.4   -> gpt_5_4
         #   gpt-5.5   -> gpt_5_5
         #   gpt-4.1   -> gpt_4_1
         #   gpt-4o    -> gpt_4o
-        voter_name = "gpt_" + (
-            model.replace("gpt-", "").replace("-", "_").replace(".", "_")
-        )
+        voter_name = "gpt_" + (model.replace("gpt-", "").replace("-", "_").replace(".", "_"))
 
         return VoterRecord(
             file_name=filename,
@@ -394,10 +379,7 @@ def make_grok_voter(api_key: str, *, model: str = "grok-4.3") -> VoterCallable:
 
     async def voter(filename: str, content: bytes) -> VoterRecord:
         text = content.decode("utf-8", errors="replace")
-        user_message = (
-            f"Filename: {filename}\nLanguage: {_detect_language(filename)}\n\n"
-            f"```\n{text}\n```"
-        )
+        user_message = f"Filename: {filename}\nLanguage: {_detect_language(filename)}\n\n```\n{text}\n```"
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -457,10 +439,7 @@ def make_grok_voter(api_key: str, *, model: str = "grok-4.3") -> VoterCallable:
             error = f"{type(e).__name__}: {e}"
 
         elapsed_ms = int((time.time() - t0) * 1000)
-        cost = (
-            in_tokens / 1_000_000 * GROK_43_COST_IN
-            + out_tokens / 1_000_000 * GROK_43_COST_OUT
-        )
+        cost = in_tokens / 1_000_000 * GROK_43_COST_IN + out_tokens / 1_000_000 * GROK_43_COST_OUT
 
         # Voter name normalises model id ("grok-4.3" -> "grok_4_3").
         voter_name = "grok_" + model.replace("grok-", "").replace("-", "_").replace(".", "_")

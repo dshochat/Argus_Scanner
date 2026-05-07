@@ -438,9 +438,7 @@ def _resolve_b64_var(args: str, full_text: str) -> str | None:
     if ident_match is None:
         return None
     name = ident_match.group("name")
-    candidates = [
-        m.group("blob") for m in _B64_VAR_ASSIGNMENT.finditer(full_text) if m.group("name") == name
-    ]
+    candidates = [m.group("blob") for m in _B64_VAR_ASSIGNMENT.finditer(full_text) if m.group("name") == name]
     if len(candidates) != 1:
         # Zero assignments: unbound reference, can't resolve.
         # Two or more: the variable is reassigned — which value was

@@ -13,24 +13,38 @@ Only redact self-identification patterns where the model reveals its own identit
 import json
 import logging
 import re
-from typing import Tuple, Optional
 
 log = logging.getLogger("ed-api")
 
 # ── HARD identity leaks — the model is revealing its own identity.
 # Always trigger retry regardless of context.
 IDENTITY_PHRASES = [
-    "as a language model", "large language model",
-    "as an ai assistant", "i am an ai assistant",
+    "as a language model",
+    "large language model",
+    "as an ai assistant",
+    "i am an ai assistant",
     "i'm an ai assistant",
-    "i was trained", "my training data", "my training",
-    "i was created by", "i was built by", "i was made by",
-    "i cannot", "i can't help", "i cannot help",
-    "i'm not able to", "i must decline",
-    "i can't help with", "i don't have personal",
-    "as an assistant", "i'm a helpful", "as a helpful assistant",
-    "i'm a helpful assistant", "i'm a chatbot",
-    "my instructions say", "my system prompt", "i was instructed to",
+    "i was trained",
+    "my training data",
+    "my training",
+    "i was created by",
+    "i was built by",
+    "i was made by",
+    "i cannot",
+    "i can't help",
+    "i cannot help",
+    "i'm not able to",
+    "i must decline",
+    "i can't help with",
+    "i don't have personal",
+    "as an assistant",
+    "i'm a helpful",
+    "as a helpful assistant",
+    "i'm a helpful assistant",
+    "i'm a chatbot",
+    "my instructions say",
+    "my system prompt",
+    "i was instructed to",
     "my instructions",
 ]
 
@@ -38,8 +52,19 @@ IDENTITY_PHRASES = [
 # appear in AI-generated analysis fields. Legitimate in user-quoted code
 # (e.g., code that imports openai library).
 PROVIDER_NAMES = [
-    "claude", "anthropic", "openai", "gpt-4", "gpt-3", "gpt4", "gpt3",
-    "opus", "sonnet", "haiku", "gemini", "google ai", "mistral",
+    "claude",
+    "anthropic",
+    "openai",
+    "gpt-4",
+    "gpt-3",
+    "gpt4",
+    "gpt3",
+    "opus",
+    "sonnet",
+    "haiku",
+    "gemini",
+    "google ai",
+    "mistral",
 ]
 
 # Deduplicated and lowercased for matching
@@ -50,12 +75,10 @@ _PROVIDER_LOWER = list(dict.fromkeys(s.lower() for s in PROVIDER_NAMES))
 _ALL_LEAK_LOWER = _IDENTITY_LOWER + _PROVIDER_LOWER
 
 # Sanitization patterns — ONLY for provider names (not security terms)
-_SANITIZE_PATTERNS = [
-    re.compile(re.escape(s), re.IGNORECASE) for s in _PROVIDER_LOWER
-]
+_SANITIZE_PATTERNS = [re.compile(re.escape(s), re.IGNORECASE) for s in _PROVIDER_LOWER]
 
 
-def check_for_leaks(text: str) -> Tuple[bool, Optional[str]]:
+def check_for_leaks(text: str) -> tuple[bool, str | None]:
     """
     Check if text contains any identity or provider strings.
 
@@ -78,7 +101,7 @@ def sanitize_text(text: str) -> str:
     return text
 
 
-def sanitize_response(response_dict: dict) -> Tuple[Optional[dict], bool]:
+def sanitize_response(response_dict: dict) -> tuple[dict | None, bool]:
     """
     Check every string value in the response for forbidden strings.
 

@@ -305,10 +305,7 @@ def _detect_encoded_keywords(content: str) -> list[PromptInjectionIndicator]:
                 PromptInjectionIndicator(
                     pattern_type=PromptInjectionPatternType.ENCODED_SUSPICIOUS_KEYWORD,
                     pattern_label="scan_capped",
-                    match_preview=(
-                        f"base64 blob scan capped at {_MAX_B64_BLOB_SCANS}; "
-                        "further blobs not analysed"
-                    ),
+                    match_preview=(f"base64 blob scan capped at {_MAX_B64_BLOB_SCANS}; further blobs not analysed"),
                     line=_line_for_offset(content, m.start()),
                     severity=Severity.LOW,
                 )
@@ -332,9 +329,7 @@ def _detect_encoded_keywords(content: str) -> list[PromptInjectionIndicator]:
     return indicators
 
 
-def detect_prompt_injection(
-    content: str, *, decoded_content: str | None = None
-) -> list[PromptInjectionIndicator]:
+def detect_prompt_injection(content: str, *, decoded_content: str | None = None) -> list[PromptInjectionIndicator]:
     """Run all three pattern classes against ``content`` (and optionally
     against deobfuscated ``decoded_content`` too, for hidden-instruction
     patterns that may appear only after the pre-pass peels encoding).

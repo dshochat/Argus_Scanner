@@ -92,11 +92,7 @@ def main() -> int:
     args = parser.parse_args()
 
     # Validate inputs.
-    missing = [
-        p
-        for p in [args.opus_bench_rows, args.gemini_voter, args.gpt_voter, args.grok_voter]
-        if not p.exists()
-    ]
+    missing = [p for p in [args.opus_bench_rows, args.gemini_voter, args.gpt_voter, args.grok_voter] if not p.exists()]
     if missing:
         print(f"ERROR: missing inputs: {missing}", file=sys.stderr)
         return 2
@@ -106,7 +102,7 @@ def main() -> int:
         print(f"ERROR: no files in baseline {args.baseline}", file=sys.stderr)
         return 2
 
-    print(f"=== build consensus oracle ===")
+    print("=== build consensus oracle ===")
     print(f"  baseline files: {len(file_list)}")
     print(f"  opus rows:      {args.opus_bench_rows}")
     print(f"  gemini voter:   {args.gemini_voter}")
@@ -134,9 +130,7 @@ def main() -> int:
     voters_dir = args.output.parent / "voters"
     voters_dir.mkdir(parents=True, exist_ok=True)
     opus_voter_path = voters_dir / "opus_4_6.json"
-    opus_voter_path.write_text(
-        json.dumps([r.to_dict() for r in opus_records], indent=2)
-    )
+    opus_voter_path.write_text(json.dumps([r.to_dict() for r in opus_records], indent=2))
     print(f"  wrote opus voter records -> {opus_voter_path}")
 
     voter_files = {
@@ -155,11 +149,7 @@ def main() -> int:
     n_with_voters = sum(1 for f in files if f.get("n_voters", 0) > 0)
     n_unanimous = sum(1 for f in files if f.get("is_unanimous"))
     n_majority = sum(1 for f in files if f.get("is_majority") and not f.get("is_unanimous"))
-    n_no_majority = sum(
-        1
-        for f in files
-        if f.get("n_voters", 0) > 0 and not f.get("is_majority")
-    )
+    n_no_majority = sum(1 for f in files if f.get("n_voters", 0) > 0 and not f.get("is_majority"))
 
     print("\n=== consensus stats ===")
     print(f"  files with all voters:    {n_with_voters}/{n_total}")
@@ -180,9 +170,7 @@ def main() -> int:
             print()
             print("  CHANGED labels:")
             for c in diff["changed_files"]:
-                voter_str = ", ".join(
-                    f"{k}={v}" for k, v in (c.get("voter_verdicts") or {}).items()
-                )
+                voter_str = ", ".join(f"{k}={v}" for k, v in (c.get("voter_verdicts") or {}).items())
                 print(
                     f"    {c['file_name']:<48} "
                     f"old={c['old_verdict']!s:<22} -> new={c['new_verdict']!s:<22} "

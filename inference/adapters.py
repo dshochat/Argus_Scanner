@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 log = logging.getLogger("ed-bm-adapters")
 
@@ -70,17 +70,19 @@ class BaseModelAdapter(ABC):
         """Test model connection with a simple prompt."""
         start = time.time()
         try:
-            result = await self._call_api(
-                "You are a helpful assistant.",
-                "Say 'hello' in one word."
-            )
+            await self._call_api("You are a helpful assistant.", "Say 'hello' in one word.")
             elapsed_ms = int((time.time() - start) * 1000)
             return {"success": True, "response_time_ms": elapsed_ms, "model": self.model_id}
         except Exception as e:
             elapsed_ms = int((time.time() - start) * 1000)
-            return {"success": False, "error": str(e), "response_time_ms": elapsed_ms, "model": self.model_id}
+            return {
+                "success": False,
+                "error": str(e),
+                "response_time_ms": elapsed_ms,
+                "model": self.model_id,
+            }
 
-    def parse_response(self, raw_text: str) -> Tuple[Optional[dict], bool]:
+    def parse_response(self, raw_text: str) -> tuple[dict | None, bool]:
         """Parse model response text into structured JSON."""
         if not raw_text:
             return None, False
@@ -89,7 +91,7 @@ class BaseModelAdapter(ABC):
         # Remove markdown code fences if present
         if text.startswith("```"):
             first_newline = text.index("\n") if "\n" in text else 3
-            text = text[first_newline + 1:]
+            text = text[first_newline + 1 :]
             if text.endswith("```"):
                 text = text[:-3]
             text = text.strip()
@@ -103,7 +105,7 @@ class BaseModelAdapter(ABC):
             end = text.rfind("}")
             if start != -1 and end != -1 and end > start:
                 try:
-                    parsed = json.loads(text[start:end + 1])
+                    parsed = json.loads(text[start : end + 1])
                     return parsed, True
                 except json.JSONDecodeError:
                     pass
@@ -112,15 +114,35 @@ class BaseModelAdapter(ABC):
     @staticmethod
     def _detect_language(filename: str) -> str:
         ext_map = {
-            ".py": "python", ".js": "javascript", ".ts": "typescript",
-            ".jsx": "jsx", ".tsx": "tsx", ".java": "java", ".go": "go",
-            ".rs": "rust", ".rb": "ruby", ".php": "php", ".c": "c",
-            ".cpp": "cpp", ".cs": "csharp", ".swift": "swift",
-            ".kt": "kotlin", ".scala": "scala", ".sh": "bash",
-            ".yaml": "yaml", ".yml": "yaml", ".json": "json",
-            ".xml": "xml", ".html": "html", ".css": "css",
-            ".sql": "sql", ".r": "r", ".m": "matlab",
-            ".toml": "toml", ".ini": "ini", ".cfg": "ini",
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".jsx": "jsx",
+            ".tsx": "tsx",
+            ".java": "java",
+            ".go": "go",
+            ".rs": "rust",
+            ".rb": "ruby",
+            ".php": "php",
+            ".c": "c",
+            ".cpp": "cpp",
+            ".cs": "csharp",
+            ".swift": "swift",
+            ".kt": "kotlin",
+            ".scala": "scala",
+            ".sh": "bash",
+            ".yaml": "yaml",
+            ".yml": "yaml",
+            ".json": "json",
+            ".xml": "xml",
+            ".html": "html",
+            ".css": "css",
+            ".sql": "sql",
+            ".r": "r",
+            ".m": "matlab",
+            ".toml": "toml",
+            ".ini": "ini",
+            ".cfg": "ini",
         }
         for ext, lang in ext_map.items():
             if filename.lower().endswith(ext):

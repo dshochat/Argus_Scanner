@@ -44,7 +44,6 @@ State of build (2026-05-05):
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -91,7 +90,7 @@ class ScanConfig:
 
     # Ensemble
     ensemble_size_borderline: int = 3  # N for borderline-file ensemble
-    ensemble_size_default: int = 1     # N for non-borderline (no ensemble)
+    ensemble_size_default: int = 1  # N for non-borderline (no ensemble)
 
     # DAST verification
     enable_dast: bool = True
@@ -236,8 +235,8 @@ def verdict_to_risk(verdict: str) -> tuple[int, str]:
 
 
 def _check_cost_cap(
-    result: "ScanResult",
-    cfg: "ScanConfig",
+    result: ScanResult,
+    cfg: ScanConfig,
     stage_just_completed: str,
 ) -> bool:
     """Return True if the per-file cost cap was just breached.
@@ -256,14 +255,8 @@ def _check_cost_cap(
         return False
     if result.total_cost_usd <= cap:
         return False
-    result.scan_path.append(
-        f"cost_cap_exceeded_after:{stage_just_completed}"
-        f"({result.total_cost_usd:.4f}>{cap:.2f})"
-    )
-    result.error = (
-        f"cost_cap_exceeded: ${result.total_cost_usd:.4f} > "
-        f"${cap:.2f} after {stage_just_completed} stage"
-    )
+    result.scan_path.append(f"cost_cap_exceeded_after:{stage_just_completed}({result.total_cost_usd:.4f}>{cap:.2f})")
+    result.error = f"cost_cap_exceeded: ${result.total_cost_usd:.4f} > ${cap:.2f} after {stage_just_completed} stage"
     result.status = 402  # Payment Required — fits the semantics
     return True
 
@@ -301,6 +294,7 @@ async def scan_file(
     """
     cfg = config or ScanConfig()
     import time
+
     t_start = time.time()
 
     result = ScanResult(
@@ -325,9 +319,7 @@ async def scan_file(
         # Short-circuit on known-malware hash
         if pp.known_malware_match:
             result.triage_classification = "HIGH"
-            result.triage_reason = (
-                f"Known-malware hash match: {pp.known_malware_match}"
-            )
+            result.triage_reason = f"Known-malware hash match: {pp.known_malware_match}"
             result.final_verdict = "critical_malicious"
             result.risk_score, result.risk_level = verdict_to_risk("critical_malicious")
             result.scan_path.append("known_malware_short_circuit")
@@ -341,9 +333,7 @@ async def scan_file(
 
     # ── Stage 2: high-stakes detection (informs cascade routing) ──────
     high_stakes, triggered_cats = is_high_stakes(pp, cfg.high_stakes_categories)
-    result.scan_path.append(
-        f"high_stakes={high_stakes}{(':'+','.join(triggered_cats)) if triggered_cats else ''}"
-    )
+    result.scan_path.append(f"high_stakes={high_stakes}{(':' + ','.join(triggered_cats)) if triggered_cats else ''}")
 
     # ── Stage 3: triage ────────────────────────────────────────────────
     if triage_runner is None:
@@ -358,14 +348,16 @@ async def scan_file(
             classification = (triage_out or {}).get("classification", "HIGH")
             triage_reason = (triage_out or {}).get("reason", "")
             result.scan_path.append(f"triage:{classification}")
-            result.model_calls.append({
-                "stage": "triage",
-                "model": (triage_out or {}).get("model", "unknown"),
-                "input_tokens": (triage_out or {}).get("input_tokens", 0),
-                "output_tokens": (triage_out or {}).get("output_tokens", 0),
-                "cost_usd": (triage_out or {}).get("cost_usd", 0.0),
-                "duration_ms": (triage_out or {}).get("duration_ms", 0),
-            })
+            result.model_calls.append(
+                {
+                    "stage": "triage",
+                    "model": (triage_out or {}).get("model", "unknown"),
+                    "input_tokens": (triage_out or {}).get("input_tokens", 0),
+                    "output_tokens": (triage_out or {}).get("output_tokens", 0),
+                    "cost_usd": (triage_out or {}).get("cost_usd", 0.0),
+                    "duration_ms": (triage_out or {}).get("duration_ms", 0),
+                }
+            )
             result.total_cost_usd += (triage_out or {}).get("cost_usd", 0.0)
             if _check_cost_cap(result, cfg, "triage"):
                 result.total_duration_ms = int((time.time() - t_start) * 1000)
@@ -382,10 +374,7 @@ async def scan_file(
     if cfg.enable_triage_safety_net and high_stakes and classification != "HIGH":
         original = classification
         classification = "HIGH"
-        triage_reason = (
-            f"{triage_reason} [safety_net: {original}→HIGH triggered by "
-            f"{','.join(triggered_cats)}]"
-        )
+        triage_reason = f"{triage_reason} [safety_net: {original}→HIGH triggered by {','.join(triggered_cats)}]"
         result.scan_path.append(f"safety_net_override:{original}->HIGH")
 
     result.triage_classification = classification
@@ -405,7 +394,9 @@ async def scan_file(
     chosen_model_label: str = ""
 
     if classification == "LOW":
-        chosen_runner = sonnet_runner  # falls back to Sonnet if no separate Flash runner; production wires Gemini Flash here
+        chosen_runner = (
+            sonnet_runner  # falls back to Sonnet if no separate Flash runner; production wires Gemini Flash here
+        )
         chosen_model_label = "low_path"
     else:  # HIGH
         if high_stakes and opus_runner is not None:
@@ -432,15 +423,17 @@ async def scan_file(
         result.final_verdict = (analysis_out or {}).get("verdict_label", "suspicious")
         result.risk_score, result.risk_level = verdict_to_risk(result.final_verdict)
 
-        result.model_calls.append({
-            "stage": "analysis",
-            "model": (analysis_out or {}).get("model", chosen_model_label),
-            "input_tokens": (analysis_out or {}).get("input_tokens", 0),
-            "output_tokens": (analysis_out or {}).get("output_tokens", 0),
-            "cost_usd": (analysis_out or {}).get("cost_usd", 0.0),
-            "duration_ms": (analysis_out or {}).get("duration_ms", 0),
-            "uncertainty": (analysis_out or {}).get("uncertainty", 0.0),
-        })
+        result.model_calls.append(
+            {
+                "stage": "analysis",
+                "model": (analysis_out or {}).get("model", chosen_model_label),
+                "input_tokens": (analysis_out or {}).get("input_tokens", 0),
+                "output_tokens": (analysis_out or {}).get("output_tokens", 0),
+                "cost_usd": (analysis_out or {}).get("cost_usd", 0.0),
+                "duration_ms": (analysis_out or {}).get("duration_ms", 0),
+                "uncertainty": (analysis_out or {}).get("uncertainty", 0.0),
+            }
+        )
         result.total_cost_usd += (analysis_out or {}).get("cost_usd", 0.0)
         if _check_cost_cap(result, cfg, "analysis"):
             result.total_duration_ms = int((time.time() - t_start) * 1000)
@@ -472,14 +465,16 @@ async def scan_file(
                 result.vulnerabilities = opus_out["vulnerabilities"]
             if (opus_out or {}).get("behavioral_profile"):
                 result.behavioral_profile = opus_out["behavioral_profile"]
-            result.model_calls.append({
-                "stage": "analysis_escalation",
-                "model": "opus",
-                "input_tokens": (opus_out or {}).get("input_tokens", 0),
-                "output_tokens": (opus_out or {}).get("output_tokens", 0),
-                "cost_usd": (opus_out or {}).get("cost_usd", 0.0),
-                "duration_ms": (opus_out or {}).get("duration_ms", 0),
-            })
+            result.model_calls.append(
+                {
+                    "stage": "analysis_escalation",
+                    "model": "opus",
+                    "input_tokens": (opus_out or {}).get("input_tokens", 0),
+                    "output_tokens": (opus_out or {}).get("output_tokens", 0),
+                    "cost_usd": (opus_out or {}).get("cost_usd", 0.0),
+                    "duration_ms": (opus_out or {}).get("duration_ms", 0),
+                }
+            )
             result.total_cost_usd += (opus_out or {}).get("cost_usd", 0.0)
             if _check_cost_cap(result, cfg, "opus_escalation"):
                 result.total_duration_ms = int((time.time() - t_start) * 1000)
@@ -490,11 +485,7 @@ async def scan_file(
             result.scan_path.append(f"opus_escalation_failed:{type(e).__name__}")
 
     # ── Stage 7: DAST verification ─────────────────────────────────────
-    if (
-        cfg.enable_dast
-        and result.final_verdict in cfg.dast_trigger_verdicts
-        and dast_runner is not None
-    ):
+    if cfg.enable_dast and result.final_verdict in cfg.dast_trigger_verdicts and dast_runner is not None:
         try:
             l1_verdict = result.final_verdict
             dast_out = await dast_runner(filename, content, pp, result)
@@ -512,6 +503,7 @@ async def scan_file(
             # / UNREACHED (rejected with unreachable reasoning) /
             # NOT_TESTED (no journal entry or other rejection).
             from dast.per_finding import derive_per_finding_validation
+
             journal_records = (dast_out or {}).get("journal_records") or []
             result.per_finding_validation = [
                 pf.to_dict()
@@ -547,19 +539,14 @@ async def scan_file(
                     result.final_verdict = dast_verdict
                     result.risk_score, result.risk_level = verdict_to_risk(dast_verdict)
                     if dast_rank > l1_rank:
-                        result.scan_path.append(
-                            f"dast_upgrade:{l1_verdict}->{dast_verdict}"
-                        )
+                        result.scan_path.append(f"dast_upgrade:{l1_verdict}->{dast_verdict}")
                 else:
                     # DAST wants to downgrade. Check if we have grounded
                     # evidence (every L1 finding refuted or unreached).
                     pf_list = result.per_finding_validation or []
                     grounded_statuses = {"BLOCKED", "UNREACHED"}
                     n_findings = len(pf_list)
-                    n_grounded = sum(
-                        1 for pf in pf_list
-                        if pf.get("status") in grounded_statuses
-                    )
+                    n_grounded = sum(1 for pf in pf_list if pf.get("status") in grounded_statuses)
                     # All findings must be grounded for a safe downgrade.
                     # Edge case: zero L1 findings — refuse (no evidence
                     # in either direction; trust L1's verdict).
@@ -575,16 +562,17 @@ async def scan_file(
                     else:
                         # Not enough evidence — keep L1's verdict.
                         result.scan_path.append(
-                            f"dast_keep_l1:{l1_verdict}_over_{dast_verdict}"
-                            f":{n_grounded}/{n_findings}_findings_grounded"
+                            f"dast_keep_l1:{l1_verdict}_over_{dast_verdict}:{n_grounded}/{n_findings}_findings_grounded"
                         )
             result.scan_path.append("dast_verification")
-            result.model_calls.append({
-                "stage": "dast",
-                "iterations": len(result.dast_iterations),
-                "cost_usd": (dast_out or {}).get("total_cost_usd", 0.0),
-                "duration_ms": (dast_out or {}).get("elapsed_ms", 0),
-            })
+            result.model_calls.append(
+                {
+                    "stage": "dast",
+                    "iterations": len(result.dast_iterations),
+                    "cost_usd": (dast_out or {}).get("total_cost_usd", 0.0),
+                    "duration_ms": (dast_out or {}).get("elapsed_ms", 0),
+                }
+            )
             result.total_cost_usd += (dast_out or {}).get("total_cost_usd", 0.0)
             if _check_cost_cap(result, cfg, "dast"):
                 result.total_duration_ms = int((time.time() - t_start) * 1000)
@@ -604,14 +592,11 @@ async def scan_file(
     # Discovered findings are appended to ``result.dast_findings`` with
     # ``discovered_by="dast_discovery_v0"`` and ``status="CONFIRMED"``
     # (every emitted discovery is sandbox-validated by construction).
-    if (
-        cfg.enable_discovery
-        and result.final_verdict in cfg.discovery_trigger_verdicts
-        and dast_runner is not None
-    ):
+    if cfg.enable_discovery and result.final_verdict in cfg.discovery_trigger_verdicts and dast_runner is not None:
         try:
             from dast.discovery import run_discovery
             from dast.runner import _resolve_sandbox_client_for_engine
+
             sandbox = _resolve_sandbox_client_for_engine(dast_runner)
             if sandbox is None:
                 result.scan_path.append("discovery_skipped:no_sandbox_handle")
@@ -627,15 +612,15 @@ async def scan_file(
                 # so downstream consumers see a uniform shape.
                 for f in discovered:
                     result.dast_findings.append(f.to_dict())
-                result.scan_path.append(
-                    f"discovery:{len(discovered)}_findings_from_{len(traces)}_payloads"
+                result.scan_path.append(f"discovery:{len(discovered)}_findings_from_{len(traces)}_payloads")
+                result.model_calls.append(
+                    {
+                        "stage": "dast_discovery",
+                        "n_payloads": len(traces),
+                        "n_discovered": len(discovered),
+                        "duration_ms": disc_elapsed_ms,
+                    }
                 )
-                result.model_calls.append({
-                    "stage": "dast_discovery",
-                    "n_payloads": len(traces),
-                    "n_discovered": len(discovered),
-                    "duration_ms": disc_elapsed_ms,
-                })
         except Exception as e:  # noqa: BLE001
             log.warning("DAST discovery failed for %s: %s", filename, e)
             result.scan_path.append(f"discovery_failed:{type(e).__name__}")

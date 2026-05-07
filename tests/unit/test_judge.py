@@ -107,10 +107,7 @@ def test_randomize_positions_deterministic_per_seed() -> None:
     a1, m1 = randomize_positions(record["judge_payload"], seed="filex.py")
     a2, m2 = randomize_positions(record["judge_payload"], seed="filex.py")
     assert m1 == m2  # same seed → same mapping
-    assert (
-        a1["positions_AB"][0]["verdict"]
-        == a2["positions_AB"][0]["verdict"]
-    )
+    assert a1["positions_AB"][0]["verdict"] == a2["positions_AB"][0]["verdict"]
 
 
 def test_randomize_positions_different_seeds_can_swap() -> None:
@@ -181,10 +178,7 @@ def test_build_user_message_includes_all_signals() -> None:
 
 
 def test_build_user_message_caps_findings() -> None:
-    findings = [
-        {"cwe": f"CWE-{i}", "type": "x", "severity": "low", "line": i, "title": f"f{i}"}
-        for i in range(50)
-    ]
+    findings = [{"cwe": f"CWE-{i}", "type": "x", "severity": "low", "line": i, "title": f"f{i}"} for i in range(50)]
     record = _diff_record(argus_findings=findings)
     blinded, _ = randomize_positions(record["judge_payload"], seed="bar")
     msg = build_user_message(blinded)
@@ -298,9 +292,7 @@ async def test_judge_one_happy_path() -> None:
 @respx.mock
 async def test_judge_one_http_error_captured() -> None:
     record = _diff_record()
-    respx.post(f"{DEFAULT_OPENAI_BASE_URL}/chat/completions").respond(
-        status_code=500, json={"error": "boom"}
-    )
+    respx.post(f"{DEFAULT_OPENAI_BASE_URL}/chat/completions").respond(status_code=500, json={"error": "boom"})
 
     out = await judge_one(record, api_key="sk-test", seed="x")
 
@@ -313,9 +305,7 @@ async def test_judge_one_http_error_captured() -> None:
 @respx.mock
 async def test_judge_one_invalid_json_captured() -> None:
     record = _diff_record()
-    respx.post(f"{DEFAULT_OPENAI_BASE_URL}/chat/completions").respond(
-        json=_ok_response("not parseable")
-    )
+    respx.post(f"{DEFAULT_OPENAI_BASE_URL}/chat/completions").respond(json=_ok_response("not parseable"))
     out = await judge_one(record, api_key="sk-test", seed="x")
     assert out.error is not None
     assert "invalid JSON" in out.error
@@ -418,9 +408,7 @@ def _judgment(
         oracle_verdict="critical_malicious",
         argus_verdict="critical_malicious",
         opus_verdict="suspicious",
-        judgment={"agree_with": agree_with, "confidence": confidence}
-        if not error
-        else {},
+        judgment={"agree_with": agree_with, "confidence": confidence} if not error else {},
         ab_mapping={"A": "argus", "B": "opus"},
         tokens_in=1000,
         tokens_out=200,

@@ -36,8 +36,9 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 # Anchors mirror ``shared.types.enums.VERDICT_ANCHORS`` but keyed by
 # label-string. Kept local so the prototype's scripts/ surface stays
@@ -51,9 +52,7 @@ VERDICT_ANCHORS: dict[str, int] = {
 }
 
 VERDICT_RANK: dict[str, int] = {
-    label: i for i, label in enumerate(
-        ["clean", "informational", "suspicious", "malicious", "critical_malicious"]
-    )
+    label: i for i, label in enumerate(["clean", "informational", "suspicious", "malicious", "critical_malicious"])
 }
 
 
@@ -136,9 +135,7 @@ def aggregate_run(
                 tier_value = None
                 break
         if isinstance(tier_value, str):
-            t = per_tier_acc.setdefault(
-                tier_value, {"n": 0, "verdict_exact": 0, "sum_distance": 0.0}
-            )
+            t = per_tier_acc.setdefault(tier_value, {"n": 0, "verdict_exact": 0, "sum_distance": 0.0})
             t["n"] += 1
             t["sum_distance"] += d
             if predicted == oracle:
@@ -150,9 +147,7 @@ def aggregate_run(
         per_tier_out[tier] = {
             "n": n_t,
             "verdict_exact": int(acc["verdict_exact"]),
-            "verdict_exact_pct": (
-                round(100.0 * acc["verdict_exact"] / n_t, 2) if n_t else 0.0
-            ),
+            "verdict_exact_pct": (round(100.0 * acc["verdict_exact"] / n_t, 2) if n_t else 0.0),
             "mean_distance": round(acc["sum_distance"] / n_t, 4) if n_t else 0.0,
         }
 
@@ -226,9 +221,7 @@ def characterize_file_variance(
 
     # Observed band — sorted by anchor; reports the [min, max] verdict
     # actually seen. With N=5 this is exact (5th-95th percentile = min/max).
-    sorted_by_anchor = sorted(
-        distribution.keys(), key=lambda v: VERDICT_ANCHORS.get(v, 0)
-    )
+    sorted_by_anchor = sorted(distribution.keys(), key=lambda v: VERDICT_ANCHORS.get(v, 0))
     band = [sorted_by_anchor[0], sorted_by_anchor[-1]] if sorted_by_anchor else []
 
     is_stable = len(distribution) == 1
@@ -236,17 +229,11 @@ def characterize_file_variance(
 
     # Oracle distance stats
     if oracle and oracle in VERDICT_ANCHORS:
-        per_run_dist = [
-            verdict_distance(v, oracle) for v in per_run_verdicts
-        ]
+        per_run_dist = [verdict_distance(v, oracle) for v in per_run_verdicts]
         per_run_dist = [d for d in per_run_dist if d is not None]
         if per_run_dist:
             mean_d = sum(per_run_dist) / len(per_run_dist)
-            std_d = (
-                statistics.pstdev(per_run_dist)
-                if len(per_run_dist) > 1
-                else 0.0
-            )
+            std_d = statistics.pstdev(per_run_dist) if len(per_run_dist) > 1 else 0.0
         else:
             mean_d = None
             std_d = None
@@ -337,14 +324,8 @@ def assess_lift(
     def _var(xs: list[float]) -> float:
         return statistics.variance(xs) if len(xs) >= 2 else 0.0
 
-    se_exact = math.sqrt(
-        _var(before_exact) / len(before_exact)
-        + _var(after_exact) / len(after_exact)
-    )
-    se_dist = math.sqrt(
-        _var(before_dist) / len(before_dist)
-        + _var(after_dist) / len(after_dist)
-    )
+    se_exact = math.sqrt(_var(before_exact) / len(before_exact) + _var(after_exact) / len(after_exact))
+    se_dist = math.sqrt(_var(before_dist) / len(before_dist) + _var(after_dist) / len(after_dist))
 
     exact_lift = am_exact - bm_exact
     distance_lift = am_dist - bm_dist
@@ -358,27 +339,16 @@ def assess_lift(
     parts: list[str] = []
     if z_e is not None and z_e >= min_z:
         detected = True
-        parts.append(
-            f"exact +{exact_lift:.2f}pp (z={z_e:+.2f}σ)"
-        )
+        parts.append(f"exact +{exact_lift:.2f}pp (z={z_e:+.2f}σ)")
     elif z_e is not None and z_e <= -min_z:
-        parts.append(
-            f"exact {exact_lift:+.2f}pp (z={z_e:+.2f}σ — REGRESSION)"
-        )
+        parts.append(f"exact {exact_lift:+.2f}pp (z={z_e:+.2f}σ — REGRESSION)")
     if z_d is not None and z_d <= -min_z:
         detected = True
-        parts.append(
-            f"distance {distance_lift:+.4f} (z={z_d:+.2f}σ — improvement)"
-        )
+        parts.append(f"distance {distance_lift:+.4f} (z={z_d:+.2f}σ — improvement)")
     elif z_d is not None and z_d >= min_z:
-        parts.append(
-            f"distance {distance_lift:+.4f} (z={z_d:+.2f}σ — REGRESSION)"
-        )
+        parts.append(f"distance {distance_lift:+.4f} (z={z_d:+.2f}σ — REGRESSION)")
     if not parts:
-        parts.append(
-            f"exact {exact_lift:+.2f}pp, distance {distance_lift:+.4f} — "
-            f"both within ±{min_z:.1f}σ noise"
-        )
+        parts.append(f"exact {exact_lift:+.2f}pp, distance {distance_lift:+.4f} — both within ±{min_z:.1f}σ noise")
     rationale = "; ".join(parts)
 
     return LiftAssessment(

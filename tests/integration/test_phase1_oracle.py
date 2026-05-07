@@ -90,10 +90,6 @@ async def test_phase1_oracle(filename: str, runners: dict) -> None:
 
     min_vulns = expected.get("min_vulnerabilities", 0)
     max_vulns = expected.get("max_vulnerabilities")
-    assert n_vulns >= min_vulns, (
-        f"{filename}: {n_vulns} vulns reported, expected ≥ {min_vulns}"
-    )
+    assert n_vulns >= min_vulns, f"{filename}: {n_vulns} vulns reported, expected ≥ {min_vulns}"
     if max_vulns is not None:
-        assert n_vulns <= max_vulns, (
-            f"{filename}: {n_vulns} vulns reported, expected ≤ {max_vulns}"
-        )
+        assert n_vulns <= max_vulns, f"{filename}: {n_vulns} vulns reported, expected ≤ {max_vulns}"

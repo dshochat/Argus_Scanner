@@ -128,9 +128,7 @@ def test_base64_with_subprocess_keyword_flagged() -> None:
     blob = base64.b64encode(payload).decode()
     content = f'config = "{blob}"'
     inds = detect_prompt_injection(content)
-    esk = [
-        i for i in inds if i.pattern_type == PromptInjectionPatternType.ENCODED_SUSPICIOUS_KEYWORD
-    ]
+    esk = [i for i in inds if i.pattern_type == PromptInjectionPatternType.ENCODED_SUSPICIOUS_KEYWORD]
     assert len(esk) == 1
     assert esk[0].severity == Severity.HIGH
 
@@ -141,9 +139,7 @@ def test_base64_without_suspicious_keyword_ignored() -> None:
     blob = base64.b64encode(payload).decode()
     content = f'data = "{blob}"'
     inds = detect_prompt_injection(content)
-    esk = [
-        i for i in inds if i.pattern_type == PromptInjectionPatternType.ENCODED_SUSPICIOUS_KEYWORD
-    ]
+    esk = [i for i in inds if i.pattern_type == PromptInjectionPatternType.ENCODED_SUSPICIOUS_KEYWORD]
     assert esk == []
 
 
@@ -152,9 +148,7 @@ def test_multiple_distinct_blobs_dedup_on_content() -> None:
     blob = base64.b64encode(payload).decode()
     content = f"a = '{blob}'\nb = '{blob}'\nc = '{blob}'"
     inds = detect_prompt_injection(content)
-    esk = [
-        i for i in inds if i.pattern_type == PromptInjectionPatternType.ENCODED_SUSPICIOUS_KEYWORD
-    ]
+    esk = [i for i in inds if i.pattern_type == PromptInjectionPatternType.ENCODED_SUSPICIOUS_KEYWORD]
     assert len(esk) == 1  # same decoded preview → dedup'd
 
 
@@ -303,9 +297,7 @@ def test_post_decode_label_truncated_at_pydantic_max_length() -> None:
     from preprocessing.prompt_injection import _post_decode_label  # noqa: PLC0415
 
     # Well-under cap: suffix preserved.
-    assert _post_decode_label("ignore_previous_instructions") == (
-        "ignore_previous_instructions__post_decode"
-    )
+    assert _post_decode_label("ignore_previous_instructions") == ("ignore_previous_instructions__post_decode")
     # At the cap: truncated to 80 chars total.
     long_base = "a_very_long_future_label" * 10  # 240 chars
     result = _post_decode_label(long_base)

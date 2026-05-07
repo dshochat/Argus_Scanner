@@ -151,12 +151,7 @@ def test_uncertainty_score_mid_band_low_uncertainty() -> None:
 def test_uncertainty_handles_missing_or_malformed_data() -> None:
     assert derive_uncertainty({}) == 0.0
     assert derive_uncertainty({"vulnerabilities": None, "composite_risk": None}) == 0.0
-    assert (
-        derive_uncertainty(
-            {"vulnerabilities": [{"type": "x"}], "composite_risk": {"score": "garbage"}}
-        )
-        >= 0.0
-    )
+    assert derive_uncertainty({"vulnerabilities": [{"type": "x"}], "composite_risk": {"score": "garbage"}}) >= 0.0
 
 
 @pytest.mark.asyncio
@@ -234,9 +229,7 @@ async def test_runner_cost_math() -> None:
 
 @pytest.mark.asyncio
 async def test_runner_json_parse_failure_returns_suspicious_with_error() -> None:
-    adapter = _FakeAdapter(
-        _adapter_response(json_valid=False, in_tokens=200, out_tokens=50)
-    )
+    adapter = _FakeAdapter(_adapter_response(json_valid=False, in_tokens=200, out_tokens=50))
     runner = make_anthropic_runner_from_adapter(
         adapter,
         model_label="test",
@@ -333,11 +326,7 @@ async def test_runner_propagates_adapter_error_over_parse_status() -> None:
     """If the adapter itself reported an error, that takes precedence
     over the json_parse_failed synthetic error — adapter-level errors
     are more informative."""
-    adapter = _FakeAdapter(
-        _adapter_response(
-            json_valid=False, in_tokens=10, out_tokens=10, error="rate_limited"
-        )
-    )
+    adapter = _FakeAdapter(_adapter_response(json_valid=False, in_tokens=10, out_tokens=10, error="rate_limited"))
     runner = make_anthropic_runner_from_adapter(
         adapter,
         model_label="test",

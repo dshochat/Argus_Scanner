@@ -124,7 +124,9 @@ async def replay_one(
     per_finding = [
         pf.to_dict()
         for pf in derive_per_finding_validation(
-            row.vulnerabilities, list(dast_findings), journal_records,
+            row.vulnerabilities,
+            list(dast_findings),
+            journal_records,
         )
     ]
 
@@ -205,8 +207,7 @@ async def replay_all(
             # is preserved.
             out = row.to_dict()
             out["per_finding_validation"] = [
-                pf.to_dict()
-                for pf in derive_per_finding_validation(row.vulnerabilities, [])
+                pf.to_dict() for pf in derive_per_finding_validation(row.vulnerabilities, [])
             ]
             out["dast_replay"] = {"skipped_reason": "verdict_not_dast_eligible"}
             out_rows.append(out)
@@ -225,15 +226,11 @@ async def replay_all(
         cost = replay_meta.get("dast_cost_usd", 0.0)
         dur = replay_meta.get("dast_duration_ms", 0)
         err = replay_meta.get("error")
-        n_conf = sum(
-            1 for pf in (out.get("per_finding_validation") or [])
-            if pf.get("status") == "CONFIRMED"
-        )
+        n_conf = sum(1 for pf in (out.get("per_finding_validation") or []) if pf.get("status") == "CONFIRMED")
         n_total = len(out.get("per_finding_validation") or [])
         print(
             f"  [{i:>2}/{len(rows)}] {row.file_name:<48} "
-            f"confirmed={n_conf}/{n_total} cost=${cost:.4f} dur={dur}ms"
-            + (f"  ERR: {err[:80]}" if err else "")
+            f"confirmed={n_conf}/{n_total} cost=${cost:.4f} dur={dur}ms" + (f"  ERR: {err[:80]}" if err else "")
         )
 
     return out_rows
@@ -273,7 +270,7 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"=== DAST replay (Tier 1) ===")
+    print("=== DAST replay (Tier 1) ===")
     print(f"  input:  {args.input}")
     print(f"  output: {args.output}")
     print(f"  suite:  {args.suite_dir}")
@@ -292,21 +289,10 @@ def main() -> int:
     )
 
     n_total = len(out_rows)
-    n_with_dast = sum(
-        1 for r in out_rows
-        if (r.get("dast_replay") or {}).get("skipped_reason") is None
-    )
-    total_cost = sum(
-        (r.get("dast_replay") or {}).get("dast_cost_usd", 0.0) for r in out_rows
-    )
-    n_errors = sum(
-        1 for r in out_rows
-        if (r.get("dast_replay") or {}).get("error")
-    )
-    print(
-        f"\n  done: {n_total} rows, {n_with_dast} with DAST replay, "
-        f"${total_cost:.4f} total, {n_errors} errors"
-    )
+    n_with_dast = sum(1 for r in out_rows if (r.get("dast_replay") or {}).get("skipped_reason") is None)
+    total_cost = sum((r.get("dast_replay") or {}).get("dast_cost_usd", 0.0) for r in out_rows)
+    n_errors = sum(1 for r in out_rows if (r.get("dast_replay") or {}).get("error"))
+    print(f"\n  done: {n_total} rows, {n_with_dast} with DAST replay, ${total_cost:.4f} total, {n_errors} errors")
     print(f"  -> {args.output}")
     return 0
 

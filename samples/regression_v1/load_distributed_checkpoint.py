@@ -14,11 +14,9 @@ Usage:
     python load_distributed_checkpoint.py --checkpoint-dir ./checkpoints/run_42
 """
 
-import os
-import sys
-import pickle
 import argparse
 import logging
+import pickle
 from pathlib import Path
 
 import torch
@@ -26,6 +24,7 @@ import torch
 try:
     from accelerate import load_checkpoint_in_model
     from accelerate.utils import load_state_dict
+
     HAS_ACCELERATE = True
 except ImportError:
     HAS_ACCELERATE = False
@@ -57,6 +56,7 @@ def load_safetensors_shard(shard_path: Path) -> dict:
     """Load a SafeTensors shard — safe by design (no arbitrary code execution)."""
     try:
         from safetensors.torch import load_file
+
         logger.info("Loading SafeTensors shard: %s", shard_path.name)
         return load_file(str(shard_path))
     except ImportError:
@@ -90,7 +90,7 @@ def load_legacy_pickle_shard(shard_path: Path) -> dict:
         # deserialization is harmless. In a real attack the .bin file would
         # carry a crafted pickle stream.
         # -------------------------------------------------------------------------
-        state_dict = torch.load(fh)          # no weights_only=True  ← vulnerable
+        state_dict = torch.load(fh)  # no weights_only=True  ← vulnerable
         # Equivalent direct pickle path (also present in affected Accelerate code):
         # state_dict = pickle.load(fh)       # no class restriction  ← vulnerable
     return state_dict
@@ -174,8 +174,12 @@ def load_checkpoint(checkpoint_dir: str, model=None, demo_attack: bool = False) 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Distributed checkpoint loader (Accelerate-compatible)")
-    parser.add_argument("--checkpoint-dir", required=True, help="Directory containing checkpoint shards")
+    parser = argparse.ArgumentParser(
+        description="Distributed checkpoint loader (Accelerate-compatible)"
+    )
+    parser.add_argument(
+        "--checkpoint-dir", required=True, help="Directory containing checkpoint shards"
+    )
     parser.add_argument(
         "--demo-attack",
         action="store_true",

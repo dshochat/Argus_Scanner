@@ -87,11 +87,27 @@ filterwarnings = [
 ]
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py312"
+extend-exclude = [
+    # Deliberately-malicious test fixtures. Linting them defeats their
+    # purpose; the bad-code patterns in here are the point.
+    "samples/regression_v1",
+]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "TCH"]
+# v1.1 baseline: focus on real-bug rules. Stylistic rules (naming/N,
+# pyupgrade/UP, simplify/SIM, type-checking-blocks/TCH) are deferred to
+# v1.2 cleanup so we don't bikeshed the launch on lifted code style.
+select = ["E", "F", "W", "I", "B"]
+ignore = [
+    # Long lines in lifted modules + test fixtures aren't a defect; the
+    # formatter handles new code. Revisit case-by-case when tightening.
+    "E501",
+    # Imports inside if-blocks are intentional in a few places (lazy /
+    # conditional import to avoid circular deps).
+    "E402",
+]
 
 [tool.mypy]
 strict = true

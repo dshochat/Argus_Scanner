@@ -65,4 +65,4 @@ def test_extension_set_matches_ticket() -> None:
     # Regression pin: PREP-018 ticket lists 4 extensions.
     from preprocessing.attack_vector_extensions import _ATTACK_VECTOR_EXTENSIONS  # noqa: PLC0415
 
-    assert _ATTACK_VECTOR_EXTENSIONS == frozenset({".pth", ".egg", ".whl", ".spec"})
+    assert frozenset({".pth", ".egg", ".whl", ".spec"}) == _ATTACK_VECTOR_EXTENSIONS

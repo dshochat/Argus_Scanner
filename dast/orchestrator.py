@@ -23,22 +23,21 @@ is no L2 stage.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from . import prompts as dast_prompts
 from .journal import (
     Journal,
     JournalPhase,
     JournalRecord,
-    JournalSummary,
 )
-from .validator import HypothesisValidator
 from .sandbox.client import SandboxClient, SandboxPlan, SandboxTrace
+from .validator import HypothesisValidator
 
 MAX_ITERATIONS: int = 3
 TOKEN_CAP_PER_FILE: int = 1_000_000
@@ -141,9 +140,7 @@ def _has_refutation_of_prior_confirmed(
         if not (isinstance(ev_ids, list) and ev_ids):
             continue
         hyp = hyp_index.get(cv.get("hypothesis_id", "")) or {}
-        fref = hyp.get("finding_ref") or (
-            (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
-        )
+        fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
         if fref and fref in prev_confirmed:
             return True
     return False
@@ -182,9 +179,7 @@ async def run_dast(
     total_out = 0
     total_sb = 0
     last_verdict: dict[str, Any] = {
-        "verdict_label": (l1_output.get("verdict") or {}).get(
-            "verdict_label", "suspicious"
-        ),
+        "verdict_label": (l1_output.get("verdict") or {}).get("verdict_label", "suspicious"),
         "log_summary": "no DAST iteration completed yet",
         "validated_findings": [],
         "confirmed_categories": [],
@@ -200,9 +195,7 @@ async def run_dast(
 
     # iter 1 starts with L1 hypotheses; iter ≥ 2 starts with the previous
     # iteration's validator-accepted Phase B hypotheses
-    pending_hypotheses: list[dict] = list(
-        l1_output.get("hypotheses") or []
-    )
+    pending_hypotheses: list[dict] = list(l1_output.get("hypotheses") or [])
 
     for it in range(1, MAX_ITERATIONS + 1):
         it_started = time.time()
@@ -259,15 +252,17 @@ async def run_dast(
             hid = p.get("hypothesis_id", "")
             if p.get("plan_status") != "executable":
                 # Not_testable plans are journaled but no sandbox call.
-                journal.append(JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.PHASE_A_PLAN,
-                    claim_id=hid,
-                    verdict=None,
-                    rationale=f"not_testable: {p.get('rationale', '')[:200]}",
-                    evidence_refs=[],
-                    sandbox_event_id=None,
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=it,
+                        phase=JournalPhase.PHASE_A_PLAN,
+                        claim_id=hid,
+                        verdict=None,
+                        rationale=f"not_testable: {p.get('rationale', '')[:200]}",
+                        evidence_refs=[],
+                        sandbox_event_id=None,
+                    )
+                )
                 plan_records.append(p)
                 continue
             # DAST-005: pass through image_hint. Default to "minimal" so
@@ -287,8 +282,7 @@ async def run_dast(
                 image_hint=image_hint,
                 file_name=file_name,
                 synthesis_context={
-                    "upstream_chain": (hyp_index.get(hid) or {}).get("upstream_chain")
-                    or {},
+                    "upstream_chain": (hyp_index.get(hid) or {}).get("upstream_chain") or {},
                     "hypothesis": hyp_index.get(hid) or {},
                 },
             )
@@ -311,15 +305,17 @@ async def run_dast(
             total_sb += 1
             plan_records.append(p)
             trace_records.append(trace.model_dump())
-            journal.append(JournalRecord(
-                iter=it,
-                phase=JournalPhase.SANDBOX_EXEC,
-                claim_id=hid,
-                verdict=None,
-                rationale=trace.stub_synthesis_note or "",
-                evidence_refs=[e.event_id for e in trace.events],
-                sandbox_event_id=(trace.events[0].event_id if trace.events else None),
-            ))
+            journal.append(
+                JournalRecord(
+                    iter=it,
+                    phase=JournalPhase.SANDBOX_EXEC,
+                    claim_id=hid,
+                    verdict=None,
+                    rationale=trace.stub_synthesis_note or "",
+                    evidence_refs=[e.event_id for e in trace.events],
+                    sandbox_event_id=(trace.events[0].event_id if trace.events else None),
+                )
+            )
 
         # ---- Phase A — Verdict --------------------------------------
         verdict_prompt = dast_prompts.build_phase_a_verdict_prompt(
@@ -356,21 +352,21 @@ async def run_dast(
             hyp = hyp_index.get(hid) or {}
             # L1 hypotheses use ``finding_ref``; Phase B hypotheses use
             # ``upstream_chain.confirmed_finding_ref``. Try both.
-            fref = hyp.get("finding_ref") or (
-                (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
-            )
+            fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
             if fref:
                 evidence_refs.append(fref)
             evidence_refs.extend(ev_ids if isinstance(ev_ids, list) else [])
-            journal.append(JournalRecord(
-                iter=it,
-                phase=JournalPhase.PHASE_A_VERDICT,
-                claim_id=hid,
-                verdict=v,
-                rationale=rationale,
-                evidence_refs=evidence_refs,
-                sandbox_event_id=(ev_ids[0] if isinstance(ev_ids, list) and ev_ids else None),
-            ))
+            journal.append(
+                JournalRecord(
+                    iter=it,
+                    phase=JournalPhase.PHASE_A_VERDICT,
+                    claim_id=hid,
+                    verdict=v,
+                    rationale=rationale,
+                    evidence_refs=evidence_refs,
+                    sandbox_event_id=(ev_ids[0] if isinstance(ev_ids, list) and ev_ids else None),
+                )
+            )
             if v == "confirmed" and fref and fref not in prev_confirmed:
                 new_confirmed_count += 1
                 if fref not in findings_validated:
@@ -393,9 +389,7 @@ async def run_dast(
                 max_dast_verdict_rank >= 0
                 and new_rank < max_dast_verdict_rank
                 and max_dast_verdict_label is not None
-                and not _has_refutation_of_prior_confirmed(
-                    claim_verdicts, hyp_index, prev_confirmed
-                )
+                and not _has_refutation_of_prior_confirmed(claim_verdicts, hyp_index, prev_confirmed)
             ):
                 clamp_msg = (
                     f"[iter_erosion_guard] iter {it} model emitted "
@@ -456,24 +450,28 @@ async def run_dast(
             hid = h.get("id") or "H???"
             if v.accepted:
                 accepted_hyps.append(h)
-                journal.append(JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                    claim_id=hid,
-                    verdict="confirmed" if v.is_borderline else "confirmed",
-                    rationale=f"validator accepted{' (borderline)' if v.is_borderline else ''}: {v.reasoning[:240]}",
-                    evidence_refs=[],
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=it,
+                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                        claim_id=hid,
+                        verdict="confirmed" if v.is_borderline else "confirmed",
+                        rationale=f"validator accepted{' (borderline)' if v.is_borderline else ''}: {v.reasoning[:240]}",
+                        evidence_refs=[],
+                    )
+                )
             else:
                 rejected_hyps.append(h)
-                journal.append(JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                    claim_id=hid,
-                    verdict="rejected",
-                    rationale=f"validator rejected: {v.reasoning[:240]}",
-                    evidence_refs=[],
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=it,
+                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                        claim_id=hid,
+                        verdict="rejected",
+                        rationale=f"validator rejected: {v.reasoning[:240]}",
+                        evidence_refs=[],
+                    )
+                )
         st.hypotheses_accepted = len(accepted_hyps)
         st.hypotheses_rejected = len(rejected_hyps)
 
@@ -510,9 +508,7 @@ async def run_dast(
     # without having to re-read the file. JournalRecord is a Pydantic
     # model — model_dump() gives a JSON-serializable dict.
     try:
-        journal_dump: list[dict[str, Any]] = [
-            r.model_dump(mode="json") for r in journal.read_all()
-        ]
+        journal_dump: list[dict[str, Any]] = [r.model_dump(mode="json") for r in journal.read_all()]
     except Exception:  # noqa: BLE001
         journal_dump = []
 

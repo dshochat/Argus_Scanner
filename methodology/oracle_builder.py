@@ -110,7 +110,9 @@ def _consensus_string_set(
     "≥half" majority rule.
     """
     if normalize is None:
-        normalize = lambda s: s.strip().upper() if isinstance(s, str) else None
+
+        def normalize(s: Any) -> str | None:
+            return s.strip().upper() if isinstance(s, str) else None
 
     votes: dict[str, int] = {}
     n_voters = 0
@@ -280,11 +282,7 @@ def build_consensus_record(
     counts: dict[str, int] = {}
     for v in valid_verdicts:
         counts[v] = counts.get(v, 0) + 1
-    is_majority = (
-        any(c > len(valid_verdicts) / 2 for c in counts.values())
-        if valid_verdicts
-        else False
-    )
+    is_majority = any(c > len(valid_verdicts) / 2 for c in counts.values()) if valid_verdicts else False
 
     # Rich consensus: CWE / capability / dangerous-API / behavioral.
     cwe_consensus = _consensus_string_set(voter_records, _extract_cwes)
@@ -340,7 +338,7 @@ def build_consensus_oracle(
     out_files: list[dict[str, Any]] = []
     for fn in file_list:
         per_file: list[VoterRecord] = []
-        for voter_name, recs in by_voter.items():
+        for _voter_name, recs in by_voter.items():
             r = recs.get(fn)
             if r is not None:
                 per_file.append(r)

@@ -34,9 +34,7 @@ from scanner.engine import ScanResult
 from scanner.repo_scanner import RepoScanReport
 
 SARIF_VERSION = "2.1.0"
-SARIF_SCHEMA = (
-    "https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0-rtm.5.json"
-)
+SARIF_SCHEMA = "https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0-rtm.5.json"
 ARGUS_TOOL_URI = "https://github.com/dshochat/Argus_Scanner"
 
 
@@ -61,9 +59,7 @@ def _build_rule(rule_id: str, vuln: dict[str, Any]) -> dict[str, Any]:
         "id": rule_id,
         "name": rule_id,
         "shortDescription": {"text": vuln.get("type") or rule_id},
-        "fullDescription": {
-            "text": vuln.get("explanation") or vuln.get("type") or rule_id
-        },
+        "fullDescription": {"text": vuln.get("explanation") or vuln.get("type") or rule_id},
         "defaultConfiguration": {
             "level": _severity_to_level(vuln.get("severity")),
         },
@@ -78,9 +74,7 @@ def _build_rule(rule_id: str, vuln: dict[str, Any]) -> dict[str, Any]:
     return rule
 
 
-def _build_result(
-    result: ScanResult, vuln: dict[str, Any], rule_id: str
-) -> dict[str, Any]:
+def _build_result(result: ScanResult, vuln: dict[str, Any], rule_id: str) -> dict[str, Any]:
     """Build one SARIF result entry from one Vulnerability dict."""
     line = vuln.get("line")
     try:
@@ -117,19 +111,13 @@ def _build_result(
     if vuln.get("cwe"):
         sarif_result["properties"]["cwe"] = vuln["cwe"]
     if vuln.get("runtime_evidence"):
-        sarif_result["properties"]["argus_runtime_evidence"] = vuln[
-            "runtime_evidence"
-        ]
+        sarif_result["properties"]["argus_runtime_evidence"] = vuln["runtime_evidence"]
     if vuln.get("proof_of_concept"):
         sarif_result["properties"]["argus_poc"] = vuln["proof_of_concept"]
     if vuln.get("not_tested_reason"):
-        sarif_result["properties"]["argus_not_tested_reason"] = vuln[
-            "not_tested_reason"
-        ]
+        sarif_result["properties"]["argus_not_tested_reason"] = vuln["not_tested_reason"]
     if vuln.get("rejection_reason"):
-        sarif_result["properties"]["argus_rejection_reason"] = vuln[
-            "rejection_reason"
-        ]
+        sarif_result["properties"]["argus_rejection_reason"] = vuln["rejection_reason"]
     return sarif_result
 
 
@@ -151,11 +139,7 @@ def _ingest_scan_result(ctx: SarifContext, result: ScanResult) -> None:
         # SARIF rule IDs must be stable + meaningful. Prefer the CWE if
         # present (deterministic, cross-tool comparable); fall back to
         # the type field, then a synthetic id keyed off finding index.
-        rule_id = (
-            vuln.get("cwe")
-            or vuln.get("type")
-            or f"argus-finding-{idx}"
-        )
+        rule_id = vuln.get("cwe") or vuln.get("type") or f"argus-finding-{idx}"
         rule_id = str(rule_id)
 
         if rule_id not in ctx.rules_by_id:
@@ -197,9 +181,7 @@ def _build_sarif_doc(results: list[ScanResult]) -> dict[str, Any]:
                         "rules": list(ctx.rules_by_id.values()),
                     }
                 },
-                "originalUriBaseIds": {
-                    "REPO_ROOT": {"uri": "file:///"}
-                },
+                "originalUriBaseIds": {"REPO_ROOT": {"uri": "file:///"}},
                 "results": ctx.results,
             }
         ],

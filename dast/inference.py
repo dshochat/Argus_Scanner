@@ -42,7 +42,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 log = logging.getLogger("argus.dast.inference")
 
@@ -96,8 +97,7 @@ def build_anthropic_kwargs(
             {
                 "name": "emit_response",
                 "description": (
-                    "Emit the structured response. Required: input must "
-                    "conform to the supplied JSON schema exactly."
+                    "Emit the structured response. Required: input must conform to the supplied JSON schema exactly."
                 ),
                 "input_schema": schema,
             }
@@ -111,9 +111,7 @@ def build_anthropic_kwargs(
     return kwargs
 
 
-def parse_anthropic_response(
-    response: Any, schema_provided: bool
-) -> dict[str, Any]:
+def parse_anthropic_response(response: Any, schema_provided: bool) -> dict[str, Any]:
     """Convert an Anthropic ``Message`` to the orchestrator dict shape.
 
     When a schema was provided, the model returns a ``tool_use`` block
@@ -175,9 +173,7 @@ def make_dast_sonnet_inference(api_key: str) -> InferenceFn:
         options: dict[str, Any],
         schema: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        kwargs = build_anthropic_kwargs(
-            prompt, options, schema, model_id=model_id, thinking_budget=thinking_budget
-        )
+        kwargs = build_anthropic_kwargs(prompt, options, schema, model_id=model_id, thinking_budget=thinking_budget)
         async with client.messages.stream(**kwargs) as stream:
             response = await stream.get_final_message()
         return parse_anthropic_response(response, schema_provided=schema is not None)
@@ -203,9 +199,7 @@ def make_dast_opus_inference(api_key: str) -> InferenceFn:
         options: dict[str, Any],
         schema: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        kwargs = build_anthropic_kwargs(
-            prompt, options, schema, model_id=model_id, thinking_budget=thinking_budget
-        )
+        kwargs = build_anthropic_kwargs(prompt, options, schema, model_id=model_id, thinking_budget=thinking_budget)
         async with client.messages.stream(**kwargs) as stream:
             response = await stream.get_final_message()
         return parse_anthropic_response(response, schema_provided=schema is not None)

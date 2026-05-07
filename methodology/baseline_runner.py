@@ -85,7 +85,6 @@ if hasattr(sys.stdout, "reconfigure"):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from methodology.scoring import (  # noqa: E402
-    VERDICT_RANK,
     aggregate_run,
     characterize_file_variance,
 )
@@ -97,9 +96,7 @@ def _load_run(path: Path) -> list[dict]:
         doc = json.load(f)
     rows = doc.get("results")
     if not isinstance(rows, list):
-        raise ValueError(
-            f"{path}: missing 'results' list (got {type(rows).__name__})"
-        )
+        raise ValueError(f"{path}: missing 'results' list (got {type(rows).__name__})")
     return rows
 
 
@@ -162,9 +159,7 @@ def aggregate_baseline_runs(run_paths: list[Path]) -> dict:
             if isinstance(base_block, dict):
                 if tier is None and isinstance(base_block.get("tier"), str):
                     tier = base_block["tier"]
-                if tracking is None and isinstance(
-                    base_block.get("tracking"), str
-                ):
+                if tracking is None and isinstance(base_block.get("tracking"), str):
                     tracking = base_block["tracking"]
 
         band = characterize_file_variance(
@@ -175,30 +170,31 @@ def aggregate_baseline_runs(run_paths: list[Path]) -> dict:
 
         # Build the file entry preserving the legacy schema fields and
         # extending with characterization metadata.
-        files_out.append({
-            "file_name": fn,
-            "stratum": stratum or "?",
-            "oracle_verdict": oracle,
-            "baseline_verdict": band.most_frequent_verdict,
-            "variance_band": band.observed_band,
-            "is_stable": band.is_stable,
-            "n_runs": n_runs,
-            "tier": tier or "miss",
-            "tracking": tracking or "tier3",
-            "source": "n5_characterization",
-            # New methodology fields
-            "verdict_distribution": band.verdict_distribution,
-            "most_frequent_verdict": band.most_frequent_verdict,
-            "most_frequent_pct": band.most_frequent_pct,
-            "flip_rate": band.flip_rate,
-            "mean_distance_to_oracle": band.mean_distance_to_oracle,
-            "distance_std_to_oracle": band.distance_std_to_oracle,
-        })
+        files_out.append(
+            {
+                "file_name": fn,
+                "stratum": stratum or "?",
+                "oracle_verdict": oracle,
+                "baseline_verdict": band.most_frequent_verdict,
+                "variance_band": band.observed_band,
+                "is_stable": band.is_stable,
+                "n_runs": n_runs,
+                "tier": tier or "miss",
+                "tracking": tracking or "tier3",
+                "source": "n5_characterization",
+                # New methodology fields
+                "verdict_distribution": band.verdict_distribution,
+                "most_frequent_verdict": band.most_frequent_verdict,
+                "most_frequent_pct": band.most_frequent_pct,
+                "flip_rate": band.flip_rate,
+                "mean_distance_to_oracle": band.mean_distance_to_oracle,
+                "distance_std_to_oracle": band.distance_std_to_oracle,
+            }
+        )
 
     # Aggregate-level rollups
     n_oracle_match = sum(
-        1 for f in files_out
-        if f["oracle_verdict"] and f["most_frequent_verdict"] == f["oracle_verdict"]
+        1 for f in files_out if f["oracle_verdict"] and f["most_frequent_verdict"] == f["oracle_verdict"]
     )
     n_stable = sum(1 for f in files_out if f["is_stable"])
     n_unstable = len(files_out) - n_stable
@@ -208,12 +204,14 @@ def aggregate_baseline_runs(run_paths: list[Path]) -> dict:
     for keyed in keyed_runs:
         rows = list(keyed.values())
         s = aggregate_run(rows)
-        per_run_summaries.append({
-            "n_scored": s.n_scored,
-            "verdict_exact": s.verdict_exact,
-            "verdict_exact_pct": s.verdict_exact_pct,
-            "mean_distance": s.mean_distance,
-        })
+        per_run_summaries.append(
+            {
+                "n_scored": s.n_scored,
+                "verdict_exact": s.verdict_exact,
+                "verdict_exact_pct": s.verdict_exact_pct,
+                "mean_distance": s.mean_distance,
+            }
+        )
 
     tier_breakdown = defaultdict(int)
     tracking_breakdown = defaultdict(int)
@@ -222,12 +220,8 @@ def aggregate_baseline_runs(run_paths: list[Path]) -> dict:
         tracking_breakdown[f["tracking"]] += 1
 
     # Mean across runs for the headline number
-    mean_exact = (
-        sum(s["verdict_exact_pct"] for s in per_run_summaries) / n_runs
-    ) if n_runs else 0.0
-    mean_dist = (
-        sum(s["mean_distance"] for s in per_run_summaries) / n_runs
-    ) if n_runs else 0.0
+    mean_exact = (sum(s["verdict_exact_pct"] for s in per_run_summaries) / n_runs) if n_runs else 0.0
+    mean_dist = (sum(s["mean_distance"] for s in per_run_summaries) / n_runs) if n_runs else 0.0
 
     return {
         "n_files": len(files_out),
@@ -238,10 +232,7 @@ def aggregate_baseline_runs(run_paths: list[Path]) -> dict:
         "stability": {
             "stable_files": n_stable,
             "unstable_files": n_unstable,
-            "unstable_pct": (
-                round(100.0 * n_unstable / len(files_out), 2)
-                if files_out else 0.0
-            ),
+            "unstable_pct": (round(100.0 * n_unstable / len(files_out), 2) if files_out else 0.0),
         },
         "tier_breakdown": dict(tier_breakdown),
         "tracking_breakdown": dict(tracking_breakdown),
@@ -296,33 +287,23 @@ def main() -> int:
     # Console summary
     print(f"\n=== N={doc['n_runs']} baseline characterization ===")
     print(f"  Files: {doc['n_files']}")
-    print(
-        f"  Mean verdict-exact across runs: "
-        f"{doc['verdict_exact_pct_mean_across_runs']}%"
-    )
+    print(f"  Mean verdict-exact across runs: {doc['verdict_exact_pct_mean_across_runs']}%")
     print(f"  Mean distance across runs: {doc['mean_distance_across_runs']}")
     stability = doc["stability"]
     print(
         f"  Stable files (all N runs agree): {stability['stable_files']} / "
         f"{doc['n_files']} ({100 - stability['unstable_pct']}%)"
     )
-    print(
-        f"  Unstable files (any disagreement): {stability['unstable_files']} "
-        f"({stability['unstable_pct']}%)"
-    )
+    print(f"  Unstable files (any disagreement): {stability['unstable_files']} ({stability['unstable_pct']}%)")
     print(f"  Wrote: {args.output}")
 
     # List the most unstable files (highest flip_rate)
-    unstable = [
-        f for f in doc["files"] if not f["is_stable"]
-    ]
+    unstable = [f for f in doc["files"] if not f["is_stable"]]
     if unstable:
         unstable.sort(key=lambda f: f["flip_rate"], reverse=True)
-        print(f"\n  Highest-variance files (verdict flips across runs):")
+        print("\n  Highest-variance files (verdict flips across runs):")
         for f in unstable[:10]:
-            dist_summary = ", ".join(
-                f"{lbl}={n}" for lbl, n in f["verdict_distribution"].items()
-            )
+            dist_summary = ", ".join(f"{lbl}={n}" for lbl, n in f["verdict_distribution"].items())
             print(
                 f"    {f['file_name']:42s}  "
                 f"flip_rate={f['flip_rate']:.2f}  "

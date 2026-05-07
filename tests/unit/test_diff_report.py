@@ -65,10 +65,7 @@ def test_normalize_filename_strips_numeric_prefix() -> None:
 
 
 def test_normalize_filename_strips_category_prefix() -> None:
-    assert (
-        _normalize_filename("supply_c__docker_entrypoint_init.py")
-        == "docker_entrypoint_init.py"
-    )
+    assert _normalize_filename("supply_c__docker_entrypoint_init.py") == "docker_entrypoint_init.py"
     assert _normalize_filename("vulnerab__sandbox_runner.js") == "sandbox_runner.js"
     assert _normalize_filename("attack_c__c2.py") == "c2.py"
     assert _normalize_filename("malware__beacon.py") == "beacon.py"
@@ -81,10 +78,7 @@ def test_normalize_filename_idempotent_on_canonical() -> None:
 
 def test_normalize_filename_strips_both_prefixes() -> None:
     # Numeric stripped first, then category — order matters for chained prefixes.
-    assert (
-        _normalize_filename("01_supply_c__docker.py")
-        == "docker.py"
-    )
+    assert _normalize_filename("01_supply_c__docker.py") == "docker.py"
 
 
 # ── FindingRef normalizers ────────────────────────────────────────────────────

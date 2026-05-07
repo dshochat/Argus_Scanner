@@ -53,7 +53,6 @@ from dast.sandbox.client import (
     StubSandboxClient,
 )
 
-
 _IMAGE_ENV_VARS: dict[str, str] = {
     "minimal": "ECHO_DAST_IMAGE_MINIMAL",
     "networked": "ECHO_DAST_IMAGE_NETWORKED",
@@ -77,7 +76,7 @@ class MultiImageWiringConfig:
         *,
         fly_app_name: str = "argus-dast-sandbox",
         require_all_images: bool = False,
-    ) -> "MultiImageWiringConfig":
+    ) -> MultiImageWiringConfig:
         """Build a config from environment variables.
 
         ``require_all_images=False`` (default) means we register only
@@ -89,8 +88,7 @@ class MultiImageWiringConfig:
         token = os.environ.get("FLY_API_TOKEN", "").strip()
         if not token:
             raise RuntimeError(
-                "FLY_API_TOKEN must be set for the multi-image sandbox "
-                "client to call the Fly Machines API."
+                "FLY_API_TOKEN must be set for the multi-image sandbox client to call the Fly Machines API."
             )
 
         refs: dict[str, str] = {}
@@ -110,9 +108,7 @@ class MultiImageWiringConfig:
 
         if require_all_images and missing:
             raise RuntimeError(
-                "Missing image env vars: "
-                + ", ".join(missing)
-                + ". Pass require_all_images=False to allow partial "
+                "Missing image env vars: " + ", ".join(missing) + ". Pass require_all_images=False to allow partial "
                 "deployments (plans default to minimal)."
             )
 
@@ -168,10 +164,7 @@ def build_stub_multi_image_sandbox(
     infra. Real per-fixture ground-truth scenarios go in via
     ``StubSandboxClient.scenario`` after construction.
     """
-    inner = {
-        hint: StubSandboxClient()
-        for hint in _IMAGE_ENV_VARS
-    }
+    inner = {hint: StubSandboxClient() for hint in _IMAGE_ENV_VARS}
     return MultiImageSandboxClient(
         inner_by_hint=inner,
         fallback_hint="minimal",

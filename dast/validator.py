@@ -81,7 +81,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-
 HEDGE_PHRASES = (
     "could potentially",
     "might also",
@@ -147,14 +146,10 @@ class HypothesisValidator:
         rule_notes: dict[str, str] = {}
         borderline_notes: list[str] = []
 
-        rule_results["R1_specific"], rule_notes["R1_specific"] = self._check_r1(
-            hypothesis, borderline_notes
-        )
-        rule_results["R2_bounded"], rule_notes["R2_bounded"] = self._check_r2(
-            hypothesis
-        )
-        rule_results["R3_evidence_driven"], rule_notes["R3_evidence_driven"] = (
-            self._check_r3(hypothesis, l1_findings, journal_summary, borderline_notes)
+        rule_results["R1_specific"], rule_notes["R1_specific"] = self._check_r1(hypothesis, borderline_notes)
+        rule_results["R2_bounded"], rule_notes["R2_bounded"] = self._check_r2(hypothesis)
+        rule_results["R3_evidence_driven"], rule_notes["R3_evidence_driven"] = self._check_r3(
+            hypothesis, l1_findings, journal_summary, borderline_notes
         )
 
         accepted = all(rule_results.values())
@@ -171,9 +166,7 @@ class HypothesisValidator:
 
     # --- R1 ---------------------------------------------------------------
 
-    def _check_r1(
-        self, h: dict[str, Any], borderline_notes: list[str]
-    ) -> tuple[bool, str]:
+    def _check_r1(self, h: dict[str, Any], borderline_notes: list[str]) -> tuple[bool, str]:
         scope = h.get("scope") or {}
         ls = scope.get("lines_start")
         le = scope.get("lines_end")
@@ -185,7 +178,7 @@ class HypothesisValidator:
         if span > 50:
             return False, f"scope spans >50 lines ({ls}..{le})"
         if span > 30:
-            borderline_notes.append(f"scope range {span+1} lines (>30, ≤50)")
+            borderline_notes.append(f"scope range {span + 1} lines (>30, ≤50)")
 
         steps = h.get("test_steps")
         if not isinstance(steps, list) or not steps:
@@ -219,8 +212,7 @@ class HypothesisValidator:
         env = h.get("environment_complexity")
         if env not in {"single_process", "multi_process"}:
             return False, (
-                f"environment_complexity={env!r} (only single_process / "
-                f"multi_process accepted in prototype scope)"
+                f"environment_complexity={env!r} (only single_process / multi_process accepted in prototype scope)"
             )
         ts = h.get("estimated_sandbox_time_sec")
         if not isinstance(ts, int) or ts < 1 or ts > 600:
@@ -249,9 +241,7 @@ class HypothesisValidator:
         if len(eb_why.strip()) < 20:
             return False, f"evidence_basis.why_relevant too short ({len(eb_why)} chars)"
 
-        l1_finding_ids = {
-            str(f.get("id", "")) for f in l1_findings if isinstance(f, dict)
-        }
+        l1_finding_ids = {str(f.get("id", "")) for f in l1_findings if isinstance(f, dict)}
         confirmed = self._journal_confirmed(journal_summary)
         all_finding_ids = l1_finding_ids | set(confirmed)
         evt_ids = self._journal_event_ids(journal_summary)
@@ -264,18 +254,13 @@ class HypothesisValidator:
                 return False, f"evidence_basis.ref={eb_ref!r} not a journal event_id"
         elif eb_type == "code_pattern":
             if not (LINE_REF_PAT.search(eb_ref) or NAMED_ARTIFACT_PAT.search(eb_ref)):
-                return False, (
-                    f"evidence_basis.ref={eb_ref!r} has neither a line range "
-                    f"nor a named non-code artifact"
-                )
+                return False, (f"evidence_basis.ref={eb_ref!r} has neither a line range nor a named non-code artifact")
             if not all_finding_ids:
                 pass  # iter 1 with no confirmed findings — code_pattern is OK
             else:
                 # code_pattern is fine but unanchored to L1's confirmed work
                 # → borderline.
-                borderline_notes.append(
-                    "evidence_basis.type=code_pattern (no L1 finding ID anchor)"
-                )
+                borderline_notes.append("evidence_basis.type=code_pattern (no L1 finding ID anchor)")
 
         # Upstream chain
         uc = h.get("upstream_chain") or {}
@@ -293,30 +278,21 @@ class HypothesisValidator:
                 f"confirmed_findings={sorted(confirmed)!r}"
             )
         if not confirmed and not F_ID_PAT.match(cfr):
-            return False, (
-                f"upstream_chain.confirmed_finding_ref={cfr!r} not an F### id"
-            )
+            return False, (f"upstream_chain.confirmed_finding_ref={cfr!r} not an F### id")
         if not cond:
             return False, "upstream_chain.upstream_condition empty"
         cond_lower = cond.lower()
         for phrase in GENERIC_UPSTREAM_PHRASES:
             if phrase in cond_lower and len(cond) <= len(phrase) + 20:
-                return False, (
-                    f"upstream_chain.upstream_condition is generic "
-                    f"({cond!r}); needs a specific qualifier"
-                )
+                return False, (f"upstream_chain.upstream_condition is generic ({cond!r}); needs a specific qualifier")
         if not loc:
             return False, "upstream_chain.evidence_location empty"
         if not (LINE_REF_PAT.search(loc) or NAMED_ARTIFACT_PAT.search(loc)):
             return False, (
-                f"upstream_chain.evidence_location={loc!r} has neither a "
-                f"line range nor a named non-code artifact"
+                f"upstream_chain.evidence_location={loc!r} has neither a line range nor a named non-code artifact"
             )
 
-        return True, (
-            f"evidence_basis.type={eb_type}, ref={eb_ref!r}; "
-            f"upstream_chain anchored to {cfr}"
-        )
+        return True, (f"evidence_basis.type={eb_type}, ref={eb_ref!r}; upstream_chain anchored to {cfr}")
 
     # --- helpers ----------------------------------------------------------
 

