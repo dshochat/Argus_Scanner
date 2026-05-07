@@ -70,6 +70,8 @@ On the regression suite, Argus's DAST tier produced **25 CONFIRMED exploits + 1 
 > Static and single-LLM scanners report *suspicion*.
 > Argus reports **what the code actually did** — with concrete evidence, or clear proof it didn't.
 
+DAST cuts both ways: it confirms exploits with sandbox-captured evidence and refutes false positives with proof of non-exploitability. See [What you get back → DAST evidence](#dast-evidence-when-sandbox-detonation-runs) for a real refutation example where the orchestrator rejected 4 of L1's hypotheses because the runtime sandbox couldn't ground them.
+
 ---
 
 ## How the cascade keeps it cheap
@@ -135,23 +137,23 @@ Requirements:
 
 ```bash
 # Default: cascade + DAST on confirmed-malicious verdicts
-uv run argus scan suspicious_package.py
+argus scan suspicious_package.py
 
 # Tunable DAST coverage — also DAST suspicious files (~30-50% more API spend)
-uv run argus scan suspicious_package.py \
+argus scan suspicious_package.py \
   --dast-trigger-verdicts suspicious,malicious,critical_malicious
 
 # Strictest budget mode — DAST only the highest-severity verdict tier
-uv run argus scan suspicious_package.py --dast-trigger-verdicts critical_malicious
+argus scan suspicious_package.py --dast-trigger-verdicts critical_malicious
 
 # Hard cost cap, any verdict
-uv run argus scan suspicious_package.py --max-cost 0.50
+argus scan suspicious_package.py --max-cost 0.50
 
 # Discovery mode — proactive payload sweep for CWEs L1 missed (+~$0.25/file)
-uv run argus scan suspicious_package.py --enable-discovery
+argus scan suspicious_package.py --enable-discovery
 
 # Skip DAST entirely (no Fly setup required; cascade-only verdicts)
-uv run argus scan suspicious_package.py --no-dast
+argus scan suspicious_package.py --no-dast
 ```
 
 ### Repo scan (whole project)
@@ -161,20 +163,20 @@ uv run argus scan suspicious_package.py --no-dast
 ```bash
 # Whole project, current directory
 cd ~/work/my-project
-uv run argus scan-repo .
+argus scan-repo .
 
 # PR / CI mode — only files changed vs main
-uv run argus scan-repo . --diff origin/main
+argus scan-repo . --diff origin/main
 
 # CI with budget + SARIF output for GitHub Code Scanning
-uv run argus scan-repo . \
+argus scan-repo . \
   --diff origin/main \
   --max-cost 5.00 \
   --output sarif \
   --output-file findings.sarif
 
 # Add a custom exclude pattern on top of .gitignore
-uv run argus scan-repo . --exclude "vendor/**" --exclude "**/*.generated.*"
+argus scan-repo . --exclude "vendor/**" --exclude "**/*.generated.*"
 ```
 
 **What gets scanned:** the file-type allowlist covers Python, JavaScript / TypeScript, shell, Java bytecode, Markdown / RST / AsciiDoc (AI-injection surface), HTML / SVG / XML (XSS / XXE), and supply-chain manifests (`package.json`, `requirements.txt`, `Cargo.lock`, `go.mod`, `Gemfile`, `composer.json`, etc.). AI-agent config sentinels (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `mcp.json`, `claude_desktop_config.json`, `devcontainer.json`, …) are explicitly recognized — these are the prime vectors for malicious-instructions-in-config attacks against coding agents. Always-ignored: `.git`, `node_modules`, `__pycache__`, `.venv`, build dirs, etc.
@@ -189,7 +191,7 @@ Argus produces three output formats — markdown for terminals, JSON for pipelin
 
 ### Markdown summary (default)
 
-Real output from `uv run argus scan samples/regression_v1/audit_log_compression.py --no-dast`:
+Real output from `argus scan samples/regression_v1/audit_log_compression.py --no-dast`:
 
 ```markdown
 # audit_log_compression.py
@@ -319,8 +321,7 @@ trace, and a concrete proof-of-concept payload:
 When DAST verification fires, the per-file record gains a `dast_iterations`
 block recording the agentic sandbox loop, and the `scan_path` records every
 DAST stage the orchestrator went through. Real output from
-`uv run argus scan samples/regression_v1/event_stream_flatmap_compromise.js
---dast-trigger-verdicts suspicious,malicious,critical_malicious`:
+`argus scan samples/regression_v1/event_stream_flatmap_compromise.js --dast-trigger-verdicts suspicious,malicious,critical_malicious`:
 
 ```json
 {
@@ -380,7 +381,7 @@ Drop directly into GitHub Code Scanning, GitLab SAST, or any SARIF-aware
 pipeline:
 
 ```bash
-uv run argus scan-repo . --output sarif --output-file findings.sarif
+argus scan-repo . --output sarif --output-file findings.sarif
 ```
 
 Each finding becomes a SARIF result with stable `ruleId` (CWE), severity-mapped
@@ -433,6 +434,15 @@ and runtime evidence:
   ]
 }
 ```
+
+`argus_status` tells you whether the finding came from the cascade alone or
+was DAST-verified: `L1_ONLY` (cascade only, as in this example) /
+`CONFIRMED` (DAST grounded the exploit) / `BLOCKED` (file's own defenses
+stopped it) / `UNREACHED` (code path not exercised) / `NOT_TESTED` (sandbox
+couldn't run the test). When `argus_status` is `CONFIRMED`, an
+`argus_runtime_evidence` field carries the sandbox-captured proof
+(network egress, syscall trace, filesystem writes); a `argus_poc` field
+carries the concrete reproduction payload.
 
 ---
 
