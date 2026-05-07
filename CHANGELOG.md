@@ -4,6 +4,19 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] — 2026-05-07 — Docker publish fix
+
+Patch release. Functionally identical to v1.1.0 on PyPI; the fix unblocks the **first published Docker image at `ghcr.io/dshochat/argus_scanner:1.1.1`** (and `:latest`).
+
+### Fixed
+
+- **GHCR Docker image publish.** v1.1.0's release workflow shipped to PyPI cleanly but its `ghcr` job failed at `COPY methodology/ ./methodology/` because `.dockerignore` was excluding `methodology/`. That directory is a runtime import for `argus bench` and the launch-report builder, not a dev-only artefact — removing the exclusion unblocks the multi-arch build. The PyPI wheel was always correct (uv build doesn't read `.dockerignore`); only the Docker image was affected.
+
+### Maintenance
+
+- Vendor label in the Docker image: `Dudy Shochat` → `David Shochat` to match the rest of the project metadata.
+- Tightened the DAST-setup comment in the Dockerfile to enumerate the three `ECHO_DAST_IMAGE_*` env-var slots accurately.
+
 ## [1.1.0] — 2026-05-06 — first public release
 
 **An AI-native code security scanner that proves exploitability at runtime.**
