@@ -12,8 +12,6 @@ dist/
 # uv / venvs
 .venv/
 venv/
-.python-version
-uv.lock
 
 # Env / secrets
 .env

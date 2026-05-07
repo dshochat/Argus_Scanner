@@ -154,4 +154,4 @@ echo "    --rm \\"
 echo "    \"\${ECHO_DAST_IMAGE_NETWORKED}\" \\"
 echo "    -- bash -c 'curl -V && nc -h 2>&1 | head -1'"
 echo
-echo "Done. Notify Claude that build_and_push_multi.sh completed."
+echo "Done. Sandbox images built and pushed."

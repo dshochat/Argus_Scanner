@@ -75,7 +75,7 @@ echo
 echo "Next step: emit a deploy-scoped API token for the orchestrator."
 echo "Run from your workstation:"
 echo "    flyctl tokens create deploy --app $APP_NAME --expiry 720h"
-echo "Save the token to C:/WEB/argus/.env as:"
+echo "Save the token to your .env as:"
 echo "    FLY_API_TOKEN=<token>"
 echo
-echo "Then notify Claude that preflight passed."
+echo "Preflight complete."

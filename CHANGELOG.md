@@ -95,13 +95,6 @@ pip install argus-ai-scanner
 git clone https://github.com/dshochat/Argus_Scanner.git
 cd Argus_Scanner
 uv sync --extra dev
-
-# Docker
-docker run --rm \
-  -e ANTHROPIC_API_KEY -e GEMINI_API_KEY \
-  -v "$PWD:/workspace" \
-  ghcr.io/dshochat/argus_scanner:1.1.0 \
-  scan-repo /workspace
 ```
 
 Required: Python 3.12+, an Anthropic API key, a Google AI Studio key. DAST sandbox tier is optional and requires a Fly.io account.

@@ -1,7 +1,7 @@
 """Sandbox client — Protocol + stub + Firecracker (Fly.io) implementations.
 
-Production target is Firecracker (primary) / gVisor (fallback) per
-``dast/CLAUDE.md``. The stub keeps the prototype's architecture-
+Production target is Firecracker (primary) / gVisor (fallback) — see
+the DAST setup docs. The stub keeps the prototype's architecture-
 validation runs decoupled from sandbox infrastructure. The Firecracker
 client (Path C — Fly.io managed Firecracker substrate) is the real-
 sandbox path for verdict-accuracy validation against the same corpus.
