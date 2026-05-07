@@ -8,6 +8,25 @@ Open source, Apache 2.0, BYOK. You pay your providers directly — Anthropic + G
 
 ---
 
+## Benchmark — Argus vs frontier single-call scanners
+
+Scored against a ground-truth oracle derived from external security research and a multi-vendor LLM consensus (majority agreement):
+
+```
+                       Verdict-exact (higher = better)
+Argus (cascade + DAST) ████████████████████  91.3%
+Gemini 3.1 Pro         █████████████████░░░  82.6%
+Grok 4.3               █████████████████░░░  82.6%
+Opus 4.6               █████████████████░░░  78.3%
+GPT 5.4                ████████████████░░░░  73.9%
+```
+
+Argus is **+13.0pp more accurate than Opus 4.6** and **+17.4pp more accurate than GPT-5.4**. On the rich-oracle subset Argus also leads on finding quality: **CWE F1 0.297 vs Opus 0.180** (+65% lift) and **capability F1 0.771 vs Opus 0.720**. Mean verdict-distance: **0.087 vs Opus 0.217**.
+
+Methodology + per-file breakdown: [`bench_results/v1_1_launch/launch_report.md`](bench_results/v1_1_launch/launch_report.md). Re-run is one command: `python -m methodology.run_phase_a_report`.
+
+---
+
 ## What makes it different
 
 Most scanners stop at "this code matches a vulnerability pattern." Argus runs the code, watches what it does, and reports per-finding outcomes:
@@ -45,30 +64,11 @@ A `CONFIRMED` finding looks like this in `argus scan` output:
 }
 ```
 
+On the regression suite, Argus's DAST tier produced **25 CONFIRMED exploits + 1 BLOCKED** with concrete sandbox-captured artefacts — network calls, exfil POST bodies, process traces. By verifying which findings are **actually exploitable** versus mere pattern matches, Argus minimizes the false-positive flood that drowns security teams using static-only scanners. Unlike single-call LLMs that must guess exploitability, Argus's DAST tier tests it — turning many "maybe" findings into proven CONFIRMED exploits or clean UNREACHED / BLOCKED resolutions.
+
 > **This is Argus's moat.**
 > Static and single-LLM scanners report *suspicion*.
 > Argus reports **what the code actually did** — with concrete evidence, or clear proof it didn't.
-
----
-
-## Benchmark — Argus vs frontier single-call scanners
-
-Scored against a ground-truth oracle derived from external security research and a multi-vendor LLM consensus (majority agreement):
-
-```
-                       Verdict-exact (higher = better)
-Argus (cascade + DAST) ████████████████████  91.3%
-Gemini 3.1 Pro         █████████████████░░░  82.6%
-Grok 4.3               █████████████████░░░  82.6%
-Opus 4.6               █████████████████░░░  78.3%
-GPT 5.4                ████████████████░░░░  73.9%
-```
-
-Argus is **+13.0pp more accurate than Opus 4.6** and **+17.4pp more accurate than GPT-5.4**. On the rich-oracle subset Argus also leads on finding quality: **CWE F1 0.297 vs Opus 0.180** (+65% lift) and **capability F1 0.771 vs Opus 0.720**. Mean verdict-distance: **0.087 vs Opus 0.217**.
-
-But the differentiator the single-call scanners can't produce is **runtime evidence**. On the same suite, Argus's DAST tier observed **25 CONFIRMED exploits + 1 BLOCKED** with concrete sandbox-captured artefacts — network calls, exfil POST bodies, process traces. By verifying which findings are **actually exploitable** versus mere pattern matches, Argus minimizes the false-positive flood that drowns security teams using static-only scanners. Unlike single-call LLMs that must guess exploitability, Argus's DAST tier tests it — turning many "maybe" findings into proven CONFIRMED exploits or clean UNREACHED / BLOCKED resolutions.
-
-Methodology + per-file breakdown: [`bench_results/v1_1_launch/launch_report.md`](bench_results/v1_1_launch/launch_report.md). Re-run is one command: `python -m methodology.run_phase_a_report`.
 
 ---
 
