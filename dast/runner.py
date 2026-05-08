@@ -170,9 +170,7 @@ def make_dast_runner(
         scan_result: Any,
     ) -> dict:
         text = content.decode("utf-8", errors="replace")
-        file_id = (
-            getattr(pp, "file_hash", None) if pp is not None else None
-        ) or filename
+        file_id = (getattr(pp, "file_hash", None) if pp is not None else None) or filename
 
         l1_output = _scan_result_to_l1_output(scan_result)
         # The basename (with extension) is what the sandbox stages at
@@ -285,15 +283,9 @@ def make_dast_runner_from_env(api_key: str | None = None) -> DastRunner | None:
 
     sandbox = MultiImageSandboxClient(
         inner_by_hint={
-            "minimal": FirecrackerSandboxClient(
-                fly_client=fly_client, image=image_minimal
-            ),
-            "networked": FirecrackerSandboxClient(
-                fly_client=fly_client, image=image_networked
-            ),
-            "ml_tools": FirecrackerSandboxClient(
-                fly_client=fly_client, image=image_ml_tools
-            ),
+            "minimal": FirecrackerSandboxClient(fly_client=fly_client, image=image_minimal),
+            "networked": FirecrackerSandboxClient(fly_client=fly_client, image=image_networked),
+            "ml_tools": FirecrackerSandboxClient(fly_client=fly_client, image=image_ml_tools),
         },
         fallback_hint="minimal",
     )

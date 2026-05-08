@@ -1621,23 +1621,15 @@ def phase_c_fix_schema() -> dict[str, Any]:
         "properties": {
             "patched_source": {
                 "type": "string",
-                "description": (
-                    "Complete patched file content. Must be the FULL "
-                    "source of the file (not a diff)."
-                ),
+                "description": ("Complete patched file content. Must be the FULL source of the file (not a diff)."),
             },
             "fix_summary": {
                 "type": "string",
-                "description": (
-                    "1-3 sentence summary of what was changed and why."
-                ),
+                "description": ("1-3 sentence summary of what was changed and why."),
             },
             "per_finding_fixes": {
                 "type": "array",
-                "description": (
-                    "One entry per confirmed finding; describe the "
-                    "specific change applied."
-                ),
+                "description": ("One entry per confirmed finding; describe the specific change applied."),
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
@@ -1661,7 +1653,7 @@ def build_phase_c_fix_prompt(
     findings_lines = []
     for i, f in enumerate(confirmed_findings):
         findings_lines.append(
-            f"\n--- Finding {i+1} (finding_ref={f.get('finding_ref', '?')}) ---\n"
+            f"\n--- Finding {i + 1} (finding_ref={f.get('finding_ref', '?')}) ---\n"
             f"  type:        {f.get('type', 'unknown')}\n"
             f"  severity:    {f.get('severity', 'unknown')}\n"
             f"  description: {(f.get('description') or f.get('claim') or '').strip()[:600]}\n"
@@ -1675,4 +1667,3 @@ def build_phase_c_fix_prompt(
         f"Output JSON conforming to the provided schema."
     )
     return _PHASE_C_FIX_BODY + payload
-
