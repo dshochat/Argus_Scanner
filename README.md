@@ -4,7 +4,7 @@
 
 Argus combines a cost-graduated LLM cascade (Gemini Flash-Lite → Sonnet 4.6 → Opus 4.6) with a sandbox tier that *executes* suspect code in a Firecracker microVM and observes what it actually does. Static-analysis findings get promoted to **CONFIRMED** only when the sandbox captures concrete runtime evidence — a network call, a file write, a process spawn. Findings that cannot be triggered are marked **UNREACHED**; findings the file's own defenses block are **BLOCKED**. No more "the LLM said it might be malicious."
 
-**v1.2 adds Phase C — fix-and-verify.** When DAST confirms an exploit, Argus generates a patched version of the file, replays the *same* exploit attempts against the patched code in the sandbox, and reports per-finding **NEUTRALIZED** / **STILL_EXPLOITABLE** with sandbox-grounded evidence. You don't get a fix suggestion; you get a fix that's been *tested*. Validated end-to-end on adversarial fixtures: **5 of 5 confirmed exploits neutralized** across two distinct backdoor patterns.
+**v1.2 adds Phase C — fix-and-verify** (sandbox-grounded remediation). When DAST confirms an exploit, Argus generates a patched version of the file, replays the *same* exploit attempts against the patched code in the sandbox, and reports per-finding **NEUTRALIZED** / **STILL_EXPLOITABLE** with sandbox-grounded evidence. You don't get a remediation *suggestion*; you get a remediation that's been *tested*. Validated end-to-end on adversarial fixtures: **5 of 5 confirmed exploits neutralized** across two distinct backdoor patterns.
 
 Open source, Apache 2.0, BYOK. You pay your providers directly — Anthropic + Google for the cascade, Fly.io for the optional DAST sandbox. Argus collects nothing.
 
@@ -474,9 +474,9 @@ Full setup: [docs/dast-setup.md](docs/dast-setup.md).
 
 ---
 
-## Phase C — fix-and-verify (v1.2)
+## Phase C — fix-and-verify (sandbox-grounded remediation, v1.2)
 
-Detection is necessary but not sufficient. Most security tools stop at "here's a vuln; here's a suggested fix" and leave you to decide whether the suggestion would actually close the exploit. **Argus v1.2 closes that loop — every patch is sandbox-verified before it reaches your output.**
+Detection is necessary but not sufficient. Most security tools stop at "here's a vuln; here's a suggested fix" — *remediation guidance* in the language of Snyk, Veracode, GitHub Code Scanning — and leave you to decide whether the suggestion would actually close the exploit. **Argus v1.2 closes that loop with sandbox-grounded remediation: every patch is replayed against the same sandbox attacks that confirmed the original exploit before reaching your output.**
 
 ### How it works
 
@@ -614,7 +614,7 @@ Two fixtures, Anthropic stack (Sonnet 4.6 + Opus 4.6 + Gemini Flash-Lite triage)
 
 **Cost.** Phase C adds ~$0.15-0.25 per file when it fires (patch generation + sandbox replays + post-patch verdict). Only triggers when DAST has at least one CONFIRMED finding, so cost-bounded by the L1+DAST cascade upstream.
 
-**Why this matters for AI agents.** When an agent encounters a file before importing it (`pip install`, `npm install`, `torch.load`), the output Argus produces is *agent-actionable*: the agent gets the original code + a sandbox-verified safer version + a fix summary. No human-in-the-loop translation needed.
+**Why this matters for AI agents.** When an agent encounters a file before importing it (`pip install`, `npm install`, `torch.load`), the remediation output Argus produces is *agent-actionable*: the agent gets the original code + a sandbox-verified safer version + a fix summary. No human-in-the-loop translation needed.
 
 **Triggering.** v1.2 fires Phase C whenever the DAST journal contains a `phase_a_verdict` record with `verdict="confirmed"` and non-empty `evidence_refs` — a broader gate than v1.1's `findings_validated`-only path, which sometimes missed runtime-grounded confirmations that didn't tie back via `finding_ref`. See `dast.orchestrator._run_phase_c_fix_verify` for the full schema and `prompts.build_phase_c_fix_prompt` / `prompts.phase_c_fix_schema` for the patcher contract.
 
