@@ -90,7 +90,7 @@ class ScanConfig:
 
     # Ensemble
     ensemble_size_borderline: int = 3  # N for borderline-file ensemble
-    ensemble_size_default: int = 1  # N for non-borderline (no ensemble)
+    ensemble_size_default: int = 1     # N for non-borderline (no ensemble)
 
     # DAST verification
     enable_dast: bool = True
@@ -151,6 +151,13 @@ class ScanResult:
     # by filtering to CONFIRMED-only findings.
     per_finding_validation: list[dict] = field(default_factory=list)
 
+    # v1.2: Phase C — fix-and-verify result. None when DAST didn't run or
+    # had no confirmed findings; otherwise a dict with patched_source,
+    # fix_summary, post_patch_verdict, per_finding[NEUTRALIZED|STILL_EXPLOITABLE
+    # |UNVERIFIABLE], n_neutralized, n_still_exploitable. See
+    # dast.orchestrator._run_phase_c_fix_verify for the schema.
+    phase_c: dict | None = None
+
     # Telemetry
     scan_path: list[str] = field(default_factory=list)  # sequence of stages traversed
     model_calls: list[dict] = field(default_factory=list)  # per-call cost + latency
@@ -180,6 +187,7 @@ class ScanResult:
             "dast_findings": self.dast_findings,
             "dast_iterations": self.dast_iterations,
             "per_finding_validation": self.per_finding_validation,
+            "phase_c": self.phase_c,
             "scan_path": self.scan_path,
             "model_calls": self.model_calls,
             "total_cost_usd": round(self.total_cost_usd, 4),
@@ -255,8 +263,14 @@ def _check_cost_cap(
         return False
     if result.total_cost_usd <= cap:
         return False
-    result.scan_path.append(f"cost_cap_exceeded_after:{stage_just_completed}({result.total_cost_usd:.4f}>{cap:.2f})")
-    result.error = f"cost_cap_exceeded: ${result.total_cost_usd:.4f} > ${cap:.2f} after {stage_just_completed} stage"
+    result.scan_path.append(
+        f"cost_cap_exceeded_after:{stage_just_completed}"
+        f"({result.total_cost_usd:.4f}>{cap:.2f})"
+    )
+    result.error = (
+        f"cost_cap_exceeded: ${result.total_cost_usd:.4f} > "
+        f"${cap:.2f} after {stage_just_completed} stage"
+    )
     result.status = 402  # Payment Required — fits the semantics
     return True
 
@@ -294,7 +308,6 @@ async def scan_file(
     """
     cfg = config or ScanConfig()
     import time
-
     t_start = time.time()
 
     result = ScanResult(
@@ -319,7 +332,9 @@ async def scan_file(
         # Short-circuit on known-malware hash
         if pp.known_malware_match:
             result.triage_classification = "HIGH"
-            result.triage_reason = f"Known-malware hash match: {pp.known_malware_match}"
+            result.triage_reason = (
+                f"Known-malware hash match: {pp.known_malware_match}"
+            )
             result.final_verdict = "critical_malicious"
             result.risk_score, result.risk_level = verdict_to_risk("critical_malicious")
             result.scan_path.append("known_malware_short_circuit")
@@ -333,7 +348,9 @@ async def scan_file(
 
     # ── Stage 2: high-stakes detection (informs cascade routing) ──────
     high_stakes, triggered_cats = is_high_stakes(pp, cfg.high_stakes_categories)
-    result.scan_path.append(f"high_stakes={high_stakes}{(':' + ','.join(triggered_cats)) if triggered_cats else ''}")
+    result.scan_path.append(
+        f"high_stakes={high_stakes}{(':'+','.join(triggered_cats)) if triggered_cats else ''}"
+    )
 
     # ── Stage 3: triage ────────────────────────────────────────────────
     if triage_runner is None:
@@ -348,16 +365,14 @@ async def scan_file(
             classification = (triage_out or {}).get("classification", "HIGH")
             triage_reason = (triage_out or {}).get("reason", "")
             result.scan_path.append(f"triage:{classification}")
-            result.model_calls.append(
-                {
-                    "stage": "triage",
-                    "model": (triage_out or {}).get("model", "unknown"),
-                    "input_tokens": (triage_out or {}).get("input_tokens", 0),
-                    "output_tokens": (triage_out or {}).get("output_tokens", 0),
-                    "cost_usd": (triage_out or {}).get("cost_usd", 0.0),
-                    "duration_ms": (triage_out or {}).get("duration_ms", 0),
-                }
-            )
+            result.model_calls.append({
+                "stage": "triage",
+                "model": (triage_out or {}).get("model", "unknown"),
+                "input_tokens": (triage_out or {}).get("input_tokens", 0),
+                "output_tokens": (triage_out or {}).get("output_tokens", 0),
+                "cost_usd": (triage_out or {}).get("cost_usd", 0.0),
+                "duration_ms": (triage_out or {}).get("duration_ms", 0),
+            })
             result.total_cost_usd += (triage_out or {}).get("cost_usd", 0.0)
             if _check_cost_cap(result, cfg, "triage"):
                 result.total_duration_ms = int((time.time() - t_start) * 1000)
@@ -374,7 +389,10 @@ async def scan_file(
     if cfg.enable_triage_safety_net and high_stakes and classification != "HIGH":
         original = classification
         classification = "HIGH"
-        triage_reason = f"{triage_reason} [safety_net: {original}→HIGH triggered by {','.join(triggered_cats)}]"
+        triage_reason = (
+            f"{triage_reason} [safety_net: {original}→HIGH triggered by "
+            f"{','.join(triggered_cats)}]"
+        )
         result.scan_path.append(f"safety_net_override:{original}->HIGH")
 
     result.triage_classification = classification
@@ -394,9 +412,7 @@ async def scan_file(
     chosen_model_label: str = ""
 
     if classification == "LOW":
-        chosen_runner = (
-            sonnet_runner  # falls back to Sonnet if no separate Flash runner; production wires Gemini Flash here
-        )
+        chosen_runner = sonnet_runner  # falls back to Sonnet if no separate Flash runner; production wires Gemini Flash here
         chosen_model_label = "low_path"
     else:  # HIGH
         if high_stakes and opus_runner is not None:
@@ -423,17 +439,15 @@ async def scan_file(
         result.final_verdict = (analysis_out or {}).get("verdict_label", "suspicious")
         result.risk_score, result.risk_level = verdict_to_risk(result.final_verdict)
 
-        result.model_calls.append(
-            {
-                "stage": "analysis",
-                "model": (analysis_out or {}).get("model", chosen_model_label),
-                "input_tokens": (analysis_out or {}).get("input_tokens", 0),
-                "output_tokens": (analysis_out or {}).get("output_tokens", 0),
-                "cost_usd": (analysis_out or {}).get("cost_usd", 0.0),
-                "duration_ms": (analysis_out or {}).get("duration_ms", 0),
-                "uncertainty": (analysis_out or {}).get("uncertainty", 0.0),
-            }
-        )
+        result.model_calls.append({
+            "stage": "analysis",
+            "model": (analysis_out or {}).get("model", chosen_model_label),
+            "input_tokens": (analysis_out or {}).get("input_tokens", 0),
+            "output_tokens": (analysis_out or {}).get("output_tokens", 0),
+            "cost_usd": (analysis_out or {}).get("cost_usd", 0.0),
+            "duration_ms": (analysis_out or {}).get("duration_ms", 0),
+            "uncertainty": (analysis_out or {}).get("uncertainty", 0.0),
+        })
         result.total_cost_usd += (analysis_out or {}).get("cost_usd", 0.0)
         if _check_cost_cap(result, cfg, "analysis"):
             result.total_duration_ms = int((time.time() - t_start) * 1000)
@@ -465,16 +479,14 @@ async def scan_file(
                 result.vulnerabilities = opus_out["vulnerabilities"]
             if (opus_out or {}).get("behavioral_profile"):
                 result.behavioral_profile = opus_out["behavioral_profile"]
-            result.model_calls.append(
-                {
-                    "stage": "analysis_escalation",
-                    "model": "opus",
-                    "input_tokens": (opus_out or {}).get("input_tokens", 0),
-                    "output_tokens": (opus_out or {}).get("output_tokens", 0),
-                    "cost_usd": (opus_out or {}).get("cost_usd", 0.0),
-                    "duration_ms": (opus_out or {}).get("duration_ms", 0),
-                }
-            )
+            result.model_calls.append({
+                "stage": "analysis_escalation",
+                "model": "opus",
+                "input_tokens": (opus_out or {}).get("input_tokens", 0),
+                "output_tokens": (opus_out or {}).get("output_tokens", 0),
+                "cost_usd": (opus_out or {}).get("cost_usd", 0.0),
+                "duration_ms": (opus_out or {}).get("duration_ms", 0),
+            })
             result.total_cost_usd += (opus_out or {}).get("cost_usd", 0.0)
             if _check_cost_cap(result, cfg, "opus_escalation"):
                 result.total_duration_ms = int((time.time() - t_start) * 1000)
@@ -485,13 +497,20 @@ async def scan_file(
             result.scan_path.append(f"opus_escalation_failed:{type(e).__name__}")
 
     # ── Stage 7: DAST verification ─────────────────────────────────────
-    if cfg.enable_dast and result.final_verdict in cfg.dast_trigger_verdicts and dast_runner is not None:
+    if (
+        cfg.enable_dast
+        and result.final_verdict in cfg.dast_trigger_verdicts
+        and dast_runner is not None
+    ):
         try:
             l1_verdict = result.final_verdict
             dast_out = await dast_runner(filename, content, pp, result)
             result.dast_attempted = True
             result.dast_findings = (dast_out or {}).get("validated_findings", [])
             result.dast_iterations = (dast_out or {}).get("iterations", [])
+            # v1.2: Phase C — fix-and-verify result, surfaced from
+            # dast.orchestrator. None if Phase C didn't run.
+            result.phase_c = (dast_out or {}).get("phase_c")
             dast_verdict = (dast_out or {}).get("final_verdict", {}).get("verdict_label")
 
             # Tier 1.5 (v1.1): derive per-finding validation by zipping
@@ -503,7 +522,6 @@ async def scan_file(
             # / UNREACHED (rejected with unreachable reasoning) /
             # NOT_TESTED (no journal entry or other rejection).
             from dast.per_finding import derive_per_finding_validation
-
             journal_records = (dast_out or {}).get("journal_records") or []
             result.per_finding_validation = [
                 pf.to_dict()
@@ -539,40 +557,154 @@ async def scan_file(
                     result.final_verdict = dast_verdict
                     result.risk_score, result.risk_level = verdict_to_risk(dast_verdict)
                     if dast_rank > l1_rank:
-                        result.scan_path.append(f"dast_upgrade:{l1_verdict}->{dast_verdict}")
+                        result.scan_path.append(
+                            f"dast_upgrade:{l1_verdict}->{dast_verdict}"
+                        )
                 else:
-                    # DAST wants to downgrade. Check if we have grounded
-                    # evidence (every L1 finding refuted or unreached).
+                    # DAST wants to downgrade. v1.2: severity-driven rule.
+                    #
+                    # The previous (v1.1) rule required EVERY L1 finding to
+                    # be BLOCKED or UNREACHED before allowing any downgrade.
+                    # That's strictly conservative but loses real signal
+                    # when DAST refutes most-but-not-all findings: e.g.,
+                    # 4 findings all medium-severity, 3 BLOCKED + 1
+                    # NOT_TESTED → previous rule kept malicious;
+                    # severity-driven rule downgrades to suspicious because
+                    # nothing critical remains confirmed.
+                    #
+                    # New rule: look at the MAX severity of findings that
+                    # are still CONFIRMED post-DAST. The verdict the engine
+                    # is willing to reach is bounded by that severity:
+                    #
+                    #   any CONFIRMED critical → keep L1 (no downgrade safe)
+                    #   any CONFIRMED high     → downgrade by 1 tier max
+                    #   only CONFIRMED med/low → downgrade to suspicious
+                    #   nothing CONFIRMED      → accept full DAST downgrade
+                    #
+                    # Final verdict is the higher of (severity-permitted
+                    # downgrade, DAST's proposed verdict) — DAST is never
+                    # forced to over-downgrade beyond what it asked for.
                     pf_list = result.per_finding_validation or []
-                    grounded_statuses = {"BLOCKED", "UNREACHED"}
-                    n_findings = len(pf_list)
-                    n_grounded = sum(1 for pf in pf_list if pf.get("status") in grounded_statuses)
-                    # All findings must be grounded for a safe downgrade.
-                    # Edge case: zero L1 findings — refuse (no evidence
-                    # in either direction; trust L1's verdict).
-                    is_grounded = n_findings > 0 and n_grounded == n_findings
-
-                    if is_grounded:
-                        result.final_verdict = dast_verdict
-                        result.risk_score, result.risk_level = verdict_to_risk(dast_verdict)
+                    # Edge case: no per-finding evidence at all (e.g., DAST
+                    # didn't populate pf_list — test stubs, errors, or
+                    # legacy runs). Without per-finding data we have no
+                    # basis for a severity-driven decision; fall back to
+                    # conservative v1.1 behavior — keep L1.
+                    if not pf_list:
                         result.scan_path.append(
-                            f"dast_downgrade_grounded:{l1_verdict}->{dast_verdict}"
-                            f":all_{n_findings}_findings_BLOCKED_or_UNREACHED"
+                            f"dast_keep_l1:{l1_verdict}_over_{dast_verdict}"
+                            f":no_per_finding_evidence"
                         )
+                        # Skip the rest of the severity-driven path.
+                        confirmed: list[dict] = []
+                        skip_severity_decision = True
                     else:
-                        # Not enough evidence — keep L1's verdict.
-                        result.scan_path.append(
-                            f"dast_keep_l1:{l1_verdict}_over_{dast_verdict}:{n_grounded}/{n_findings}_findings_grounded"
+                        skip_severity_decision = False
+
+                    if not skip_severity_decision:
+                        # Bucket findings by sandbox status:
+                        #   CONFIRMED:  sandbox proved exploit fires — real risk
+                        #   NOT_TESTED: sandbox didn't run the test — unknown risk
+                        #   BLOCKED:    sandbox tested, code defended → refuted
+                        #   UNREACHED:  sandbox tested, code path not reachable → refuted
+                        # CONFIRMED and NOT_TESTED both count as "uncertain"
+                        # (could still be exploitable). Only BLOCKED/UNREACHED
+                        # count as actually refuted — driving downgrade.
+                        uncertain = [
+                            pf for pf in pf_list
+                            if pf.get("status") in {"CONFIRMED", "NOT_TESTED"}
+                        ]
+                        confirmed_count = sum(
+                            1 for pf in pf_list
+                            if pf.get("status") == "CONFIRMED"
                         )
+                        refuted_count = sum(
+                            1 for pf in pf_list
+                            if pf.get("status") in {"BLOCKED", "UNREACHED"}
+                        )
+
+                        SEV_RANK = {
+                            "info": 0, "low": 0, "medium": 1,
+                            "high": 2, "critical": 3,
+                        }
+                        # Max severity of UNCERTAIN findings (incl. NOT_TESTED).
+                        # If any uncertain finding could be critical, we
+                        # cannot safely downgrade below L1.
+                        max_uncertain_sev = max(
+                            (
+                                SEV_RANK.get(
+                                    str(pf.get("severity", "")).lower(), 1
+                                )
+                                for pf in uncertain
+                            ),
+                            default=-1,  # -1 = no uncertain findings
+                        )
+
+                        VERDICT_ORDER = (
+                            "clean", "suspicious", "malicious",
+                            "critical_malicious",
+                        )
+                        l1_idx = (
+                            VERDICT_ORDER.index(l1_verdict)
+                            if l1_verdict in VERDICT_ORDER else 2
+                        )
+                        dast_idx = (
+                            VERDICT_ORDER.index(dast_verdict)
+                            if dast_verdict in VERDICT_ORDER else l1_idx
+                        )
+
+                        if max_uncertain_sev >= 3:
+                            # Critical confirmed/untested remains — refuse downgrade.
+                            new_idx = l1_idx
+                            reason = (
+                                f"critical_uncertain_remains:"
+                                f"{len(uncertain)}/{len(pf_list)}"
+                                f"_confirmed={confirmed_count}"
+                            )
+                        elif max_uncertain_sev >= 2:
+                            # High uncertain remains — downgrade by 1 tier max.
+                            new_idx = max(dast_idx, l1_idx - 1)
+                            reason = (
+                                "high_uncertain_remains:"
+                                "downgrade_capped_1tier"
+                            )
+                        elif max_uncertain_sev >= 0:
+                            # Only med/low uncertain — at most suspicious.
+                            new_idx = max(dast_idx, 1)  # 1 = suspicious
+                            reason = "med_low_uncertain_only:cap_at_suspicious"
+                        else:
+                            # All findings refuted (BLOCKED/UNREACHED) — full downgrade.
+                            new_idx = dast_idx
+                            reason = (
+                                f"all_refuted:"
+                                f"{refuted_count}/{len(pf_list)}"
+                            )
+
+                        new_verdict = VERDICT_ORDER[new_idx]
+                        if new_idx < l1_idx:
+                            result.final_verdict = new_verdict
+                            result.risk_score, result.risk_level = (
+                                verdict_to_risk(new_verdict)
+                            )
+                            result.scan_path.append(
+                                f"dast_severity_downgrade:"
+                                f"{l1_verdict}->{new_verdict}"
+                                f":{reason}"
+                            )
+                        else:
+                            # Severity rule kept us at L1 (no downgrade).
+                            result.scan_path.append(
+                                f"dast_keep_l1:"
+                                f"{l1_verdict}_over_{dast_verdict}"
+                                f":{reason}"
+                            )
             result.scan_path.append("dast_verification")
-            result.model_calls.append(
-                {
-                    "stage": "dast",
-                    "iterations": len(result.dast_iterations),
-                    "cost_usd": (dast_out or {}).get("total_cost_usd", 0.0),
-                    "duration_ms": (dast_out or {}).get("elapsed_ms", 0),
-                }
-            )
+            result.model_calls.append({
+                "stage": "dast",
+                "iterations": len(result.dast_iterations),
+                "cost_usd": (dast_out or {}).get("total_cost_usd", 0.0),
+                "duration_ms": (dast_out or {}).get("elapsed_ms", 0),
+            })
             result.total_cost_usd += (dast_out or {}).get("total_cost_usd", 0.0)
             if _check_cost_cap(result, cfg, "dast"):
                 result.total_duration_ms = int((time.time() - t_start) * 1000)
@@ -592,11 +724,14 @@ async def scan_file(
     # Discovered findings are appended to ``result.dast_findings`` with
     # ``discovered_by="dast_discovery_v0"`` and ``status="CONFIRMED"``
     # (every emitted discovery is sandbox-validated by construction).
-    if cfg.enable_discovery and result.final_verdict in cfg.discovery_trigger_verdicts and dast_runner is not None:
+    if (
+        cfg.enable_discovery
+        and result.final_verdict in cfg.discovery_trigger_verdicts
+        and dast_runner is not None
+    ):
         try:
             from dast.discovery import run_discovery
             from dast.runner import _resolve_sandbox_client_for_engine
-
             sandbox = _resolve_sandbox_client_for_engine(dast_runner)
             if sandbox is None:
                 result.scan_path.append("discovery_skipped:no_sandbox_handle")
@@ -612,15 +747,15 @@ async def scan_file(
                 # so downstream consumers see a uniform shape.
                 for f in discovered:
                     result.dast_findings.append(f.to_dict())
-                result.scan_path.append(f"discovery:{len(discovered)}_findings_from_{len(traces)}_payloads")
-                result.model_calls.append(
-                    {
-                        "stage": "dast_discovery",
-                        "n_payloads": len(traces),
-                        "n_discovered": len(discovered),
-                        "duration_ms": disc_elapsed_ms,
-                    }
+                result.scan_path.append(
+                    f"discovery:{len(discovered)}_findings_from_{len(traces)}_payloads"
                 )
+                result.model_calls.append({
+                    "stage": "dast_discovery",
+                    "n_payloads": len(traces),
+                    "n_discovered": len(discovered),
+                    "duration_ms": disc_elapsed_ms,
+                })
         except Exception as e:  # noqa: BLE001
             log.warning("DAST discovery failed for %s: %s", filename, e)
             result.scan_path.append(f"discovery_failed:{type(e).__name__}")

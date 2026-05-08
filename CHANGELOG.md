@@ -4,6 +4,75 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-05-08 — fix-and-verify
+
+**Two production-grade additions that turn Argus from a detector into a verifier.**
+
+### Added
+
+- **Phase C — fix-and-verify.** When DAST CONFIRMS a finding, Argus generates
+  a patched version of the source file (LLM call, schema-enforced), replays
+  the *same* iter-1 exploit plans against the patched code in the sandbox,
+  and reports per-finding **NEUTRALIZED** / **STILL_EXPLOITABLE** /
+  **UNVERIFIABLE** with sandbox-grounded evidence.
+
+  Output ships in `result.phase_c` as a structured object containing
+  `patched_source`, `fix_summary`, `post_patch_verdict`, `per_finding[]`,
+  and counts (`n_neutralized`, `n_still_exploitable`, `n_unverifiable`).
+
+  **Validated end-to-end on adversarial fixtures: 5 of 5 confirmed exploits
+  neutralized across two distinct backdoor patterns.** In one case the
+  patcher caught a defense-in-depth issue (timing-oracle on a checksum
+  comparison) that wasn't even in the listed findings.
+
+  Implemented in `dast/orchestrator.py::_run_phase_c_fix_verify`,
+  `dast/prompts.py::build_phase_c_fix_prompt` /
+  `dast/prompts.py::phase_c_fix_schema`. Surfaced via `ScanResult.phase_c`
+  and `DastResult.phase_c`.
+
+- **Phase C trigger gate broadened.** Phase C now fires when EITHER
+  `orchestrator.findings_validated` is non-empty OR the journal contains
+  any `phase_a_verdict` record with `verdict="confirmed"` and non-empty
+  `evidence_refs`. The journal-derived gate catches runtime-grounded
+  confirmations that the narrow `finding_ref` path missed.
+
+### Changed
+
+- **Severity-driven iter-erosion guard** (replaces v1.1's binary
+  all-grounded rule). Engine now bounds DAST's proposed downgrade by the
+  max severity of remaining uncertain findings:
+
+  - any CONFIRMED+NOT_TESTED critical remains → keep L1 (no downgrade)
+  - any high uncertain remains → downgrade by 1 tier max
+  - only med/low uncertain remains → cap downgrade at suspicious
+  - everything refuted (BLOCKED/UNREACHED) → accept full DAST downgrade
+
+  Final verdict is bounded by the severity-permitted ceiling AND DAST's
+  proposal — DAST is never forced lower than what it asked for. Empty
+  `per_finding_validation` falls back to v1.1 behavior (keep L1) so
+  legacy/stub DAST runners aren't surprised.
+
+  Visible in `scan_path` as
+  `dast_severity_downgrade:<from>-><to>:<reason>` or
+  `dast_keep_l1:<from>_over_<to>:<reason>`. Reasons are machine-readable.
+
+  This addresses the v1.1 case where DAST proposed a correct downgrade
+  but the engine refused (e.g., `backup_manager.py` was kept at malicious
+  even though all findings were BLOCKED).
+
+### Tests
+
+- Two existing DAST-105 unit tests updated to reflect v1.2 severity-driven
+  policy (markers + verdict expectations).
+- All 319 unit tests pass; one pre-existing test remains skipped.
+
+### Roadmap
+
+- New `## v1.3 — post-launch performance & polish` section in
+  [ROADMAP.md](ROADMAP.md). First v1.3 item: parallelize DAST sandbox calls
+  within an iteration (currently sequential — would cut DAST wall-clock
+  per file by ~30-60% via `asyncio.gather()` over per-plan submits).
+
 ## [1.1.0] — 2026-05-06 — first public release
 
 **An AI-native code security scanner that proves exploitability at runtime.**
