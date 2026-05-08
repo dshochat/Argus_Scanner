@@ -68,11 +68,13 @@ A `CONFIRMED` finding looks like this in `argus scan` output:
 
 On the regression suite, Argus's DAST tier produced **25 CONFIRMED exploits + 1 BLOCKED** with concrete sandbox-captured artefacts — network calls, exfil POST bodies, process traces. By verifying which findings are **actually exploitable** versus mere pattern matches, Argus minimizes the false-positive flood that drowns security teams using static-only scanners. Unlike single-call LLMs that must guess exploitability, Argus's DAST tier tests it — turning many "maybe" findings into proven CONFIRMED exploits or clean UNREACHED / BLOCKED resolutions.
 
+And in v1.2, every CONFIRMED finding can be fed into **Phase C — fix-and-verify**: Argus generates a patched version of the file, replays the *same* sandbox attacks against it, and reports per-finding **NEUTRALIZED** / **STILL_EXPLOITABLE**. The remediation isn't a suggestion; it's been tested. (See [Phase C — fix-and-verify](#phase-c--fix-and-verify-sandbox-grounded-remediation-v12) below for the full schema and a worked example.)
+
 > **This is Argus's moat.**
 > Static and single-LLM scanners report *suspicion*.
-> Argus reports **what the code actually did** — with concrete evidence, or clear proof it didn't.
+> Argus reports **what the code actually did** — with concrete evidence, or clear proof it didn't — **and what the patched code actually doesn't do.**
 
-DAST cuts both ways: it confirms exploits with sandbox-captured evidence and refutes false positives with proof of non-exploitability. See [What you get back → DAST evidence](#dast-evidence-when-sandbox-detonation-runs) for a real refutation example where the orchestrator rejected 4 of L1's hypotheses because the runtime sandbox couldn't ground them.
+DAST cuts three ways now: it **confirms** exploits with sandbox-captured evidence, **refutes** false positives with proof of non-exploitability, and **verifies remediations** by replaying the same exploits against patched source. See [What you get back → DAST evidence](#dast-evidence-when-sandbox-detonation-runs) for a real refutation example where the orchestrator rejected 4 of L1's hypotheses because the runtime sandbox couldn't ground them — and [Phase C — fix-and-verify](#phase-c--fix-and-verify-sandbox-grounded-remediation-v12) for a worked example where Argus not only confirmed three exploits in `audit_log_compression.py` but generated a patch that neutralized all three (sandbox-verified, with a defense-in-depth bonus the LLM caught while patching).
 
 ---
 
