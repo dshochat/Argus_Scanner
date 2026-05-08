@@ -88,6 +88,21 @@ class DastResult:
     # Populated at end-of-run from journal.read_all().
     journal_records: list[dict[str, Any]] = field(default_factory=list)
 
+    # v1.2: Phase C — fix-and-verify result. None if Phase C didn't run
+    # (no confirmed findings, or skipped). When populated, contains:
+    #   {
+    #     "attempted": bool,
+    #     "patched_source": str | None,
+    #     "fix_summary": str,
+    #     "post_patch_verdict": "clean|suspicious|malicious|critical_malicious",
+    #     "per_finding": [{finding_ref, post_patch_status:
+    #         NEUTRALIZED|STILL_EXPLOITABLE|UNVERIFIABLE}, ...],
+    #     "n_neutralized": int, "n_still_exploitable": int,
+    #     "tokens_in": int, "tokens_out": int, "n_replays": int,
+    #     "elapsed_s": float, "error": str | None,
+    #   }
+    phase_c: dict[str, Any] | None = None
+
 
 def _parse_json_or_empty(text: str) -> dict:
     if not text or not text.strip():
@@ -140,7 +155,9 @@ def _has_refutation_of_prior_confirmed(
         if not (isinstance(ev_ids, list) and ev_ids):
             continue
         hyp = hyp_index.get(cv.get("hypothesis_id", "")) or {}
-        fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
+        fref = hyp.get("finding_ref") or (
+            (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
+        )
         if fref and fref in prev_confirmed:
             return True
     return False
@@ -179,7 +196,9 @@ async def run_dast(
     total_out = 0
     total_sb = 0
     last_verdict: dict[str, Any] = {
-        "verdict_label": (l1_output.get("verdict") or {}).get("verdict_label", "suspicious"),
+        "verdict_label": (l1_output.get("verdict") or {}).get(
+            "verdict_label", "suspicious"
+        ),
         "log_summary": "no DAST iteration completed yet",
         "validated_findings": [],
         "confirmed_categories": [],
@@ -195,7 +214,16 @@ async def run_dast(
 
     # iter 1 starts with L1 hypotheses; iter ≥ 2 starts with the previous
     # iteration's validator-accepted Phase B hypotheses
-    pending_hypotheses: list[dict] = list(l1_output.get("hypotheses") or [])
+    pending_hypotheses: list[dict] = list(
+        l1_output.get("hypotheses") or []
+    )
+
+    # v1.2: capture iter-1 plans for Phase C replay (fix-and-verify).
+    # Iter 1 is the natural plan set for re-testing the patched file because
+    # iter ≥ 2 plans target Phase B hypotheses that wouldn't exist on a
+    # patched (presumed-safe) file. We only need plans; Phase C generates
+    # fresh traces against the patched source.
+    iter1_plan_records: list[dict] | None = None
 
     for it in range(1, MAX_ITERATIONS + 1):
         it_started = time.time()
@@ -252,17 +280,15 @@ async def run_dast(
             hid = p.get("hypothesis_id", "")
             if p.get("plan_status") != "executable":
                 # Not_testable plans are journaled but no sandbox call.
-                journal.append(
-                    JournalRecord(
-                        iter=it,
-                        phase=JournalPhase.PHASE_A_PLAN,
-                        claim_id=hid,
-                        verdict=None,
-                        rationale=f"not_testable: {p.get('rationale', '')[:200]}",
-                        evidence_refs=[],
-                        sandbox_event_id=None,
-                    )
-                )
+                journal.append(JournalRecord(
+                    iter=it,
+                    phase=JournalPhase.PHASE_A_PLAN,
+                    claim_id=hid,
+                    verdict=None,
+                    rationale=f"not_testable: {p.get('rationale', '')[:200]}",
+                    evidence_refs=[],
+                    sandbox_event_id=None,
+                ))
                 plan_records.append(p)
                 continue
             # DAST-005: pass through image_hint. Default to "minimal" so
@@ -282,7 +308,8 @@ async def run_dast(
                 image_hint=image_hint,
                 file_name=file_name,
                 synthesis_context={
-                    "upstream_chain": (hyp_index.get(hid) or {}).get("upstream_chain") or {},
+                    "upstream_chain": (hyp_index.get(hid) or {}).get("upstream_chain")
+                    or {},
                     "hypothesis": hyp_index.get(hid) or {},
                 },
             )
@@ -305,17 +332,19 @@ async def run_dast(
             total_sb += 1
             plan_records.append(p)
             trace_records.append(trace.model_dump())
-            journal.append(
-                JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.SANDBOX_EXEC,
-                    claim_id=hid,
-                    verdict=None,
-                    rationale=trace.stub_synthesis_note or "",
-                    evidence_refs=[e.event_id for e in trace.events],
-                    sandbox_event_id=(trace.events[0].event_id if trace.events else None),
-                )
-            )
+            journal.append(JournalRecord(
+                iter=it,
+                phase=JournalPhase.SANDBOX_EXEC,
+                claim_id=hid,
+                verdict=None,
+                rationale=trace.stub_synthesis_note or "",
+                evidence_refs=[e.event_id for e in trace.events],
+                sandbox_event_id=(trace.events[0].event_id if trace.events else None),
+            ))
+
+        # v1.2: snapshot iter-1 plans for Phase C replay (fix-and-verify)
+        if it == 1:
+            iter1_plan_records = list(plan_records)
 
         # ---- Phase A — Verdict --------------------------------------
         verdict_prompt = dast_prompts.build_phase_a_verdict_prompt(
@@ -352,21 +381,21 @@ async def run_dast(
             hyp = hyp_index.get(hid) or {}
             # L1 hypotheses use ``finding_ref``; Phase B hypotheses use
             # ``upstream_chain.confirmed_finding_ref``. Try both.
-            fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
+            fref = hyp.get("finding_ref") or (
+                (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
+            )
             if fref:
                 evidence_refs.append(fref)
             evidence_refs.extend(ev_ids if isinstance(ev_ids, list) else [])
-            journal.append(
-                JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.PHASE_A_VERDICT,
-                    claim_id=hid,
-                    verdict=v,
-                    rationale=rationale,
-                    evidence_refs=evidence_refs,
-                    sandbox_event_id=(ev_ids[0] if isinstance(ev_ids, list) and ev_ids else None),
-                )
-            )
+            journal.append(JournalRecord(
+                iter=it,
+                phase=JournalPhase.PHASE_A_VERDICT,
+                claim_id=hid,
+                verdict=v,
+                rationale=rationale,
+                evidence_refs=evidence_refs,
+                sandbox_event_id=(ev_ids[0] if isinstance(ev_ids, list) and ev_ids else None),
+            ))
             if v == "confirmed" and fref and fref not in prev_confirmed:
                 new_confirmed_count += 1
                 if fref not in findings_validated:
@@ -389,7 +418,9 @@ async def run_dast(
                 max_dast_verdict_rank >= 0
                 and new_rank < max_dast_verdict_rank
                 and max_dast_verdict_label is not None
-                and not _has_refutation_of_prior_confirmed(claim_verdicts, hyp_index, prev_confirmed)
+                and not _has_refutation_of_prior_confirmed(
+                    claim_verdicts, hyp_index, prev_confirmed
+                )
             ):
                 clamp_msg = (
                     f"[iter_erosion_guard] iter {it} model emitted "
@@ -450,28 +481,24 @@ async def run_dast(
             hid = h.get("id") or "H???"
             if v.accepted:
                 accepted_hyps.append(h)
-                journal.append(
-                    JournalRecord(
-                        iter=it,
-                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                        claim_id=hid,
-                        verdict="confirmed" if v.is_borderline else "confirmed",
-                        rationale=f"validator accepted{' (borderline)' if v.is_borderline else ''}: {v.reasoning[:240]}",
-                        evidence_refs=[],
-                    )
-                )
+                journal.append(JournalRecord(
+                    iter=it,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=hid,
+                    verdict="confirmed" if v.is_borderline else "confirmed",
+                    rationale=f"validator accepted{' (borderline)' if v.is_borderline else ''}: {v.reasoning[:240]}",
+                    evidence_refs=[],
+                ))
             else:
                 rejected_hyps.append(h)
-                journal.append(
-                    JournalRecord(
-                        iter=it,
-                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                        claim_id=hid,
-                        verdict="rejected",
-                        rationale=f"validator rejected: {v.reasoning[:240]}",
-                        evidence_refs=[],
-                    )
-                )
+                journal.append(JournalRecord(
+                    iter=it,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=hid,
+                    verdict="rejected",
+                    rationale=f"validator rejected: {v.reasoning[:240]}",
+                    evidence_refs=[],
+                ))
         st.hypotheses_accepted = len(accepted_hyps)
         st.hypotheses_rejected = len(rejected_hyps)
 
@@ -508,9 +535,57 @@ async def run_dast(
     # without having to re-read the file. JournalRecord is a Pydantic
     # model — model_dump() gives a JSON-serializable dict.
     try:
-        journal_dump: list[dict[str, Any]] = [r.model_dump(mode="json") for r in journal.read_all()]
+        journal_dump: list[dict[str, Any]] = [
+            r.model_dump(mode="json") for r in journal.read_all()
+        ]
     except Exception:  # noqa: BLE001
         journal_dump = []
+
+    # ──── Phase C — Fix-and-verify (v1.2) ────────────────────────────
+    # If DAST confirmed any L1 findings, generate a patch and re-test
+    # the iter-1 plans against the patched source. Output: patched
+    # source, post-patch verdict, per-finding NEUTRALIZED/STILL/UNVERIFIABLE.
+    #
+    # Trigger gate (v1.2.1): orchestrator's `findings_validated` only
+    # captures hypotheses where claim_verdict="confirmed" AND finding_ref
+    # was tied back to an L1 finding. The journal often contains broader
+    # CONFIRMED evidence (sandbox events showing the exploit fired) that
+    # didn't get tied via finding_ref. Phase C should fire on either —
+    # so we union findings_validated with journal-derived confirmations.
+    phase_c_findings: list[str] = list(findings_validated)
+    for rec in journal_dump:
+        if rec.get("phase") != "phase_a_verdict":
+            continue
+        if rec.get("verdict") != "confirmed":
+            continue
+        ev = rec.get("evidence_refs") or []
+        if not (isinstance(ev, list) and ev):
+            continue
+        cid = rec.get("claim_id")
+        if cid and cid not in phase_c_findings:
+            phase_c_findings.append(cid)
+
+    phase_c_result: dict[str, Any] | None = None
+    if phase_c_findings and iter1_plan_records:
+        try:
+            phase_c_result = await _run_phase_c_fix_verify(
+                file_record=file_record,
+                findings_validated=phase_c_findings,
+                l1_output=l1_output,
+                iter1_plans=iter1_plan_records,
+                inference=inference,
+                sandbox=sandbox,
+                journal=journal,
+            )
+            if phase_c_result:
+                total_in += phase_c_result.get("tokens_in", 0)
+                total_out += phase_c_result.get("tokens_out", 0)
+                total_sb += phase_c_result.get("n_replays", 0)
+        except Exception as e:  # noqa: BLE001
+            phase_c_result = {
+                "attempted": True,
+                "error": f"{type(e).__name__}: {str(e)[:300]}",
+            }
 
     return DastResult(
         file_id=file_id,
@@ -528,4 +603,246 @@ async def run_dast(
             "token_cap": TOKEN_CAP_PER_FILE,
         },
         journal_records=journal_dump,
+        phase_c=phase_c_result,
     )
+
+
+def _iter_inner_sandbox_clients(sandbox: SandboxClient):
+    """Yield each underlying SandboxClient — for MultiImageSandboxClient
+    iterate the per-hint inners; for any other client yield itself.
+
+    Phase C uses this to mutate file_content_map across all backing
+    Firecracker clients when injecting the patched source.
+    """
+    inner_by_hint = getattr(sandbox, "inner_by_hint", None)
+    if isinstance(inner_by_hint, dict):
+        yield from inner_by_hint.values()
+    else:
+        yield sandbox
+
+
+async def _run_phase_c_fix_verify(
+    *,
+    file_record: dict,
+    findings_validated: list[str],
+    l1_output: dict,
+    iter1_plans: list[dict],
+    inference: InferenceFn,
+    sandbox: SandboxClient,
+    journal: Journal,
+) -> dict[str, Any]:
+    """Phase C (v1.2): generate a patch for confirmed findings, then re-test
+    iter-1 sandbox plans against the patched source.
+
+    Returns a dict with patched_source, fix_summary, post-patch verdict,
+    and per-finding neutralization status. Caller is expected to surface
+    this in DastResult.phase_c — no journal records are written to keep
+    Phase C effects visible only in the structured result.
+    """
+    started = time.time()
+    file_id = file_record.get("file_id", "")
+    file_name = file_record.get("file_name", "unknown")
+    original_text = file_record.get("source_text", "") or ""
+    original_bytes = original_text.encode("utf-8", errors="replace")
+
+    # Find the L1 hypothesis dicts that correspond to confirmed findings,
+    # so we can hand the patcher the L1-suggested fix as a starting point.
+    # Index by both id and finding_ref since journal claim_id ↔ hypothesis
+    # id, but findings_validated may use either form.
+    hyp_by_ref: dict[str, dict] = {}
+    for h in (l1_output.get("hypotheses") or []):
+        if not isinstance(h, dict):
+            continue
+        h_id = h.get("id")
+        h_ref = h.get("finding_ref")
+        if h_id:
+            hyp_by_ref[h_id] = h
+        if h_ref and h_ref != h_id:
+            hyp_by_ref[h_ref] = h
+    confirmed = [hyp_by_ref[ref] for ref in findings_validated if ref in hyp_by_ref]
+
+    if not confirmed:
+        return {
+            "attempted": False,
+            "skipped_reason": "no_confirmed_findings_with_finding_ref",
+            "elapsed_s": round(time.time() - started, 2),
+        }
+
+    # ── Step 1: generate patch ────────────────────────────────────────
+    fix_prompt = dast_prompts.build_phase_c_fix_prompt(
+        file_name=file_name,
+        original_source=original_text,
+        confirmed_findings=confirmed,
+    )
+    fix_resp = await inference(
+        fix_prompt,
+        {"temperature": 0.0, "max_tokens": 8192, "seed": 0},
+        dast_prompts.phase_c_fix_schema(),
+    )
+    fix_obj = _parse_json_or_empty(fix_resp.get("text", ""))
+    patched_source = (fix_obj.get("patched_source") or "").strip()
+    fix_summary = (fix_obj.get("fix_summary") or "").strip()
+    per_finding_fixes = fix_obj.get("per_finding_fixes") or []
+    fix_in = (fix_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
+    fix_out = (fix_resp.get("usage") or {}).get("completion_tokens", 0) or 0
+
+    if not patched_source:
+        return {
+            "attempted": True,
+            "patched_source": None,
+            "fix_summary": fix_summary,
+            "skipped_reason": "patch_generation_returned_empty",
+            "tokens_in": fix_in,
+            "tokens_out": fix_out,
+            "elapsed_s": round(time.time() - started, 2),
+        }
+
+    # ── Step 2: replay iter-1 plans against the patched source ────────
+    patched_bytes = patched_source.encode("utf-8", errors="replace")
+    re_traces: list[dict] = []
+    re_plans: list[dict] = []
+    n_replays = 0
+    try:
+        # Inject patched content into every backing sandbox's content map
+        for client in _iter_inner_sandbox_clients(sandbox):
+            cmap = getattr(client, "file_content_map", None)
+            if isinstance(cmap, dict):
+                cmap[file_id] = patched_bytes
+
+        # Re-submit each iter-1 plan with a fresh plan_id so the journal
+        # can distinguish Phase C runs from the original iter-1 ones.
+        for p in iter1_plans:
+            if not isinstance(p, dict):
+                continue
+            if p.get("plan_status") != "executable":
+                continue
+            hid = p.get("hypothesis_id", "")
+            raw_hint = p.get("image_hint")
+            image_hint = (
+                raw_hint if isinstance(raw_hint, str) and raw_hint else "minimal"
+            )
+            plan = SandboxPlan(
+                plan_id=f"phaseC-{hid}",
+                file_id=file_id,
+                hypothesis_id=hid,
+                commands=p.get("commands") or [],
+                expected_oracle=p.get("oracle") or "",
+                payload=p.get("payload") or "",
+                timeout_sec=int(p.get("timeout_sec") or 30),
+                image_hint=image_hint,
+                file_name=file_name,
+                synthesis_context={
+                    "phase": "C",
+                    "purpose": "fix_verify",
+                    "patched": True,
+                },
+            )
+            try:
+                trace = await sandbox.submit(plan)
+                re_traces.append(trace.model_dump())
+                re_plans.append(p)
+                n_replays += 1
+            except Exception:  # noqa: BLE001
+                continue
+    finally:
+        # ALWAYS restore original content so subsequent operations
+        # (e.g., engine post-DAST hooks) see the unpatched file.
+        for client in _iter_inner_sandbox_clients(sandbox):
+            cmap = getattr(client, "file_content_map", None)
+            if isinstance(cmap, dict):
+                cmap[file_id] = original_bytes
+
+    # ── Step 3: re-run Phase A verdict against the new traces ────────
+    # Use patched_source as file_text so the verdict-judge sees the
+    # actual code that was tested. Empty journal_summary because Phase C
+    # is a fresh evaluation, not a continuation of prior iters.
+    if not re_traces:
+        return {
+            "attempted": True,
+            "patched_source": patched_source,
+            "fix_summary": fix_summary,
+            "per_finding_fixes": per_finding_fixes,
+            "skipped_reason": "all_replays_failed",
+            "tokens_in": fix_in,
+            "tokens_out": fix_out,
+            "n_replays": 0,
+            "elapsed_s": round(time.time() - started, 2),
+        }
+
+    verdict_prompt = dast_prompts.build_phase_a_verdict_prompt(
+        file_text=patched_source,
+        l1_output=l1_output,
+        plans=re_plans,
+        traces=re_traces,
+        journal_summary={
+            "phase_c_replay": True,
+            "note": (
+                "These traces are from re-running the original "
+                "iter-1 plans against a PATCHED version of the file. "
+                "If the patch neutralized the exploit, the traces should "
+                "show no oracle hits."
+            ),
+        },
+    )
+    verdict_resp = await inference(
+        verdict_prompt,
+        {"temperature": 0.0, "max_tokens": 6144, "seed": 0},
+        dast_prompts.phase_a_verdict_schema(),
+    )
+    verdict_obj = _parse_json_or_empty(verdict_resp.get("text", ""))
+    cur = (verdict_obj.get("current_verdict") or {}) if isinstance(verdict_obj, dict) else {}
+    post_patch_verdict = cur.get("verdict_label", "unknown")
+    new_claim_verdicts = (
+        verdict_obj.get("claim_verdicts") or []
+    ) if isinstance(verdict_obj, dict) else []
+    new_v_by_hid = {
+        cv.get("hypothesis_id"): cv.get("verdict")
+        for cv in new_claim_verdicts
+        if isinstance(cv, dict)
+    }
+
+    verdict_in = (verdict_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
+    verdict_out = (verdict_resp.get("usage") or {}).get("completion_tokens", 0) or 0
+
+    # ── Step 4: per-finding NEUTRALIZED / STILL_EXPLOITABLE / UNVERIFIABLE
+    per_finding: list[dict] = []
+    for ref in findings_validated:
+        h = hyp_by_ref.get(ref) or {}
+        hid = h.get("id") or ref
+        new_v = new_v_by_hid.get(hid)
+        if new_v == "confirmed":
+            status = "STILL_EXPLOITABLE"
+        elif new_v in ("rejected", "inconclusive"):
+            status = "NEUTRALIZED"
+        else:
+            status = "UNVERIFIABLE"
+        per_finding.append({
+            "finding_ref": ref,
+            "hypothesis_id": hid,
+            "original_status": "CONFIRMED",
+            "post_patch_status": status,
+            "post_patch_verdict": new_v or "unknown",
+        })
+
+    n_neutralized = sum(
+        1 for pf in per_finding if pf["post_patch_status"] == "NEUTRALIZED"
+    )
+    n_still_exploitable = sum(
+        1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE"
+    )
+
+    return {
+        "attempted": True,
+        "patched_source": patched_source,
+        "fix_summary": fix_summary,
+        "per_finding_fixes": per_finding_fixes,
+        "post_patch_verdict": post_patch_verdict,
+        "per_finding": per_finding,
+        "n_neutralized": n_neutralized,
+        "n_still_exploitable": n_still_exploitable,
+        "n_unverifiable": len(per_finding) - n_neutralized - n_still_exploitable,
+        "n_replays": n_replays,
+        "tokens_in": fix_in + verdict_in,
+        "tokens_out": fix_out + verdict_out,
+        "elapsed_s": round(time.time() - started, 2),
+    }

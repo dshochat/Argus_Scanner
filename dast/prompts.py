@@ -1576,3 +1576,103 @@ def build_phase_b_prompt(
 ) -> str:
     payload = _format_inputs(file_text, l1_output, journal_summary)
     return _PHASE_B_BODY + payload
+
+
+# ── Phase C — Fix-and-verify (v1.2) ────────────────────────────────────────
+
+
+_PHASE_C_FIX_BODY = """You are a senior security engineer. Below is a source file
+that DAST has confirmed contains real, runtime-exploitable vulnerabilities.
+Produce a PATCHED version of the file that NEUTRALIZES every confirmed
+vulnerability while preserving the file's legitimate behavior.
+
+REQUIREMENTS:
+1. Apply minimal, surgical changes — do not refactor unrelated code.
+2. For each confirmed finding, eliminate the exploit path. Acceptable
+   strategies (in order of preference):
+   a. Replace the unsafe call with a safe equivalent (e.g., remove
+      exec() of decoded blobs; use ast.literal_eval for trusted data;
+      use shlex.quote / parameterized queries).
+   b. Add validation/sanitization at the input boundary if the unsafe
+      operation cannot be removed.
+   c. Remove the entire unsafe code path if it serves no legitimate
+      purpose (the file is a backdoor / malware stub).
+3. The patched file must be syntactically valid in the original
+   language. If you remove a function body, replace it with a clear
+   stub (e.g., 'pass' for Python, 'return null;' for JS).
+4. Do NOT add new dependencies, new functionality, new comments
+   unrelated to the security fix, or library imports the original
+   file did not already have unless strictly required for the fix.
+5. Output the COMPLETE patched file in 'patched_source' — full
+   text, ready to write to disk. Do not omit any unchanged sections.
+
+The patched file will be re-tested in the same sandbox environment
+that confirmed the original exploits. Your goal: every confirmed
+hypothesis should fail to fire against the patched file.
+
+OUTPUT JSON conforming to the provided schema (one object).
+"""
+
+
+def phase_c_fix_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "patched_source": {
+                "type": "string",
+                "description": (
+                    "Complete patched file content. Must be the FULL "
+                    "source of the file (not a diff)."
+                ),
+            },
+            "fix_summary": {
+                "type": "string",
+                "description": (
+                    "1-3 sentence summary of what was changed and why."
+                ),
+            },
+            "per_finding_fixes": {
+                "type": "array",
+                "description": (
+                    "One entry per confirmed finding; describe the "
+                    "specific change applied."
+                ),
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "finding_ref": {"type": "string"},
+                        "change_description": {"type": "string"},
+                    },
+                    "required": ["finding_ref", "change_description"],
+                },
+            },
+        },
+        "required": ["patched_source", "fix_summary"],
+    }
+
+
+def build_phase_c_fix_prompt(
+    file_name: str,
+    original_source: str,
+    confirmed_findings: list[dict],
+) -> str:
+    findings_lines = []
+    for i, f in enumerate(confirmed_findings):
+        findings_lines.append(
+            f"\n--- Finding {i+1} (finding_ref={f.get('finding_ref', '?')}) ---\n"
+            f"  type:        {f.get('type', 'unknown')}\n"
+            f"  severity:    {f.get('severity', 'unknown')}\n"
+            f"  description: {(f.get('description') or f.get('claim') or '').strip()[:600]}\n"
+            f"  L1_fix:      {(f.get('fix') or '(none provided)').strip()[:400]}"
+        )
+    findings_block = "".join(findings_lines)
+    payload = (
+        f"\n\nFILENAME: {file_name}\n\n"
+        f"=== Original source ===\n{original_source}\n\n"
+        f"=== Confirmed vulnerabilities ===\n{findings_block}\n\n"
+        f"Output JSON conforming to the provided schema."
+    )
+    return _PHASE_C_FIX_BODY + payload
+

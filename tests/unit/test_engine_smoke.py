@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from preprocessing import preprocess_file
 from scanner.engine import ScanConfig, is_high_stakes, scan_file, verdict_to_risk
+from preprocessing import preprocess_file
+
 
 # ─── Stub runners ─────────────────────────────────────────────────────────────
 
@@ -326,18 +327,22 @@ async def test_dast_105_v2_grounded_downgrade_accepted():
     pf = result.per_finding_validation
     assert len(pf) == 1
     assert pf[0]["status"] == "BLOCKED"
-    # All findings BLOCKED -> grounded downgrade accepted
+    # v1.2: All findings refuted (BLOCKED/UNREACHED) -> full downgrade.
     assert result.final_verdict == "suspicious"
-    assert any(p.startswith("dast_downgrade_grounded:malicious->suspicious") for p in result.scan_path), (
-        f"expected dast_downgrade_grounded marker, got {result.scan_path}"
-    )
+    assert any(
+        p.startswith("dast_severity_downgrade:malicious->suspicious")
+        and "all_refuted" in p
+        for p in result.scan_path
+    ), f"expected v1.2 severity_downgrade marker, got {result.scan_path}"
 
 
 @pytest.mark.asyncio
-async def test_dast_105_v2_partial_grounded_downgrade_refused():
-    """DAST-105 v2: when DAST has grounded evidence for SOME findings
-    but not all, refuse the downgrade. Uncertainty about even one
-    finding means the file might still be exploitable."""
+async def test_dast_105_v2_partial_grounded_severity_driven_downgrade():
+    """v1.2: severity-driven downgrade rule. When 1 of 2 findings is
+    BLOCKED but the other is NOT_TESTED at severity HIGH, the engine
+    issues a 1-tier downgrade (malicious -> suspicious) rather than the
+    v1.1 binary keep-L1 behavior. Critical-severity uncertainty would
+    block the downgrade entirely; high uncertainty caps it at 1 tier."""
     result = await scan_file(
         filename="partial.py",
         content=b"x = 1\n",
@@ -347,17 +352,20 @@ async def test_dast_105_v2_partial_grounded_downgrade_refused():
         dast_runner=stub_dast_partial_grounded_downgrade,  # only H001 in journal
     )
     assert result.dast_attempted is True
-    # H001 = BLOCKED, H002 = NOT_TESTED -> not all grounded -> refuse downgrade
+    # H001 = BLOCKED (was severity critical), H002 = NOT_TESTED (severity high)
     pf = result.per_finding_validation
     assert len(pf) == 2
     assert pf[0]["status"] == "BLOCKED"
     assert pf[1]["status"] == "NOT_TESTED"
-    # L1's malicious must be kept
-    assert result.final_verdict == "malicious"
+    # v1.2: high-severity uncertainty allows 1-tier downgrade (malicious
+    # -> suspicious). DAST proposed suspicious; severity rule accepts it
+    # capped at 1 tier max from L1.
+    assert result.final_verdict == "suspicious"
     assert any(
-        p.startswith("dast_keep_l1:malicious_over_suspicious") and "1/2_findings_grounded" in p
+        p.startswith("dast_severity_downgrade:malicious->suspicious")
+        and "high_uncertain_remains" in p
         for p in result.scan_path
-    ), f"expected dast_keep_l1 with 1/2 marker, got {result.scan_path}"
+    ), f"expected v1.2 high_uncertain marker, got {result.scan_path}"
 
 
 @pytest.mark.asyncio
@@ -365,7 +373,6 @@ async def test_dast_105_v2_no_findings_keeps_l1():
     """Edge case: DAST wants to downgrade but L1 produced zero
     vulnerabilities. There's no per-finding evidence in either direction.
     Conservative: keep L1's verdict."""
-
     async def stub_sonnet_no_vulns(filename, content, pp, classification):
         return {
             "verdict_label": "malicious",  # verdict without supporting findings
@@ -378,7 +385,6 @@ async def test_dast_105_v2_no_findings_keeps_l1():
             "cost_usd": 0.05,
             "duration_ms": 1200,
         }
-
     result = await scan_file(
         filename="empty.py",
         content=b"x = 1\n",
@@ -407,9 +413,10 @@ async def test_dast_105_guard_accepts_dast_upgrade():
     )
     assert result.dast_attempted is True
     assert result.final_verdict == "critical_malicious"
-    assert any(p.startswith("dast_upgrade:malicious->critical_malicious") for p in result.scan_path), (
-        f"expected dast_upgrade marker, got {result.scan_path}"
-    )
+    assert any(
+        p.startswith("dast_upgrade:malicious->critical_malicious")
+        for p in result.scan_path
+    ), f"expected dast_upgrade marker, got {result.scan_path}"
 
 
 @pytest.mark.asyncio

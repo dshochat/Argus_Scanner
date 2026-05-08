@@ -2,11 +2,26 @@
 
 Argus is shipped — and there's a clear set of things we're building next. This page captures the **themes**; concrete tasks live in [GitHub Issues](https://github.com/dshochat/Argus_Scanner/issues) tagged `roadmap`.
 
-## v1.2 themes
+## Shipped in v1.2 (2026-05-08)
 
-We're investing in three directions for the next minor release.
+- **Phase C — fix-and-verify.** Generates patched source for confirmed
+  findings, replays iter-1 exploit plans against the patched code in the
+  sandbox, and reports per-finding `NEUTRALIZED` / `STILL_EXPLOITABLE` /
+  `UNVERIFIABLE`. End-to-end validated: 5 of 5 confirmed exploits
+  neutralized across two adversarial fixtures. See [README.md](README.md#phase-c--fix-and-verify-v12)
+  and [CHANGELOG.md](CHANGELOG.md#120--2026-05-08--fix-and-verify).
+- **Severity-driven iter-erosion guard.** Replaces v1.1's binary
+  all-grounded rule with a graded rule: max severity of remaining
+  uncertain findings bounds the maximum safe downgrade. Closes the gap
+  where DAST proposed a correct downgrade and the engine refused.
 
-### 1. Broader DAST language coverage
+## v1.3 themes
+
+### 1. Parallelize DAST sandbox calls within an iteration
+
+Today the orchestrator submits sandbox plans **sequentially** within a Phase A iteration. Each Firecracker microVM cold-start is ~30s; 5 plans run one-after-another adds ~150s per iteration. Switching to `asyncio.gather()` over the per-plan submits would parallelize the cold-start cost. Cuts wall-clock per file by 30-60% on DAST runs without changing correctness (plans don't depend on each other within a single iteration). Affects `dast/orchestrator.py` Phase A loop + `dast/sandbox/client.py` rate limiting if needed.
+
+### 2. Broader DAST language coverage
 
 Today: Python, JavaScript / TypeScript, bash, Java bytecode. The DAST sandbox runtime needs each language pre-installed in the image. Next:
 
@@ -16,11 +31,11 @@ Today: Python, JavaScript / TypeScript, bash, Java bytecode. The DAST sandbox ru
 
 Each new language unlocks runtime DAST validation for that ecosystem's malware patterns.
 
-### 2. Higher-confidence per-finding validation
+### 3. Higher-confidence per-finding validation
 
 Today: ~22% of L1 findings reach `CONFIRMED` via DAST; ~77% land in `NOT_TESTED` because the validator's rejection rationale couldn't be classified as `BLOCKED` or `UNREACHED`. Next: replace the heuristic with **structured rejection categories** emitted directly by the validator (`SANITIZATION` / `UNREACHABILITY` / `INSUFFICIENT_EVIDENCE` / `SCOPE_INVALID`). Expected impact: roughly half of current `NOT_TESTED` entries should resolve to `BLOCKED` or `UNREACHED`, materially shrinking the ambiguity bucket.
 
-### 3. Repo-scan parity with single-file scan
+### 4. Repo-scan parity with single-file scan
 
 Today `argus scan-repo` walks files sequentially. Next:
 
