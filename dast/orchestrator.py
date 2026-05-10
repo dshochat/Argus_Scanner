@@ -172,6 +172,7 @@ async def run_dast(
     journal_dir: Path,
     inference: InferenceFn,
     enable_phase_c: bool = True,
+    enable_runtime_probe: bool = False,
 ) -> DastResult:
     """Run the DAST loop on one file.
 
@@ -225,6 +226,41 @@ async def run_dast(
     # patched (presumed-safe) file. We only need plans; Phase C generates
     # fresh traces against the patched source.
     iter1_plan_records: list[dict] | None = None
+
+    # v1.5 Phase B+ — runtime exploit probing. Runs ONCE before the
+    # iteration loop. Its findings (if any) get appended to
+    # ``l1_output["hypotheses"]`` AND ``pending_hypotheses`` so Phase A
+    # in iter 1 picks them up. Critical: this runs BEFORE the
+    # "no_pending_hypotheses_for_iter" early-exit, so even files where
+    # L1 found nothing get the probe pass when the flag is on.
+    if (
+        enable_runtime_probe
+        and file_name.lower().endswith(".py")
+        and isinstance(file_record.get("original_bytes"), (bytes, bytearray))
+    ):
+        try:
+            await _run_phase_b_runtime_probe(
+                file_record=file_record,
+                l1_output=l1_output,
+                journal=journal,
+                journal_summary=journal.summarize(up_to_iter=0),
+                inference=inference,
+                sandbox=sandbox,
+                iter_num=1,
+                stats=iterations[0] if iterations else IterationStats(iter=1),
+            )
+            # Re-derive pending_hypotheses from the (possibly expanded)
+            # l1_output. The probe stage may have appended HRP_* findings.
+            pending_hypotheses = list(l1_output.get("hypotheses") or [])
+        except Exception as exc:  # noqa: BLE001
+            journal.append(JournalRecord(
+                iter=1,
+                phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                claim_id="HRP_ERROR",
+                verdict="rejected",
+                rationale=f"runtime probe stage failed: {type(exc).__name__}: {str(exc)[:240]}",
+                evidence_refs=[],
+            ))
 
     for it in range(1, MAX_ITERATIONS + 1):
         it_started = time.time()
@@ -470,6 +506,12 @@ async def run_dast(
         else:
             st.current_verdict_label = last_verdict.get("verdict_label", "suspicious")
 
+        # Phase B+ runtime probing already ran ONCE before the iter loop
+        # (see ``_run_phase_b_runtime_probe`` call above the for-loop).
+        # Its findings — if any — were appended to ``l1_output`` /
+        # ``pending_hypotheses`` and have already been planned + verified
+        # by Phase A this iter. No per-iter probe call.
+
         # ---- Phase B — Exploration ----------------------------------
         # Re-summarize the journal so the explore prompt sees the *just-
         # written* iteration's evidence.
@@ -638,6 +680,232 @@ async def run_dast(
         journal_records=journal_dump,
         phase_c=phase_c_result,
     )
+
+
+async def _run_phase_b_runtime_probe(
+    *,
+    file_record: dict,
+    l1_output: dict,
+    journal: Journal,
+    journal_summary: Any,
+    inference: InferenceFn,
+    sandbox: SandboxClient,
+    iter_num: int,
+    stats: IterationStats,
+) -> None:
+    """Phase B+ — runtime-guided exploit discovery (v1.5).
+
+    Three steps:
+    1. Ask Sonnet for probe candidates + attack inputs (one LLM call).
+    2. For each (candidate × input), build a Phase-A-shaped harness plan
+       and submit to the sandbox.
+    3. Interpret each trace via the deterministic
+       :func:`dast.runtime_probe.interpret_probe_trace` rules; any
+       finding gets journaled as a CONFIRMED phase_b_hypothesis with
+       sandbox-grounded runtime evidence.
+
+    Mutates the passed-in ``journal`` and ``stats`` in place — no return.
+    Errors during candidate generation or trace interpretation are
+    captured into rejected-hypothesis journal records so the caller's
+    outer try/except has something to surface.
+    """
+    from dast.runtime_probe import (  # noqa: PLC0415
+        MAX_CANDIDATES,
+        MAX_INPUTS_PER_CANDIDATE,
+        RuntimeProbeCandidate,
+        RuntimeProbeInput,
+        build_runtime_probe_plan,
+        interpret_probe_trace,
+        parse_probe_trace,
+    )
+
+    source_text = file_record.get("source_text", "") or ""
+    original_bytes = file_record.get("original_bytes")
+    if not isinstance(original_bytes, (bytes, bytearray)):
+        # No original bytes available — can't stage the file for execution.
+        # Skip silently; orchestrator will fall through to standard Phase B.
+        return
+    original_bytes = bytes(original_bytes)
+    file_name = file_record.get("file_name") or "module.py"
+    file_id = file_record.get("file_id", "")
+
+    # ── Step 1: candidate generation ─────────────────────────────────────
+    probe_prompt = dast_prompts.build_phase_b_runtime_probe_prompt(
+        file_text=source_text,
+        l1_output=l1_output,
+        journal_summary=journal_summary.to_dict() if hasattr(journal_summary, "to_dict") else journal_summary,
+    )
+    probe_resp = await inference(
+        probe_prompt,
+        {"temperature": 0.0, "max_tokens": 4096, "seed": 0},
+        dast_prompts.phase_b_runtime_probe_schema(),
+    )
+    probe_obj = _parse_json_or_empty(probe_resp.get("text", ""))
+    if not isinstance(probe_obj, dict):
+        return
+    raw_candidates = probe_obj.get("candidates") or []
+    if not isinstance(raw_candidates, list) or not raw_candidates:
+        # Model legitimately declined to probe (file has no probe-attractive
+        # functions). Journal the rationale so downstream telemetry sees it.
+        rationale = str(probe_obj.get("non_probable_reason") or "no candidates")
+        journal.append(JournalRecord(
+            iter=iter_num,
+            phase=JournalPhase.PHASE_B_HYPOTHESIS,
+            claim_id="HRP_NONE",
+            verdict="rejected",
+            rationale=f"runtime probe declined: {rationale[:200]}",
+            evidence_refs=[],
+        ))
+        return
+
+    # Decode + cap to bounded sizes (schema enforces but defense-in-depth)
+    candidates: list[RuntimeProbeCandidate] = []
+    for c in raw_candidates[:MAX_CANDIDATES]:
+        if not isinstance(c, dict):
+            continue
+        inputs_raw = c.get("test_inputs") or []
+        inputs: list[RuntimeProbeInput] = []
+        for i in (inputs_raw if isinstance(inputs_raw, list) else [])[
+            :MAX_INPUTS_PER_CANDIDATE
+        ]:
+            if not isinstance(i, dict):
+                continue
+            inputs.append(
+                RuntimeProbeInput(
+                    args_json=str(i.get("args_json") or "[]"),
+                    kwargs_json=str(i.get("kwargs_json") or "{}"),
+                    expected_observable=str(i.get("expected_observable") or ""),
+                    exploit_proof_if_observed=str(
+                        i.get("exploit_proof_if_observed") or ""
+                    ),
+                )
+            )
+        candidates.append(
+            RuntimeProbeCandidate(
+                function_name=str(c.get("function_name") or ""),
+                attack_class=str(c.get("attack_class") or "code_injection"),
+                rationale=str(c.get("rationale") or ""),
+                test_inputs=inputs,
+            )
+        )
+
+    # ── Step 2: per-probe sandbox submission ─────────────────────────────
+    findings_from_probes: list[dict[str, Any]] = []
+    n_probes_run = 0
+    for c_idx, cand in enumerate(candidates):
+        if not cand.function_name or not cand.test_inputs:
+            continue
+        for i_idx, test_in in enumerate(cand.test_inputs):
+            plan_dict = build_runtime_probe_plan(
+                file_name=file_name,
+                file_bytes=original_bytes,
+                candidate=cand,
+                test_input=test_in,
+                candidate_idx=c_idx,
+                input_idx=i_idx,
+            )
+            if plan_dict is None:
+                continue
+            hid = plan_dict["hypothesis_id"]
+            plan = SandboxPlan(
+                plan_id=f"i{iter_num}-{hid}",
+                file_id=file_id,
+                hypothesis_id=hid,
+                commands=plan_dict["commands"],
+                expected_oracle=plan_dict["oracle"],
+                payload=plan_dict["payload"],
+                timeout_sec=plan_dict["timeout_sec"],
+                image_hint=plan_dict["image_hint"],
+                file_name=file_name,
+                synthesis_context={
+                    "runtime_probe": True,
+                    "candidate_idx": c_idx,
+                    "input_idx": i_idx,
+                    "attack_class": cand.attack_class,
+                },
+            )
+            n_probes_run += 1
+            try:
+                trace: SandboxTrace = await sandbox.submit(plan)
+            except Exception as exc:  # noqa: BLE001
+                journal.append(JournalRecord(
+                    iter=iter_num,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=hid,
+                    verdict="rejected",
+                    rationale=f"sandbox submit failed: {type(exc).__name__}: {str(exc)[:200]}",
+                    evidence_refs=[],
+                ))
+                continue
+
+            # ── Step 3: trace interpretation ─────────────────────────────
+            parsed_trace = parse_probe_trace(
+                candidate_function=cand.function_name,
+                input_args_json=test_in.args_json,
+                exit_code=trace.exit_code,
+                stdout=trace.stdout_excerpt,
+                stderr=trace.stderr_excerpt,
+                elapsed_ms=trace.elapsed_ms,
+            )
+            finding = interpret_probe_trace(
+                parsed_trace, cand, test_in,
+                candidate_idx=c_idx, input_idx=i_idx,
+            )
+            if finding is None:
+                # Probe ran cleanly — exception raised AND no canary
+                # observed. BLOCKED-equivalent for runtime probes.
+                journal.append(JournalRecord(
+                    iter=iter_num,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=hid,
+                    verdict="rejected",
+                    rationale=(
+                        f"runtime probe ran; no exploit observed. "
+                        f"Function={cand.function_name}, class={cand.attack_class}, "
+                        f"input={test_in.args_json[:100]}, "
+                        f"exit_code={parsed_trace.exit_code}, "
+                        f"parsed_ok={parsed_trace.parsed_result is not None}"
+                    ),
+                    evidence_refs=[trace.events[0].event_id] if trace.events else [],
+                ))
+                continue
+
+            # CONFIRMED via runtime evidence.
+            evidence_ref = trace.events[0].event_id if trace.events else ""
+            journal.append(JournalRecord(
+                iter=iter_num,
+                phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                claim_id=hid,
+                verdict="confirmed",
+                rationale=(
+                    f"runtime probe CONFIRMED {finding.attack_class} in "
+                    f"{cand.function_name}: {finding.runtime_evidence[:280]}"
+                ),
+                evidence_refs=[evidence_ref] if evidence_ref else [],
+            ))
+            findings_from_probes.append({
+                "id": hid,
+                "finding_ref": hid,
+                "finding_type": finding.attack_class,
+                "severity": finding.severity,
+                "cwe": finding.cwe,
+                "line": None,
+                "code_snippet": cand.function_name,
+                "explanation": finding.description,
+                "data_flow_trace": f"runtime probe via Phase B+: {finding.runtime_evidence}",
+                "proof_of_concept": (
+                    f"{cand.function_name}(*{finding.test_input_args})"
+                ),
+                "confidence": 1.0,
+                "runtime_evidence": finding.runtime_evidence,
+            })
+
+    stats.sandbox_calls += n_probes_run
+    # Attach findings to l1_output so subsequent Phase A iterations see them
+    # as pending hypotheses. The convention matches how Phase B accepted
+    # hypotheses flow forward: append to ``hypotheses`` list.
+    existing = list(l1_output.get("hypotheses") or [])
+    l1_output["hypotheses"] = existing + findings_from_probes
 
 
 def _iter_inner_sandbox_clients(sandbox: SandboxClient):

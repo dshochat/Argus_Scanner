@@ -1578,6 +1578,211 @@ def build_phase_b_prompt(
     return _PHASE_B_BODY + payload
 
 
+# ── Phase B+ — Runtime exploit probing (v1.5) ──────────────────────────────
+#
+# A new discovery mode: rather than asking the model to brainstorm
+# vulnerabilities from static reading + journal evidence, we ask it to
+# (a) identify probe-attractive functions and (b) generate concrete
+# attack inputs that would prove the vulnerability if it actually
+# fires at runtime. The orchestrator then runs each input in the
+# sandbox and emits CONFIRMED findings from runtime evidence rather
+# than from model speculation.
+#
+# Scope: Python files only in v1.5. The prompt rejects non-Python
+# files and the schema only emits Python-callable function names.
+
+
+_PHASE_B_RUNTIME_PROBE_BODY = """\
+You are an adversarial penetration tester. You are given a Python source
+file and Phase A's evidence about what the file does at runtime. Your job
+is to identify functions worth attacking with concrete inputs at runtime
+in a sandboxed microVM, and to generate those concrete inputs.
+
+You are NOT writing more static analysis. You are GENERATING runtime
+test cases. The sandbox will actually execute your inputs and report
+back what happened. Then you decide whether the observed behavior
+proves the file is vulnerable.
+
+DESIGN PRINCIPLES:
+
+1. Pick functions that are reachable from outside (top-level module
+   functions, public methods of classes). Skip private helpers
+   (`_name`), test fixtures, and __init__ unless they take
+   user-controlled input.
+
+2. For each function, identify the ATTACK CLASS it's most likely
+   vulnerable to based on its signature + body:
+   - takes a path string → path_traversal
+   - takes a command/shell string → command_injection
+   - takes data fed to eval/exec/compile → code_injection
+   - takes data fed to pickle.loads → deserialization
+   - takes a URL fetched server-side → ssrf
+   - takes a SQL fragment → sql_injection
+   - returns sensitive process data → data_exfiltration
+   Pick AT MOST ONE attack class per candidate; if multiple are
+   plausible, pick the one most likely to produce observable runtime
+   evidence in 30 seconds.
+
+3. For each candidate, generate UP TO 3 attack inputs. Each input
+   must include:
+   - `args_json`: JSON-encoded list of positional args
+   - `kwargs_json`: JSON-encoded dict (use "{}" if none)
+   - `expected_observable`: what the sandbox will see if the exploit
+     fires. Concrete and observable: "file /tmp/argus_probe_X gets
+     created", "function returns content of /etc/passwd",
+     "subprocess.run is called with shell=True", "raises
+     PermissionError instead of returning normally".
+   - `exploit_proof_if_observed`: the vulnerability finding text
+     that lands IF the observable matches.
+
+4. PREFER canary patterns. When safe, embed marker strings in attack
+   inputs so the sandbox can see them materialize. Example: for a
+   suspected `eval(user_input)`, use input
+   `__import__('os').system('touch /tmp/argus_probe_pwned')`. The
+   side-effect file is unambiguous evidence the eval fired. For
+   path-traversal, an input like `../../../tmp/argus_probe_pwned`
+   that the function might WRITE to is the canary.
+
+5. DO NOT generate inputs that would crash the sandbox host, attempt
+   to break out of the microVM, or perform network exfiltration to
+   real attacker-controlled hosts. The sandbox has KVM-level isolation
+   and the test infrastructure should not be visible.
+
+6. If the file has NO probe-attractive functions (e.g., it's pure
+   data declarations, only contains imports, or only defines tests),
+   return an empty `candidates` array and set
+   `non_probable_reason` appropriately. Don't manufacture findings.
+
+CONSTRAINTS (the schema enforces these — listed here for transparency):
+
+- AT MOST {MAX_CANDIDATES} candidate functions.
+- AT MOST {MAX_INPUTS_PER_CANDIDATE} test inputs per candidate.
+- ONLY top-level functions or `Class.method` paths. No closures, no
+  inner functions, no test helpers.
+- `function_name` must match the regex `^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?$`.
+- `attack_class` must be one of the documented enum values.
+
+==== INPUTS ====
+"""
+
+
+def phase_b_runtime_probe_schema() -> dict[str, Any]:
+    """JSON schema for Phase B+ runtime-probe candidate generation."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["candidates", "non_probable_reason"],
+        "properties": {
+            "non_probable_reason": {
+                "type": "string",
+                "description": (
+                    "Empty when at least one candidate is emitted. Populated "
+                    "with a short reason when the file has no probe-attractive "
+                    "functions (e.g., 'pure data declarations', 'test file', "
+                    "'only re-exports', 'non-Python file format')."
+                ),
+            },
+            "candidates": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "function_name",
+                        "attack_class",
+                        "rationale",
+                        "test_inputs",
+                    ],
+                    "properties": {
+                        "function_name": {
+                            "type": "string",
+                            "pattern": r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$",
+                            "maxLength": 120,
+                        },
+                        "attack_class": {
+                            "type": "string",
+                            "enum": [
+                                "path_traversal",
+                                "code_injection",
+                                "command_injection",
+                                "deserialization",
+                                "data_exfiltration",
+                                "ssrf",
+                                "sql_injection",
+                                "xss",
+                                "xxe",
+                                "crypto_weakness",
+                                "prompt_injection",
+                                "open_redirect",
+                                "race_condition",
+                            ],
+                        },
+                        "rationale": {"type": "string", "maxLength": 500},
+                        "test_inputs": {
+                            "type": "array",
+                            "maxItems": 3,
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": [
+                                    "args_json",
+                                    "kwargs_json",
+                                    "expected_observable",
+                                    "exploit_proof_if_observed",
+                                ],
+                                "properties": {
+                                    "args_json": {
+                                        "type": "string",
+                                        "maxLength": 1000,
+                                    },
+                                    "kwargs_json": {
+                                        "type": "string",
+                                        "maxLength": 1000,
+                                    },
+                                    "expected_observable": {
+                                        "type": "string",
+                                        "maxLength": 500,
+                                    },
+                                    "exploit_proof_if_observed": {
+                                        "type": "string",
+                                        "maxLength": 500,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def build_phase_b_runtime_probe_prompt(
+    file_text: str,
+    l1_output: dict,
+    journal_summary: Any,
+) -> str:
+    """Build the Phase B+ runtime-probe candidate-generation prompt.
+
+    Same input shape as ``build_phase_b_prompt`` so the orchestrator can
+    use the same inference fn. Output is structured per
+    :func:`phase_b_runtime_probe_schema`.
+    """
+    from dast.runtime_probe import MAX_CANDIDATES, MAX_INPUTS_PER_CANDIDATE  # noqa: PLC0415
+
+    # str.replace, NOT .format — the prompt body contains literal {}
+    # (JSON examples, dict syntax in code) that .format() mis-interprets
+    # as positional placeholders.
+    body = (
+        _PHASE_B_RUNTIME_PROBE_BODY
+        .replace("{MAX_CANDIDATES}", str(MAX_CANDIDATES))
+        .replace("{MAX_INPUTS_PER_CANDIDATE}", str(MAX_INPUTS_PER_CANDIDATE))
+    )
+    payload = _format_inputs(file_text, l1_output, journal_summary)
+    return body + payload
+
+
 # ── Phase C — Fix-and-verify (v1.2) ────────────────────────────────────────
 
 
@@ -1621,15 +1826,23 @@ def phase_c_fix_schema() -> dict[str, Any]:
         "properties": {
             "patched_source": {
                 "type": "string",
-                "description": ("Complete patched file content. Must be the FULL source of the file (not a diff)."),
+                "description": (
+                    "Complete patched file content. Must be the FULL "
+                    "source of the file (not a diff)."
+                ),
             },
             "fix_summary": {
                 "type": "string",
-                "description": ("1-3 sentence summary of what was changed and why."),
+                "description": (
+                    "1-3 sentence summary of what was changed and why."
+                ),
             },
             "per_finding_fixes": {
                 "type": "array",
-                "description": ("One entry per confirmed finding; describe the specific change applied."),
+                "description": (
+                    "One entry per confirmed finding; describe the "
+                    "specific change applied."
+                ),
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
@@ -1653,7 +1866,7 @@ def build_phase_c_fix_prompt(
     findings_lines = []
     for i, f in enumerate(confirmed_findings):
         findings_lines.append(
-            f"\n--- Finding {i + 1} (finding_ref={f.get('finding_ref', '?')}) ---\n"
+            f"\n--- Finding {i+1} (finding_ref={f.get('finding_ref', '?')}) ---\n"
             f"  type:        {f.get('type', 'unknown')}\n"
             f"  severity:    {f.get('severity', 'unknown')}\n"
             f"  description: {(f.get('description') or f.get('claim') or '').strip()[:600]}\n"
@@ -1667,3 +1880,4 @@ def build_phase_c_fix_prompt(
         f"Output JSON conforming to the provided schema."
     )
     return _PHASE_C_FIX_BODY + payload
+

@@ -103,6 +103,17 @@ class ScanConfig:
     # source modification, read-only audits, or cost reduction (Phase C
     # adds ~$0.05/file in patch-generation tokens).
     enable_phase_c: bool = True
+    # v1.5 Phase B+ — runtime exploit probing. When True AND DAST is
+    # configured AND the file is Python, the orchestrator asks the
+    # model to generate concrete attack inputs, runs each in the
+    # sandbox, and emits findings from observed runtime evidence rather
+    # than from static analysis speculation. Off by default because
+    # (a) it adds ~$0.20-0.50/file in API cost on top of Phase A and
+    # (b) FP rate on first-party code with legitimate filesystem /
+    # network behavior will be non-trivial in v1.5. Opt-in via
+    # ``argus scan --enable-runtime-probe`` or
+    # ``argus install --enable-runtime-probe``.
+    enable_runtime_probe: bool = False
     # DAST-204 v0.0 (v1.1): proactive vulnerability discovery via the
     # hardcoded payload library in dast/discovery.py. Runs alongside
     # the standard DAST orchestrator (which only validates L1's
@@ -514,6 +525,7 @@ async def scan_file(
             dast_out = await dast_runner(
                 filename, content, pp, result,
                 enable_phase_c=cfg.enable_phase_c,
+                enable_runtime_probe=cfg.enable_runtime_probe,
             )
             result.dast_attempted = True
             result.dast_findings = (dast_out or {}).get("validated_findings", [])

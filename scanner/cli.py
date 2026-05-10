@@ -145,6 +145,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "~$0.05/file in patch-generation token cost.",
     )
     scan.add_argument(
+        "--enable-runtime-probe",
+        action="store_true",
+        help="enable Phase B+ runtime exploit probing (v1.5). Sonnet "
+        "generates concrete attack inputs for probe-attractive "
+        "functions; the sandbox executes each in a Firecracker microVM; "
+        "findings come from observed runtime evidence rather than "
+        "static analysis. Python-only in v1.5. Adds ~$0.20-0.50/file "
+        "in API cost on top of Phase A. Requires DAST configured (Fly).",
+    )
+    scan.add_argument(
         "--max-cost",
         type=float,
         default=None,
@@ -451,6 +461,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "Mutually exclusive with --deep.",
     )
     install.add_argument(
+        "--enable-runtime-probe",
+        action="store_true",
+        help="enable Phase B+ runtime exploit probing (v1.5). Sonnet "
+        "generates concrete attack inputs for probe-attractive "
+        "functions inside each wheel; the sandbox executes each in a "
+        "Firecracker microVM; findings come from runtime evidence "
+        "rather than static analysis. Python-only in v1.5. Adds "
+        "~$0.20-0.50/file in API cost on top of Phase A. Requires "
+        "DAST configured (Fly) and --no-dast NOT set.",
+    )
+    install.add_argument(
         "--max-cost",
         type=float,
         default=None,
@@ -537,6 +558,8 @@ async def _run_scan(args: argparse.Namespace) -> int:
         config_kwargs["enable_discovery"] = True
     if getattr(args, "no_remediation", False):
         config_kwargs["enable_phase_c"] = False
+    if getattr(args, "enable_runtime_probe", False):
+        config_kwargs["enable_runtime_probe"] = True
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -858,6 +881,8 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         config_kwargs["enable_discovery"] = True
     if getattr(args, "no_remediation", False):
         config_kwargs["enable_phase_c"] = False
+    if getattr(args, "enable_runtime_probe", False):
+        config_kwargs["enable_runtime_probe"] = True
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -1265,6 +1290,8 @@ async def _run_install(args: argparse.Namespace) -> int:
     config_kwargs: dict[str, Any] = {"enable_phase_c": False}
     if args.max_cost is not None:
         config_kwargs["max_cost_per_file_usd"] = args.max_cost
+    if getattr(args, "enable_runtime_probe", False):
+        config_kwargs["enable_runtime_probe"] = True
     scan_cfg = ScanConfig(**config_kwargs)
 
     cache_dir = args.cache_dir or CACHE_DIR_DEFAULT
