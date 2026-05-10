@@ -42,9 +42,17 @@ Argus operates at three depths depending on what a file is. Items below the line
 
 Phase A verification + Phase B discovery + Phase C fix-and-verify run on Python, JavaScript / TypeScript, and shell. Sandbox image profiles: `minimal-v1`, `networked-v1`, `ml_tools-v1`.
 
-**ML-artifact load detonation (new):** for `.pkl` / `.pickle` / `.pt` / `.bin` / `.safetensors` / `.h5` / `.onnx`, Argus injects a deterministic load plan into iter 1 — `pickle.load()` / `torch.load(weights_only=False)` / `safe_open()` / `onnx.load()` runs against the original binary in the `ml_tools-v1` sandbox. Loading IS execution for these formats; if the artifact is malicious, the `__reduce__` payload fires and Argus captures the syscalls, egress, and exit codes that prove it.
+**ML-artifact load detonation (new):** for `.pkl` / `.pickle` / `.pt` / `.bin` / `.safetensors` / `.h5` / `.onnx`, Argus injects a deterministic load plan into iter 1 — `pickle.load()` / `torch.load(weights_only=False)` / `safe_open()` / `onnx.load()` runs against the original binary in the `ml_tools-v1` sandbox. Loading IS execution for these formats; if the artifact is malicious, the `__reduce__` payload fires and Argus captures the canary file, syscalls, and exit codes that prove it. **Validated end-to-end on a malicious `subprocess.Popen` pickle:** all 3 L1 findings (CWE-502, CWE-78, CWE-94) reached `CONFIRMED` with sandbox-captured runtime evidence — `$0.22` / 253s / 5 sandbox calls, real Fly Firecracker microVM.
 
 Other languages reach DAST only when invoked transitively (e.g., a shell script calling `python`). Non-executable formats (manifests, Markdown, AI-agent configs, HTML / XML) are cascade-only by definition. The cascade still surfaces malicious payloads, prompt-injection content, and lifecycle-hook backdoors.
+
+### Phase C — fix-and-verify (v1.2)
+
+When DAST confirms an exploit on **text source** (Python, JS / TS, shell), Phase C generates a patched version of the file, replays the same exploit attempts against the patched code in the same sandbox, and emits per-finding `NEUTRALIZED` / `STILL_EXPLOITABLE` / `UNVERIFIABLE` with sandbox-grounded evidence. You don't get a remediation *suggestion*; you get a remediation that's been *tested*.
+
+**Binary artifact policy.** For `.pkl` / `.pt` / `.bin` / `.safetensors` / `.h5` / `.onnx`, Argus does NOT auto-patch the binary — the model can't emit valid bytecode-level patches and a corrupt patched pickle would mislead the replay step. Instead, when an ML artifact is CONFIRMED malicious, Phase C emits structured remediation guidance: regenerate the model from a clean training pipeline and serialize using `safetensors` (which is structurally incapable of carrying executable `__reduce__` payloads). Phase C status for these cases is `UNVERIFIABLE` with the guidance in `fix_summary`.
+
+**Opt-out: `--no-remediation`.** Pass this flag to skip Phase C entirely while keeping Phase A verification + Phase B discovery active. Use for compliance scans, CI gates that don't allow source modification suggestions, read-only audits, or to save ~$0.05/file in patch-generation tokens. The result still includes a structured `phase_c` block with `skipped_reason: "phase_c_disabled_by_config"` and the count of findings that would have been remediated, so downstream consumers can distinguish "remediation off" from "Phase C ran and found nothing to fix."
 
 ### Roadmap (tracked in [ROADMAP.md](./ROADMAP.md))
 
@@ -141,6 +149,7 @@ Without DAST configured the CLI gracefully degrades to cascade-only verdicts. DA
 |---|---|
 | `--output {json,markdown}` | Output format (default: `json`) |
 | `--no-dast` | Skip DAST verification (cascade-only) |
+| `--no-remediation` | Skip Phase C (fix-and-verify). Phase A + B still run; no patch is generated. Compliance / CI-gate / read-only-audit use cases. Saves ~$0.05/file. |
 | `--max-cost USD` | Abort this file's scan if **per-file** API spend exceeds USD (default: $1.00; pass `0` to disable) |
 | `--enable-discovery` | Proactive payload sweep — runs library of attack payloads against the file in sandbox; surfaces runtime-confirmed CWEs as new findings (+~$0.25/file) |
 | `--dast-trigger-verdicts LIST` | Comma-separated L1 verdicts that trigger DAST. Default: `malicious,critical_malicious`. Allowed: `clean,suspicious,malicious,critical_malicious` |
@@ -157,6 +166,7 @@ Without DAST configured the CLI gracefully degrades to cascade-only verdicts. DA
 | `--no-gitignore` | Ignore `.gitignore` during walk (default: respected) |
 | `--max-file-bytes BYTES` | Skip files larger than BYTES (default: 1 MiB) |
 | `--no-dast` | Skip DAST verification on every file |
+| `--no-remediation` | Skip Phase C on every file. Phase A + B still run; no patches generated. |
 | `--enable-discovery` | Proactive payload sweep on every DAST-eligible file |
 | `--dast-trigger-verdicts LIST` | Same as `scan` |
 | `--continue-on-error` / `--no-continue-on-error` | On per-file exception, record and continue (default) or abort run |
