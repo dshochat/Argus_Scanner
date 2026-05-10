@@ -4,6 +4,8 @@
 
 Argus is an AI-native code security scanner combining a cost-tiered LLM **harness** (Gemini Flash-Lite triage → Sonnet 4.6 → Opus 4.6 escalation) with runtime DAST detonation in a Firecracker microVM and sandbox-verified remediation. Whether the bug is in code your team wrote (SQL injection, auth bypass, deserialization, command injection, crypto misuse) or in code your stack quietly pulled in (a malicious package, a poisoned `CLAUDE.md`, a backdoored `setup.py`, a tampered ML checkpoint loader about to run on someone's machine) — Argus detonates it in the sandbox, captures the exploit firing, generates a patch, replays the same exploit against the patched source, and ships the result as a CI gate.
 
+**Argus doesn't only verify what static analysis flagged — it finds new exploits by running the code.** Argus identifies probe-attractive functions, generates concrete attack inputs (path-traversal payloads, command-injection strings, deserialization gadgets), and executes each in the sandbox. Findings land from actual runtime behavior — the exfil bytes captured in the trace, the canary file that materialized in `/tmp`, the subshell that launched despite "safe" escaping. A function with a one-shot `../` strip that returns `/etc/passwd` content to an `../../etc/passwd` attacker input doesn't show up to pattern-matching SAST and doesn't survive manual review at scale; runtime evidence catches it cheaply and reliably.
+
 It targets the gap between *"this looks suspicious"* (pattern-matching SAST) and *"this actually exploits something"* (manual reverse engineering).
 
 **One scanner. Two threat models. Zero false-positive triage.**
@@ -73,14 +75,14 @@ Survivors route through a model cascade:
 
 The harness emits structured findings: CWE, line, severity, code, explanation, suggested fix, proof-of-concept, behavioral profile, attack chains, composite risk score. Aggregate cost is ~$4.65 per 100-file scan on a realistic workload mix; hard per-file + per-scan cost caps abort runs that exceed your declared budget.
 
-### Pillar 2 — DAST runtime detonation
+### Pillar 2 — DAST runtime detonation + exploit discovery
 
 When the harness flags suspicion at sufficient verdict tier, the file moves to a Firecracker microVM (`minimal-v2`, `networked-v2`, or `ml_tools-v2` image profile) for two phases:
 
 * **Phase A — exploit testing.** Plan an exploit per harness finding, run it in the sandbox, capture syscalls / egress / filesystem writes, classify each finding as `CONFIRMED` / `BLOCKED` / `UNREACHED` / `NOT_TESTED` based on what actually happened.
-* **Phase B — exploit discovery.** Given accumulated evidence, propose NEW hypotheses the harness missed. A deterministic validator gates the proposals; survivors carry forward into the next iteration's Phase A. Up to 3 iterations or until convergence.
+* **Phase B — exploit discovery, runtime-driven.** Argus identifies probe-attractive functions in the file (those that take user input and call a sink — filesystem / network / process / interpreter) and generates concrete attack inputs for each: path-traversal payloads, command-injection strings, deserialization gadgets, base64-decoded subshells. Each input runs in a fresh microVM; findings land when the runtime behavior is actually exploitable, with the exfil bytes or side-effects captured in the trace as proof — not from what the model thinks the code *might* do. The model also iteratively proposes additional hypotheses from accumulated evidence; a deterministic validator gates them and survivors flow back into Phase A for runtime testing. Up to 3 iterations or until convergence.
 
-This is the layer that kills false positives — a "looks like SQL injection" pattern that the file's own escaping defends against gets `BLOCKED`, not flagged. And it surfaces what static analysis missed — Phase B has actually found new findings the harness didn't catch.
+This is the layer that kills false positives — a "looks like SQL injection" pattern that the file's own escaping defends against gets `BLOCKED`, not flagged. And it's the layer that finds what static analysis can't see — a function with a one-shot `../` strip whose escape returns `/etc/passwd` content, a "safely" escaped shell argument that still launches a subshell, a `pickle.load()` that runs an attacker's `__reduce__`. The exfil bytes or side-effects captured in the trace ARE the finding's proof.
 
 ### Pillar 3 — Remediation (fix-and-verify)
 
