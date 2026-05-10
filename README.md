@@ -167,16 +167,6 @@ Anthropic's Claude Security and OpenAI's Codex Security are enterprise-tier and 
 | `--dast-trigger-verdicts LIST` | Same as `scan` |
 | `--continue-on-error` / `--no-continue-on-error` | On per-file exception, record and continue (default) or abort run |
 
-### `argus bench` — re-run the benchmark
-
-| Flag | Purpose |
-|---|---|
-| `--suite PATH` | Regression-suite directory (default: `samples/regression_v1`) |
-| `--n N` | Runs per config (default: 2) |
-| `--no-dast` | Run Argus pipeline L1-only (compare L1-vs-Opus separately) |
-| `--dry-run` | Print cost projection without making model calls |
-| `--yes` / `-y` | Skip cost-projection confirmation prompt |
-
 ## Security & Isolation
 
 Argus deliberately detonates potentially malicious code. Host protection is non-negotiable.
