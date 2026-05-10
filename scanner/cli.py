@@ -20,18 +20,13 @@ import json
 import logging
 import os
 import sys
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 
 from dast.runner import make_dast_runner_from_env
-from scanner.engine import ScanConfig, ScanResult, scan_file
-from scanner.runners import (
-    make_gemini_triage_runner,
-    make_opus_runner,
-    make_sonnet_runner,
-)
 from methodology.bench import (
     BenchAborted,
     BenchRow,
@@ -40,6 +35,12 @@ from methodology.bench import (
     make_raw_opus_baseline_runner,
     run_argus_pipeline_one,
     run_suite,
+)
+from scanner.engine import ScanConfig, ScanResult, scan_file
+from scanner.runners import (
+    make_gemini_triage_runner,
+    make_opus_runner,
+    make_sonnet_runner,
 )
 
 log = logging.getLogger("argus.cli")
@@ -62,8 +63,7 @@ def format_markdown(result: ScanResult) -> str:
         f"**Language:** {result.language or '?'}  ",
         f"**Triage:** {result.triage_classification} — {result.triage_reason}",
         "",
-        f"**Cost:** ${result.total_cost_usd:.4f}  "
-        f"**Time:** {result.total_duration_ms} ms",
+        f"**Cost:** ${result.total_cost_usd:.4f}  **Time:** {result.total_duration_ms} ms",
         "",
         f"**Scan path:** {' → '.join(result.scan_path) or '(empty)'}",
         "",
@@ -74,8 +74,7 @@ def format_markdown(result: ScanResult) -> str:
         for v in result.vulnerabilities:
             line = v.get("line", "?")
             lines.append(
-                f"- **{v.get('type', '?')}** "
-                f"(severity: {v.get('severity', '?')}, line {line})"
+                f"- **{v.get('type', '?')}** (severity: {v.get('severity', '?')}, line {line})"
             )
             if v.get("explanation"):
                 lines.append(f"  - {v['explanation']}")
@@ -94,7 +93,7 @@ def format_markdown(result: ScanResult) -> str:
     bp = result.behavioral_profile or {}
     sensitivity = bp.get("sensitivity")
     if sensitivity:
-        lines.append(f"## Behavioral summary")
+        lines.append("## Behavioral summary")
         lines.append("")
         lines.append(f"- Sensitivity: **{sensitivity}**")
         purpose = bp.get("purpose_summary")
@@ -108,7 +107,7 @@ def format_markdown(result: ScanResult) -> str:
         )
         lines.append("")
     if result.error:
-        lines.append(f"## Error")
+        lines.append("## Error")
         lines.append("")
         lines.append(f"`{result.error}`")
         lines.append("")
@@ -119,9 +118,7 @@ def format_markdown(result: ScanResult) -> str:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="argus", description="AI-native code security scanner"
-    )
+    parser = argparse.ArgumentParser(prog="argus", description="AI-native code security scanner")
     sub = parser.add_subparsers(dest="command", required=True)
 
     scan = sub.add_parser("scan", help="Scan a single file")
@@ -230,8 +227,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         metavar="K",
-        help="abort the run after K consecutive errored rows (default: 3). "
-        "Pass 0 to disable.",
+        help="abort the run after K consecutive errored rows (default: 3). Pass 0 to disable.",
     )
     bench.add_argument(
         "--no-resume",
@@ -343,6 +339,117 @@ def _build_parser() -> argparse.ArgumentParser:
         help="if a single file errors during scan, record the error and "
         "continue (default: --continue-on-error). Use --no-continue-on-error "
         "to abort the run on the first file-level exception.",
+    )
+
+    # ── argus install — pre-install supply-chain gate ──────────────────────
+    install = sub.add_parser(
+        "install",
+        help="Pre-install package gate: scan a PyPI package (and its "
+        "dependency closure) before installing it. Blocks on malicious "
+        "verdicts; otherwise calls real pip install.",
+        description=(
+            "Stage a package via `pip download` (no setup.py execution), "
+            "scan every wheel/sdist in the dependency closure with the "
+            "Argus cascade harness (and DAST Phase A+B if Fly is "
+            "configured), then either install or block based on the "
+            "worst verdict found. Phase C (remediation) is always off "
+            "on the install path — for a not-yet-installed package, "
+            "the right action is 'don't install', not 'patch'."
+        ),
+    )
+    install.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="package spec (e.g. 'requests', 'litellm==1.50.0', 'fastapi[all]'). "
+        "Mutually exclusive with --requirement.",
+    )
+    install.add_argument(
+        "-r",
+        "--requirement",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="install from a requirements.txt file. Argus scans every wheel "
+        "in the resolved closure.",
+    )
+    install.add_argument(
+        "--block-on",
+        type=str,
+        default="malicious,critical_malicious",
+        metavar="LIST",
+        help="comma-separated verdict tiers that block install. "
+        "Default: 'malicious,critical_malicious'. "
+        "Allowed: clean,suspicious,malicious,critical_malicious. "
+        "Use 'suspicious,malicious,critical_malicious' for stricter gating.",
+    )
+    install.add_argument(
+        "--no-dast",
+        action="store_true",
+        help="cascade only — skip DAST runtime detonation even if Fly is "
+        "configured. Faster + cheaper, but leaves runtime-only "
+        "exploits (load-time RCE in pickles, etc.) un-validated.",
+    )
+    install.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="ignore the wheel-hash verdict cache. Re-scans every artifact "
+        "from scratch even if it's been scanned before. By default, Argus "
+        "caches verdicts at ~/.cache/argus/install/<sha256>.json.",
+    )
+    install.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="override the cache directory (default: ~/.cache/argus/install).",
+    )
+    install.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="run the scan + report verdict; do NOT call pip install at the end. "
+        "Useful for CI gating without side-effects.",
+    )
+    install.add_argument(
+        "--strict-coverage",
+        action="store_true",
+        help="escalate verdict to 'suspicious' when Argus could only "
+        "statically analyze <70%% of files in a wheel (the rest are "
+        "typically native binaries: .so, .pyd, .dll, .dylib, .exe — "
+        "Argus does not decompile these in v1.2). For security-paranoid "
+        "users / strict CI gates that prefer to block on uncertainty. "
+        "Without this flag, unscanned counts are reported but do not "
+        "affect the verdict.",
+    )
+    install.add_argument(
+        "--max-cost",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="per-file cost cap during scanning (default: $1.00; pass 0 to disable).",
+    )
+    install.add_argument(
+        "--output",
+        choices=("text", "json"),
+        default="text",
+        help="output format. Default: text (human-readable). 'json' for CI consumption.",
+    )
+    install.add_argument(
+        "--pip",
+        type=str,
+        default="pip",
+        metavar="EXEC",
+        help="pip executable to use for download + install. Default: pip. "
+        "Pass 'uv pip' for uv-managed environments. Note: use a venv-local "
+        "pip to install into the right place.",
+    )
+    install.add_argument(
+        "--parallel",
+        type=int,
+        default=4,
+        metavar="N",
+        help="max number of artifacts scanned concurrently (default: 4). "
+        "Lower if you hit API rate limits.",
     )
     return parser
 
@@ -473,8 +580,9 @@ async def _run_bench(args: argparse.Namespace) -> int:
 
     # Output dir
     if args.output is None:
-        from datetime import datetime, timezone
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        from datetime import datetime
+
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         out_dir = Path("bench_results") / ts
     else:
         out_dir = args.output
@@ -488,21 +596,25 @@ async def _run_bench(args: argparse.Namespace) -> int:
     avg_argus_per_file = 0.60 if not args.no_dast else 0.20
     proj_total = (avg_opus_per_file + avg_argus_per_file) * n_files * args.n
 
-    print(f"=== argus bench ===")
+    print("=== argus bench ===")
     print(f"  suite:        {suite_dir}")
     print(f"  baseline:     {baseline_path}  ({n_files} files)")
     print(f"  N (runs/cfg): {args.n}")
-    print(f"  configs:      raw_opus + argus_full" + (" (no DAST)" if args.no_dast else ""))
+    print("  configs:      raw_opus + argus_full" + (" (no DAST)" if args.no_dast else ""))
     print(f"  output dir:   {out_dir}")
-    print(f"  cost (est.):  ~${proj_total:.2f}  "
-          f"({avg_opus_per_file:.2f} opus + {avg_argus_per_file:.2f} argus per file × {n_files} × N={args.n})")
+    print(
+        f"  cost (est.):  ~${proj_total:.2f}  "
+        f"({avg_opus_per_file:.2f} opus + {avg_argus_per_file:.2f} argus per file × {n_files} × N={args.n})"
+    )
     # Per-file wall time observed live: raw Opus ~1-2 min, Argus full
     # pipeline 3-7 min when DAST fires. So per-pair-per-run: ~4-9 min.
-    avg_min = (1.5 + (5.0 if not args.no_dast else 1.5))  # opus + argus avg
+    avg_min = 1.5 + (5.0 if not args.no_dast else 1.5)  # opus + argus avg
     n_pairs = n_files * args.n
-    print(f"  wall time:    ~{n_pairs * avg_min * 0.6 / 60:.1f}-"
-          f"{n_pairs * avg_min * 1.4 / 60:.1f} hours "
-          f"(per-file: {avg_min:.1f} min avg, sequential)")
+    print(
+        f"  wall time:    ~{n_pairs * avg_min * 0.6 / 60:.1f}-"
+        f"{n_pairs * avg_min * 1.4 / 60:.1f} hours "
+        f"(per-file: {avg_min:.1f} min avg, sequential)"
+    )
     print()
 
     if args.dry_run:
@@ -529,12 +641,13 @@ async def _run_bench(args: argparse.Namespace) -> int:
     else:
         argus_dast = make_dast_runner_from_env(api_key=anthropic_key)
         if argus_dast is None:
-            print("warning: DAST not configured — Argus pipeline will run L1-only",
-                  file=sys.stderr)
+            print("warning: DAST not configured — Argus pipeline will run L1-only", file=sys.stderr)
 
     async def argus_full_runner(filename, content, baseline_meta):
         return await run_argus_pipeline_one(
-            filename, content, baseline_meta,
+            filename,
+            content,
+            baseline_meta,
             triage_runner=triage,
             sonnet_runner=sonnet,
             opus_runner=opus,
@@ -550,6 +663,7 @@ async def _run_bench(args: argparse.Namespace) -> int:
         """Per-row progress printer. flush=True so each line ships
         immediately even when stdout is a file (block-buffered by
         default; bench is typically captured to a log)."""
+
         def cb(idx: int, total: int, row: BenchRow) -> None:
             verdict = row.predicted_verdict or "ERROR"
             mark = "==" if row.predicted_verdict == row.oracle_verdict else "!="
@@ -565,6 +679,7 @@ async def _run_bench(args: argparse.Namespace) -> int:
                 f"{extra}{err}",
                 flush=True,
             )
+
         return cb
 
     for run_idx in range(1, args.n + 1):
@@ -573,7 +688,9 @@ async def _run_bench(args: argparse.Namespace) -> int:
         opus_path = out_dir / f"raw_opus_run{run_idx}.json"
         try:
             opus_rows = await run_suite(
-                suite_dir, baseline_path, raw_opus_runner,
+                suite_dir,
+                baseline_path,
+                raw_opus_runner,
                 output_path=opus_path,
                 progress_callback=_make_progress_cb(run_idx, args.n, "opus", None),
                 auto_abort_consecutive_errors=abort_threshold,
@@ -598,7 +715,9 @@ async def _run_bench(args: argparse.Namespace) -> int:
         argus_path = out_dir / f"argus_full_run{run_idx}.json"
         try:
             argus_rows = await run_suite(
-                suite_dir, baseline_path, argus_full_runner,
+                suite_dir,
+                baseline_path,
+                argus_full_runner,
                 output_path=argus_path,
                 progress_callback=_make_progress_cb(run_idx, args.n, "argus", opus_lookup),
                 auto_abort_consecutive_errors=abort_threshold,
@@ -630,9 +749,7 @@ async def _run_bench(args: argparse.Namespace) -> int:
     # subcommands once they land.
 
     summary_path = out_dir / "summary.json"
-    summary_path.write_text(
-        json.dumps({"comparison": comparison, "gate": gate}, indent=2)
-    )
+    summary_path.write_text(json.dumps({"comparison": comparison, "gate": gate}, indent=2))
 
     print(flush=True)
     print("=== summary (aggregated across all runs) ===", flush=True)
@@ -750,6 +867,7 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
 
     # Build RepoScanConfig.
     from scanner.repo_scanner import RepoScanConfig, scan_repo
+
     repo_cfg_kwargs: dict[str, Any] = {
         "root": root,
         "extra_excludes": tuple(args.exclude),
@@ -836,6 +954,7 @@ def _render_repo_output(report: Any, fmt: str) -> str:
     """Render a RepoScanReport in markdown / json / sarif."""
     if fmt == "sarif":
         from scanner.sarif import render_repo_scan_sarif, to_sarif_string
+
         return to_sarif_string(render_repo_scan_sarif(report))
     if fmt == "json":
         return json.dumps(
@@ -883,9 +1002,7 @@ def _render_repo_markdown(report: Any) -> str:
     if report.verdict_counts:
         lines.append("## Verdicts")
         lines.append("")
-        for verdict, count in sorted(
-            report.verdict_counts.items(), key=lambda kv: -kv[1]
-        ):
+        for verdict, count in sorted(report.verdict_counts.items(), key=lambda kv: -kv[1]):
             lines.append(f"- `{verdict}` × {count}")
         lines.append("")
 
@@ -909,8 +1026,7 @@ def _render_repo_markdown(report: Any) -> str:
                 line_no = v.get("line", "?")
                 cwe = v.get("cwe", "?")
                 lines.append(
-                    f"  - [{cwe}] {v.get('type', '?')} "
-                    f"({v.get('severity', '?')}, line {line_no})"
+                    f"  - [{cwe}] {v.get('type', '?')} ({v.get('severity', '?')}, line {line_no})"
                 )
                 if v.get("status"):
                     lines.append(f"    - status: `{v['status']}`")
@@ -927,6 +1043,213 @@ def _render_repo_markdown(report: Any) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+# ── argus install handler ─────────────────────────────────────────────────
+
+
+_VALID_VERDICT_TIERS: frozenset[str] = frozenset(
+    {"clean", "suspicious", "malicious", "critical_malicious"}
+)
+
+
+def _format_install_text(report: Any) -> str:
+    """Human-readable install report. Surfaces blocked findings up top
+    with file/CWE/severity so the user can read the analysis without
+    parsing JSON."""
+    from scanner.install import VERDICT_RANK  # noqa: PLC0415
+
+    lines: list[str] = []
+    if report.blocked:
+        lines.append(f"❌ BLOCKED: {report.target}")
+        lines.append(f"   verdict: {report.worst_verdict}")
+        lines.append(f"   reason:  {report.block_reason}")
+    elif report.error:
+        lines.append(f"❌ ERROR:   {report.target}")
+        lines.append(f"   {report.error}")
+    elif not report.pip_install_attempted:
+        lines.append(f"✓  DRY-RUN: {report.target}")
+        lines.append(f"   verdict: {report.worst_verdict} (would install)")
+    elif report.pip_install_succeeded:
+        lines.append(f"✓  INSTALLED: {report.target}")
+        lines.append(f"   verdict: {report.worst_verdict}")
+    else:
+        lines.append(f"⚠  pip install FAILED after Argus passed: {report.target}")
+        lines.append(f"   verdict: {report.worst_verdict} (Argus passed)")
+        if report.pip_install_stderr:
+            lines.append(f"   pip stderr: {report.pip_install_stderr[:300]}")
+
+    lines.append("")
+    lines.append(
+        f"   artifacts={report.n_artifacts} "
+        f"cache_hits={report.n_cache_hits} "
+        f"dast_runs={report.n_dast_runs} "
+        f"cost=${report.aggregate_cost_usd:.4f} "
+        f"elapsed={report.elapsed_s:.1f}s"
+    )
+
+    if report.wheels:
+        lines.append("")
+        lines.append("   Per-artifact verdicts:")
+        # Sort worst-first
+        for w in sorted(
+            report.wheels,
+            key=lambda x: -VERDICT_RANK.get(x.verdict, 0),
+        ):
+            cache_tag = "  [cached]" if w.cached else ""
+            dast_tag = " +DAST" if w.dast_attempted else ""
+            cov = ""
+            if w.n_files_unscanned > 0:
+                pct = w.coverage_ratio * 100
+                cov = f"  [coverage {pct:.0f}%, {w.n_files_unscanned} unscanned]"
+            lines.append(f"     {w.verdict:<20} {w.artifact_name}{dast_tag}{cache_tag}{cov}")
+
+    # Coverage warnings — surface artifacts where Argus skipped a
+    # meaningful chunk of files (native binaries / compiled bytecode).
+    # A 'clean' verdict on a wheel that's 50% .so files is much weaker
+    # evidence than a clean verdict on a wheel that's 100% .py files.
+    low_coverage = [w for w in report.wheels if w.coverage_ratio < 0.7 and w.n_files_unscanned >= 2]
+    if low_coverage:
+        lines.append("")
+        lines.append(
+            "   ⚠ Coverage warning — these artifacts contain files Argus could not statically analyze:"
+        )
+        for w in low_coverage:
+            ext_summary = ", ".join(
+                f"{ext}×{n}"
+                for ext, n in sorted(w.unscanned_extensions.items(), key=lambda kv: -kv[1])[:5]
+            )
+            lines.append(
+                f"     {w.artifact_name}: "
+                f"{w.coverage_ratio * 100:.0f}% scanned ({w.n_files_unscanned} skipped: {ext_summary})"
+            )
+        lines.append(
+            "     Native binaries (.so, .pyd, .dylib, .dll) are not decompiled in v1.2. "
+            "A 'clean' verdict on these artifacts attests only to the analyzable code."
+        )
+        lines.append("     Use --strict-coverage to escalate these to 'suspicious' automatically.")
+
+    if report.blocked:
+        # Show the worst findings so the user understands WHY
+        culprits = sorted(
+            report.wheels,
+            key=lambda x: -VERDICT_RANK.get(x.verdict, 0),
+        )[:3]
+        lines.append("")
+        lines.append("   Worst findings (top 5 from blocked artifacts):")
+        n_shown = 0
+        for w in culprits:
+            for f in w.findings_summary[:5]:
+                if n_shown >= 5:
+                    break
+                cwe = f.get("cwe") or "?"
+                sev = f.get("severity") or "?"
+                ftype = f.get("type") or "?"
+                fpath = f.get("file") or "?"
+                expl = f.get("explanation") or ""
+                lines.append(f"     [{sev:>8}] {cwe:<10} {ftype:<24} {fpath}")
+                if expl:
+                    lines.append(f"               {expl[:120]}")
+                n_shown += 1
+
+    return "\n".join(lines) + "\n"
+
+
+async def _run_install(args: argparse.Namespace) -> int:
+    """Handler for ``argus install <pkg>``."""
+    from scanner.install import (  # noqa: PLC0415
+        CACHE_DIR_DEFAULT,
+    )
+    from scanner.install import (
+        install as run_install,
+    )
+
+    # Validate exactly-one of target / -r
+    if args.target is None and args.requirement is None:
+        print(
+            "ERROR: provide either a package spec (e.g. 'argus install requests') "
+            "or -r requirements.txt",
+            file=sys.stderr,
+        )
+        return 2
+    if args.target is not None and args.requirement is not None:
+        print(
+            "ERROR: --requirement and a positional target are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Validate --block-on tiers
+    block_on = tuple(t.strip() for t in args.block_on.split(",") if t.strip())
+    invalid = [t for t in block_on if t not in _VALID_VERDICT_TIERS]
+    if invalid:
+        print(
+            f"ERROR: invalid --block-on entries: {invalid}. "
+            f"Allowed: {sorted(_VALID_VERDICT_TIERS)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Build runners — same wiring as ``argus scan``. DAST runner is
+    # built only if Fly env is present (gracefully degrades to None).
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    gemini_key = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+    if not anthropic_key:
+        print("ERROR: ANTHROPIC_API_KEY env var required", file=sys.stderr)
+        return 2
+    if not gemini_key:
+        print(
+            "ERROR: GEMINI_API_KEY (or GOOGLE_API_KEY) env var required",
+            file=sys.stderr,
+        )
+        return 2
+
+    triage = make_gemini_triage_runner(gemini_key)
+    sonnet = make_sonnet_runner(anthropic_key)
+    opus = make_opus_runner(anthropic_key)
+    dast_runner = None if args.no_dast else make_dast_runner_from_env(api_key=anthropic_key)
+    if dast_runner is None and not args.no_dast:
+        log.info("DAST not configured (Fly env missing); install gate runs cascade-only")
+
+    # Build a per-file ScanConfig — install path always disables Phase C
+    # (handled inside scanner.install.scan_one_artifact, defensive in caller too).
+    config_kwargs: dict[str, Any] = {"enable_phase_c": False}
+    if args.max_cost is not None:
+        config_kwargs["max_cost_per_file_usd"] = args.max_cost
+    scan_cfg = ScanConfig(**config_kwargs)
+
+    cache_dir = args.cache_dir or CACHE_DIR_DEFAULT
+
+    report = await run_install(
+        target=args.target,
+        requirement_file=args.requirement,
+        block_on=block_on,
+        no_dast=args.no_dast,
+        use_cache=not args.no_cache,
+        cache_dir=cache_dir,
+        dry_run=args.dry_run,
+        strict_coverage=args.strict_coverage,
+        pip_executable=args.pip,
+        scan_cfg=scan_cfg,
+        triage_runner=triage,
+        sonnet_runner=sonnet,
+        opus_runner=opus,
+        dast_runner=dast_runner,
+        parallel_scans=args.parallel,
+    )
+
+    if args.output == "json":
+        print(json.dumps(report.to_dict(), indent=2, default=str))
+    else:
+        print(_format_install_text(report))
+
+    if report.error:
+        return 2
+    if report.blocked:
+        return 1
+    if report.pip_install_attempted and not report.pip_install_succeeded:
+        return 3
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
     # Force UTF-8 stdout so Windows cp1252 consoles don't choke on
@@ -941,6 +1264,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_bench(args))
     if args.command == "scan-repo":
         return asyncio.run(_run_scan_repo(args))
+    if args.command == "install":
+        return asyncio.run(_run_install(args))
     return 1
 
 

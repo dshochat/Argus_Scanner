@@ -80,7 +80,12 @@ def test_walk_files_extension_allowlist(tmp_path: Path) -> None:
     (tmp_path / "ok.py").write_text("print('hi')")
     (tmp_path / "ok.js").write_text("console.log(1)")
     (tmp_path / "skip.exe").write_bytes(b"\x00\x01")
-    (tmp_path / "skip.bin").write_bytes(b"\x00\x02")
+    # ``.so`` is a Linux native-extension extension Argus doesn't analyze
+    # statically (no decompiler in v1.2). Used here as a stable "not-in
+    # -allowlist" example.  Note: ``.bin`` IS in the allowlist now (v1.2.1
+    # ML-artifact expansion — PyTorch weights ship as .bin), so we can't
+    # use it here.
+    (tmp_path / "skip.so").write_bytes(b"\x7fELF")
 
     cfg = RepoScanConfig(root=tmp_path)
     out = list(walk_files(cfg))
@@ -89,7 +94,7 @@ def test_walk_files_extension_allowlist(tmp_path: Path) -> None:
     assert by_name["ok.py"] is None
     assert by_name["ok.js"] is None
     assert by_name["skip.exe"] == "unsupported_filetype"
-    assert by_name["skip.bin"] == "unsupported_filetype"
+    assert by_name["skip.so"] == "unsupported_filetype"
 
 
 def test_walk_files_filename_allowlist(tmp_path: Path) -> None:
