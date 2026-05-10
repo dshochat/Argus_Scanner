@@ -4,6 +4,34 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] — 2026-05-10 — file-type expansion + ML-load DAST + remediation opt-out
+
+**Three new file types in the cascade harness, deterministic ML-artifact load detonation in DAST, and a production opt-out for the remediation pillar.**
+
+### Added
+
+- **Jupyter notebooks (`.ipynb`).** Cell-by-cell decomposition. Code cells preserved verbatim with banner comments; markdown cells rendered as Python comments so the cascade sees prompt-injection surface in-line; shell magic (`!pip install …`) and IPython magic (`%load_ext …`) lines pass through verbatim.
+- **ML model artifacts (`.pkl`, `.pickle`, `.pt`, `.bin`, `.safetensors`, `.h5`, `.hdf5`, `.keras`, `.onnx`).** `pickletools.genops` disassembly without execution. Surfaces every `GLOBAL` / `STACK_GLOBAL` opcode whose target is a code-execution primitive (`os.system`, `subprocess.Popen`, `pty.spawn`, `builtins.eval`, …) plus `REDUCE` / `BUILD` / `NEWOBJ` opcodes that turn a global into invocation. Walks PyTorch zip-of-pickles members. Extracts safetensors `__metadata__` so attacker-controlled metadata reaches the cascade.
+- **GitHub Actions workflows (`.github/workflows/*.yml`).** Deterministic regex sweep for the supply-chain CI patterns: `pull_request_target` triggers, third-party actions referenced without SHA pinning, `${{ github.event.* }}` interpolations into `run:` shells, `permissions: write-all`, `secrets.*` references near network verbs (curl / wget / fetch) inside the same `run:` block.
+- **ML-artifact load detonation in DAST.** When the file is a recognized ML artifact, the runner injects a synthetic `HML_LOAD` hypothesis and the orchestrator prepends a deterministic load plan into iter 1: `pickle.load()` / `torch.load(weights_only=False)` / `safe_open()` / `h5py.File()` / `onnx.load()` runs against the original binary in the `ml_tools-v1` sandbox. Loading IS execution for these formats — malicious `__reduce__` fires, sandbox captures the trace.
+
+  **Validated end-to-end on a malicious `subprocess.Popen` pickle:** all 3 L1 findings (CWE-502, CWE-78, CWE-94) reached `CONFIRMED` with sandbox-captured runtime evidence. \$0.22 / 253s / 5 sandbox calls on a real Fly Firecracker microVM.
+- **`--no-remediation` opt-out flag** on both `argus scan` and `argus scan-repo`. Skips Phase C (fix-and-verify) entirely while keeping Phase A verification + Phase B discovery active. Use cases: compliance scans, CI gates that don't allow source-modification suggestions, read-only audits, ~$0.05/file cost reduction. Output always carries a structured `phase_c` block with `skipped_reason: "phase_c_disabled_by_config"` so consumers can distinguish "remediation off" from "ran and found nothing to fix."
+- **Phase C binary-artifact policy.** When an ML artifact is `CONFIRMED` malicious, Phase C does NOT call the patch generator (a model-emitted byte-level patch would corrupt the binary and mislead the replay step). Instead emits structured remediation guidance: regenerate the model from a clean training pipeline and serialize using `safetensors`. Phase C status = `UNVERIFIABLE` with the guidance in `fix_summary`.
+
+### Changed
+
+- README restructured around three pillars (cascade harness / DAST / remediation) with an explicit per-file-type capability matrix.
+- `ScanConfig` adds `enable_phase_c: bool = True`. Threaded through `engine.scan_file` → `dast_runner` → `run_dast`.
+
+### Implementation notes
+
+- `preprocessing/notebook.py` — Jupyter decomposer.
+- `preprocessing/ml_model.py` — Pickle / PyTorch / safetensors / HDF5 / ONNX inspector.
+- `preprocessing/github_actions.py` — Workflow inspector.
+- `dast/ml_detonation.py` — Deterministic load plan template.
+- 90+ new unit tests across the new modules; full sweep green.
+
 ## [1.2.0] — 2026-05-08 — fix-and-verify
 
 **Two production-grade additions that turn Argus from a detector into a verifier.**
