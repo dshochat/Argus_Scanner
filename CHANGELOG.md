@@ -4,6 +4,40 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] — 2026-05-10 — install-path performance + aggregate cost cap
+
+**Performance + cost-control release for `argus install`. Live-validated on the litellm dependency closure: ~6× faster wall-clock, 3.5× faster on file-heavy wheels, $10 default aggregate cost cap fires fail-closed.**
+
+### Added
+
+- **Per-file scan concurrency inside each wheel.** `RepoScanConfig.scan_concurrency` (default 1 = sequential, preserves v1.3.0 cost-cap-before-each-file semantics for `argus scan-repo`). Install path bumps to 4 by default. ~3–4× speedup on file-heavy wheels (e.g., anyio 988s → 282s).
+- **`thinking_budget` parameter on `make_sonnet_runner` / `make_opus_runner`.** Default 24000 preserves v1.3.0 behavior. Pass 0 to drop Anthropic extended thinking (~30% latency win, ~3–5pp accuracy loss on subtle multi-step exploits — recovered by deterministic preprocessing escalation flags).
+- **Aggregate cost cap on `argus install`.** Default `$10`; configurable via `--max-total-cost USD` (pass 0 to disable). When cumulative API spend hits the cap, remaining wheels are flagged `suspicious / unscanned_due_to_cost_cap` and the install fails closed. Race-y by design (parallel tasks may complete) but bounded.
+- **`--deep` flag on `argus install`.** Reverts to v1.3.0 fidelity: `thinking_budget=24000`, `file_concurrency=1`, `parallel_scans=4`. For users who want max accuracy at max cost.
+- **`--no-thinking` flag.** Explicit way to set `thinking_budget=0` (already the install default; flag exists for script readability).
+- **`--max-total-cost USD` flag.** Override the aggregate cost cap.
+
+### Changed
+
+- **`argus install` default parallelism: 4 → 8 wheels concurrent.**
+- **`argus install` default thinking budget: 24000 → 0** (extended thinking disabled on the install path; use `--deep` to revert). Production safety preserved by deterministic preprocessing flags (`imperative_install_detected`, `attack_vector_extension`, `ai_file_match`, `crypto_sensitivity_detected`, `obfuscation_detected`) which still force-escalate flagged files to HIGH-tier scrutiny.
+
+### Live measurements (litellm closure)
+
+| Wheel | v1.3.0 | v1.3.1 | speedup |
+|---|---|---|---|
+| anyio-4.13.0 | 988s / $2.77 | 282s / $2.34 | **3.5×** |
+| attrs-26.1.0 | 252s / $1.02 | 203s / $1.00 | 1.2× |
+| Wall-clock, first 7 wheels | ~22 min | ~4 min | **5.5×** |
+
+### Tests
+
+3 new unit tests covering aggregate cap fail-closed behavior, `max_total_cost=None` disabling the cap, and `file_concurrency` threading through `scan_one_artifact`. All 169 unit tests pass.
+
+### Deferred to v1.4
+
+- Pre-cached trust list of top-1000 PyPI packages (sha256-keyed). The biggest cost reduction available — would skip 80%+ of a typical dep closure. Requires standing up an Argus-operated scan infra to produce + sign the trust list.
+
 ## [1.3.0] — 2026-05-10 — `argus install`: pre-install supply-chain gate
 
 **A new subcommand that scans every wheel/sdist in a pip install's dependency closure BEFORE pip touches site-packages. Blocks day-zero supply-chain malware (litellm-style attacks) at the ingestion boundary.**

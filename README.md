@@ -188,7 +188,10 @@ Stages the package via `pip download` (no `setup.py` execution), runs the full A
 | `--dry-run` | Run the scan + report verdict; do NOT call `pip install`. For CI gating without side effects. |
 | `--strict-coverage` | Escalate verdict to `suspicious` when Argus could only statically analyze <70% of files in a wheel (rest are typically native binaries: `.so`, `.pyd`, `.dll`, `.dylib`, `.exe`). For security-paranoid users / strict CI gates. |
 | `--max-cost USD` | Per-file cost cap (default: $1.00). |
-| `--parallel N` | Max number of artifacts scanned concurrently (default: 4). |
+| `--max-total-cost USD` | Aggregate cost cap across the whole dependency-closure scan (default: **$10**). When tripped, remaining wheels are flagged `suspicious / unscanned-due-to-cost-cap` and the install fails closed. Pass `0` to disable. |
+| `--deep` | Full-fidelity scan — `thinking_budget=24000` on every Sonnet/Opus call, sequential per-file scan, 4 wheels concurrent. ~5–10× more expensive but catches subtle multi-step exploits the default mode might miss. |
+| `--no-thinking` | Explicit way to set `thinking_budget=0`. Already the install default; flag exists for script readability. Mutually exclusive with `--deep`. |
+| `--parallel N` | Max number of artifacts scanned concurrently (default: **8**). Pass lower if you hit API rate limits. |
 | `--pip EXEC` | Pip executable. Default: `pip`. Pass `'uv pip'` for uv-managed envs. |
 | `--output {text,json}` | Output format. Default: text. JSON for CI consumption. |
 
