@@ -75,7 +75,7 @@ The harness emits structured findings: CWE, line, severity, code, explanation, s
 
 ### Pillar 2 — DAST runtime detonation
 
-When the harness flags suspicion at sufficient verdict tier, the file moves to a Firecracker microVM (`minimal-v1`, `networked-v1`, or `ml_tools-v1` image profile) for two phases:
+When the harness flags suspicion at sufficient verdict tier, the file moves to a Firecracker microVM (`minimal-v2`, `networked-v2`, or `ml_tools-v2` image profile) for two phases:
 
 * **Phase A — exploit testing.** Plan an exploit per harness finding, run it in the sandbox, capture syscalls / egress / filesystem writes, classify each finding as `CONFIRMED` / `BLOCKED` / `UNREACHED` / `NOT_TESTED` based on what actually happened.
 * **Phase B — exploit discovery.** Given accumulated evidence, propose NEW hypotheses the harness missed. A deterministic validator gates the proposals; survivors carry forward into the next iteration's Phase A. Up to 3 iterations or until convergence.

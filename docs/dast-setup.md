@@ -17,7 +17,7 @@ Plus DAST-204 v0.5 **Discovery** mode (opt-in via `--enable-discovery`): proacti
 
 ## Language coverage matrix (DAST-206)
 
-The Argus DAST sandbox image (`minimal-v1`, `networked-v1`, `ml_tools-v1`) ships with multi-language runtimes pre-installed. Discovery commands auto-dispatch by file extension:
+The Argus DAST sandbox image (`minimal-v2`, `networked-v2`, `ml_tools-v2`) ships with multi-language runtimes pre-installed. Discovery commands auto-dispatch by file extension:
 
 | File extension | Runtime | Use case |
 |---|---|---|
@@ -61,12 +61,15 @@ flyctl tokens create deploy --app argus-dast-sandbox --expiry 720h
 # FLY_API_TOKEN=<paste here>
 
 # 5. Build + push the three sandbox images (~10-90 min, mostly cached)
-bash build_and_push_multi.sh
+#    IMAGE_VERSION=v2 ships v1.5's /data pre-create fix needed for
+#    runtime-probe path-traversal detection. Bumping the tag prevents
+#    stale-cache confusion for users upgrading from v1.x.
+IMAGE_VERSION=v2 bash build_and_push_multi.sh
 
 # 6. Set the image refs in .env
-# ECHO_DAST_IMAGE_MINIMAL=registry.fly.io/argus-dast-sandbox:minimal-v1
-# ECHO_DAST_IMAGE_NETWORKED=registry.fly.io/argus-dast-sandbox:networked-v1
-# ECHO_DAST_IMAGE_ML_TOOLS=registry.fly.io/argus-dast-sandbox:ml_tools-v1
+# ECHO_DAST_IMAGE_MINIMAL=registry.fly.io/argus-dast-sandbox:minimal-v2
+# ECHO_DAST_IMAGE_NETWORKED=registry.fly.io/argus-dast-sandbox:networked-v2
+# ECHO_DAST_IMAGE_ML_TOOLS=registry.fly.io/argus-dast-sandbox:ml_tools-v2
 ```
 
 After step 6, `argus scan` automatically invokes DAST on confirmed-malicious files. Use `--no-dast` to suppress per scan.
@@ -99,9 +102,11 @@ argus scan path/to/file.py --no-dast
 
 | Image | Contents | Use cases |
 |---|---|---|
-| `minimal-v1` | Python 3.13 + Node.js + npm + JRE + bash + coreutils + curl | Default for most plans. Pickle exploits, file I/O, subprocess, basic crypto, Node modules. |
-| `networked-v1` | minimal + curl / wget / nc / dnsutils / openssl | Exfiltration confirmation: real curl-to-attacker-domain calls observable via DNS / network captures. |
-| `ml_tools-v1` | networked + torch CPU + transformers + safetensors | Model-loader exploits: malicious safetensors, pickled `__reduce__` payloads in `torch.load()`. |
+| `minimal-v2` | Python 3.13 + Node.js + npm + JRE + bash + coreutils + curl + pre-created app dirs (`/data`, `/srv/app`, `/var/lib/app`, …) at mode 1777 | Default for most plans. Pickle exploits, file I/O, subprocess, basic crypto, Node modules, runtime-probe path-traversal. |
+| `networked-v2` | minimal + curl / wget / nc / dnsutils / openssl | Exfiltration confirmation: real curl-to-attacker-domain calls observable via DNS / network captures. |
+| `ml_tools-v2` | networked + torch CPU + transformers + safetensors | Model-loader exploits: malicious safetensors, pickled `__reduce__` payloads in `torch.load()`. |
+
+> **Upgrading from v1.x?** Existing `*-v1` images don't include the common app directories pre-created at mode 1777 that v1.5's runtime probe needs to detect path-traversal exploits against hard-coded prefix dirs like `open("/data/" + user_input)`. Rebuild + retag with `IMAGE_VERSION=v2 bash build_and_push_multi.sh` and update your `.env` to point at the `-v2` tags.
 
 The orchestrator's plan generator picks `image_hint` per hypothesis. The MultiImageSandboxClient routes accordingly; if the model picks an unsupported hint (or omits one), it falls back to `minimal`.
 
