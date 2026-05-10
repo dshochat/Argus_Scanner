@@ -14,6 +14,83 @@ You pay your providers directly — Anthropic + Google for the cascade, Fly.io f
 
 ---
 
+## Architecture at a glance
+
+```
+                        ┌─────────────────────┐
+                        │   source file       │
+                        │   (any extension    │
+                        │    we recognize)    │
+                        └──────────┬──────────┘
+                                   │
+                                   ▼
+   ┌────────────────────────────────────────────────────────────┐
+   │  PILLAR 1 — Cascade harness                                │
+   │  ──────────────────────────                                │
+   │   Preprocessing (free, deterministic)                      │
+   │     hash · deobfuscation · deps · attack-vector flags      │
+   │     · AI-file pattern detection · .pth path-hijack guard   │
+   │                  │                                         │
+   │                  ▼                                         │
+   │   Triage  ──  Gemini Flash-Lite  (~$0.001/file)            │
+   │     ├─ CLEAN ────────────────────────────┐                 │
+   │     ├─ LOW   ──  Gemini Flash    (~$0.02)│                 │
+   │     ├─ HIGH  ──  Claude Sonnet 4.6 (~$0.07)                │
+   │     └─ borderline / high-stakes  →  Claude Opus 4.6 (~$0.15)│
+   │                  │                                         │
+   │                  ▼                                         │
+   │     findings: CWE · line · severity · code · explanation · │
+   │     suggested fix · proof-of-concept · attack chains       │
+   └─────────────────────┬──────────────────────────────────────┘
+                         │
+            verdict in {malicious, critical_malicious}?
+                  yes ──┴── no  →  return result
+                         │
+                         ▼
+   ┌────────────────────────────────────────────────────────────┐
+   │  PILLAR 2 — DAST runtime detonation                        │
+   │  ──────────────────────────────────                        │
+   │   Firecracker microVM (minimal-v1 / networked-v1 / ml_tools-v1)│
+   │                                                            │
+   │   ITERATION  it ∈ [1, 3]                                   │
+   │   ┌──────────────────┐    ┌──────────────────────┐         │
+   │   │ Phase A — VERIFY │ →  │ Phase B — DISCOVER    │         │
+   │   │ run exploit plan │    │ propose new hypotheses│         │
+   │   │ in microVM       │    │ validator gates them  │         │
+   │   │  → CONFIRMED     │    │  survivors → next iter│         │
+   │   │  → BLOCKED       │    └──────────────────────┘         │
+   │   │  → UNREACHED     │              │                      │
+   │   │  → NOT_TESTED    │              ▼                      │
+   │   └────────┬─────────┘   stop on convergence or it=3       │
+   │            │                                               │
+   │            ▼                                               │
+   │   per-finding runtime evidence + sandbox-captured PoC      │
+   └─────────────────────┬──────────────────────────────────────┘
+                         │
+              any finding CONFIRMED?  AND  --no-remediation NOT set?
+                  yes ──┴── no  →  return result
+                         │
+                         ▼
+   ┌────────────────────────────────────────────────────────────┐
+   │  PILLAR 3 — Remediation (fix-and-verify)                   │
+   │  ───────────────────────────────────────                   │
+   │   text source:    generate patch  →  replay exploit on     │
+   │                   patched code in same sandbox             │
+   │                   →  NEUTRALIZED / STILL_EXPLOITABLE /     │
+   │                      UNVERIFIABLE                          │
+   │                                                            │
+   │   binary artifact (.pkl/.pt/.bin/.safetensors/.h5/.onnx):  │
+   │                   no auto-patch (would corrupt the file).  │
+   │                   Emit structured guidance:                │
+   │                   "regenerate from clean pipeline +        │
+   │                    serialize using safetensors"            │
+   │                   →  UNVERIFIABLE + fix_summary            │
+   └─────────────────────┬──────────────────────────────────────┘
+                         │
+                         ▼
+                  ScanResult JSON / SARIF
+```
+
 ## How Argus works (the three pillars)
 
 Argus has three pillars. The capability matrix below shows exactly what each pillar does for each file type.
