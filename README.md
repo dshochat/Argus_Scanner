@@ -1,23 +1,51 @@
 # Argus Scanner
 
-Argus is an AI-native security scanner that doesn't just flag "sinks" — it **proves exploitability at runtime**, then verifies the patch.
+**We don't flag what we can't exploit.**
 
-Existing scanners flag patterns. They can't tell you whether the pattern is reachable, exploitable, or already defended against by the file's own code. That gap was tolerable when the threat was SQL injection. It is not tolerable when your AI agent (or a human) `pip install`s something no advisory has flagged, or when an attacker plants malicious instructions in a `CLAUDE.md` or `.cursorrules` file your coding agent will load tomorrow.
+Argus is an AI-native code security scanner that runs every suspect path in a sandbox before it ships a verdict. Whether the bug is in code your team wrote (SQL injection, auth bypass, deserialization, command injection, crypto misuse) or in code your stack quietly pulled in (a malicious package, a poisoned `CLAUDE.md`, a backdoored `setup.py`, a tampered ML checkpoint loader about to run on someone's machine) — Argus detonates it in a Firecracker microVM, captures the exploit firing, generates a patch, replays the same exploit against the patched source, and ships the result as a CI gate.
 
-Argus moves from pattern matching to **intent verification**: would this code, if executed, do something an attacker wants? Open source, BYOK, built for environments executing code they didn't write.
+It targets the gap between *"this looks suspicious"* (pattern-matching SAST) and *"this actually exploits something"* (manual reverse engineering).
+
+**One scanner. Two threat models. Zero false-positive triage.**
+
+Open source. BYOK. Apache 2.0.
+
+**v1.2 adds Phase C — fix-and-verify.** When DAST confirms an exploit, Argus generates a patched version of the file, replays the same exploit attempts against the patched code in the same sandbox, and reports per-finding `NEUTRALIZED` / `STILL_EXPLOITABLE` / `UNVERIFIABLE` with sandbox-grounded evidence. You don't get a remediation *suggestion*; you get a remediation that's been *tested*. Validated end-to-end on adversarial fixtures: **5 of 5 confirmed exploits neutralized** across two distinct backdoor patterns.
+
+You pay your providers directly — Anthropic + Google for the cascade, Fly.io for the optional DAST sandbox. Argus collects nothing.
+
+---
 
 ## Coverage today
 
-**Cascade analysis (all listed formats)** — every file gets static + LLM analysis through the cost-tiered cascade:
+Argus operates at three depths depending on what a file is. Items below the line are roadmap, not implemented.
 
-* **Code:** Python, JavaScript / TypeScript, shell, Java bytecode (`.class`, `.jar`)
-* **Supply-chain manifests:** `package.json`, `requirements.txt`, `Cargo.lock`, `go.mod`, `Gemfile`, `composer.json`, `pyproject.toml`, `Pipfile`, Dockerfile, Makefile, `.npmrc`, `.pypirc`
-* **AI-agent config sentinels:** `CLAUDE.md`, `mcp.json`, `.cursorrules`, `claude_desktop_config.json`, `AGENTS.md`, `devcontainer.json`
-* **Doc / web attack surface:** Markdown / RST / AsciiDoc (prompt-injection vectors), HTML / SVG / XML (XSS, XXE, hidden script tags)
+### Cascade analysis (static + LLM, runs on every recognized file)
 
-**DAST runtime detonation (executable code only)** — Python, JavaScript / TypeScript, shell, Java bytecode. Non-executable formats (manifests, Markdown, AI-agent configs, HTML/XML) are cascade-only by definition — there is no runtime to detonate, but the LLM cascade still surfaces malicious payloads, prompt-injection content, and lifecycle-hook backdoors.
+**Executable code:** Python (`.py`, `.pyw`, `.pyi`, `.pth`), JavaScript / TypeScript (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`), shell (`.sh`, `.bash`, `.zsh`).
 
-**Roadmap:** Go, Rust, .NET (cascade + DAST).
+**Supply-chain manifests** (parsed for dependency extraction + lifecycle-hook detection): `package.json`, `package-lock.json`, `yarn.lock`, `requirements.txt`, `pyproject.toml`, `Pipfile`, `setup.py`, `Cargo.toml`, `Cargo.lock`, `go.mod`, `go.sum`, `Gemfile`, `Gemfile.lock`, `pom.xml`, `build.gradle`, `*.csproj`, `packages.config`.
+
+**AI-agent config sentinels** (prompt-injection surface — the file your coding agent will load tomorrow): `CLAUDE.md`, `AGENTS.md`, `SKILL.md`, `.cursorrules`, `.cursorrc`, `.clinerules`, `.github/copilot-instructions.md`, `system_prompt.{md,txt,yaml}`, `mcp.json`, `mcp_*.json`, `plugin.json`, `ai-plugin.json`, `openapi.{yaml,json}`, `agent-config.{yaml,json,toml}`, `tools.{json,yaml}`.
+
+**`.pth` path-hijack detection** — any line starting with `import` in a `.pth` file is force-elevated to priority-5 regardless of model verdict. Catches a classic Python supply-chain pattern that 2048-token triage routinely misses.
+
+**Other languages tagged for cascade analysis** (language-detected; the model-driven cascade still applies, but no specialized per-language detectors yet): Java, Kotlin, Scala, Go, Rust, Ruby, PHP, C#, C / C++, PowerShell, Lua, Perl, R, Swift, Terraform, HCL; Markdown, HTML, XML, JSON, YAML, TOML; Dockerfile, Makefile.
+
+### DAST runtime detonation (executable code only)
+
+Phase A verification + Phase B discovery + Phase C fix-and-verify run on Python, JavaScript / TypeScript, and shell. Sandbox image profiles: `minimal-v1`, `networked-v1`, `ml_tools-v1`. Other languages reach DAST only when invoked transitively (e.g., a shell script calling `python`).
+
+Non-executable formats (manifests, Markdown, AI-agent configs, HTML / XML) are cascade-only by definition — there is no runtime to detonate. The cascade still surfaces malicious payloads, prompt-injection content, and lifecycle-hook backdoors.
+
+### Roadmap (tracked in [ROADMAP.md](./ROADMAP.md))
+
+1. **Jupyter notebooks** (`.ipynb`) — cell-by-cell decomposition; treat each code cell as `.py`, each markdown cell as prompt-injection surface
+2. **ML model files** (`.pkl`, `.pt`, `.bin`, `.safetensors`, `.h5`, `.onnx`) — pickle-deserialization RCE detection, embedded payload extraction
+3. **GitHub Actions workflows** (`.github/workflows/*.yml`) — `pull_request_target` audits, third-party action SHA pinning, `${{ }}` injection in `run:` blocks, `GITHUB_TOKEN` exfil patterns
+4. **Java bytecode** (`.class`, `.jar`) — decompiler preprocessing + JDK sandbox profile
+5. **Go, Rust, .NET** — cascade + DAST coverage
+6. **k8s / Helm / Terraform** (niche-adjacent; deferred until demand)
 
 ## The 4-Layer Moat
 
