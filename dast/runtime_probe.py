@@ -263,6 +263,49 @@ def _python_module_name_for_file(file_name: str) -> str:
     return "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in base)
 
 
+# ── Path-prep preamble (v1.5 env fix) ────────────────────────────────────
+#
+# Functions rooted at hard-coded directory prefixes (e.g.,
+# ``open("/data/" + user_input)``) need that prefix dir to EXIST in the
+# sandbox before path-traversal exploits can fire. Linux's pathname
+# resolver requires every intermediate component to exist (and be
+# searchable) before it will resolve ``..`` traversals — so an attack
+# input like ``../../etc/passwd`` against ``open("/data/" + path)``
+# raises ``FileNotFoundError`` BEFORE the traversal can resolve to
+# ``/etc/passwd`` if ``/data`` doesn't exist.
+#
+# Layered defense:
+#   * Sandbox Dockerfile pre-creates a curated set of common prefixes
+#     (``/data``, ``/srv/app``, ``/var/lib/app``, …) at mode 1777.
+#   * This harness preamble auto-detects ANY absolute-path string
+#     literal in the target module's source and ``mkdir -p``'s the
+#     corresponding parent dir (or the path itself if it looks like a
+#     dir prefix). Catches unusual prefixes the Dockerfile list misses.
+#
+# The deny-list skips well-known read-only/system dirs so we never
+# attempt to mkdir at e.g. ``/etc`` (would fail anyway as non-root,
+# but explicit skip is safer + cheaper). All exceptions are swallowed
+# — a failed mkdir is a no-op, never blocks the probe call itself.
+
+#: Directory prefixes the harness will NOT attempt to create or mutate.
+#: System dirs (read-only at runtime, owned by root, sometimes read-only
+#: filesystem mounts) — we don't want noise in stderr from PermissionError.
+_PROBE_PREP_DENY_PREFIXES: tuple[str, ...] = (
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/dev",
+    "/proc",
+    "/sys",
+    "/root",
+    "/boot",
+    "/run",
+    "/tmp",  # already exists + canary detection mutates here
+)
+
+
 def _build_python_probe_harness(
     *,
     module_name: str,
@@ -274,10 +317,13 @@ def _build_python_probe_harness(
 
     Layout:
     1. Snapshot baseline (env, /tmp contents, network log if accessible).
-    2. Import the target module from /workspace.
-    3. Resolve the function (supports ``Class.method`` via getattr walk).
-    4. Call it with the decoded args / kwargs.
-    5. Print ``RESULT_JSON:{...}`` (outcome) + ``SIDE_EFFECTS:{...}``
+    2. Path-prep preamble: regex-extract absolute-path string literals
+       from the target module's source and ``mkdir -p`` the prefix dirs
+       so path-traversal exploits can resolve through them.
+    3. Import the target module from /workspace.
+    4. Resolve the function (supports ``Class.method`` via getattr walk).
+    5. Call it with the decoded args / kwargs.
+    6. Print ``RESULT_JSON:{...}`` (outcome) + ``SIDE_EFFECTS:{...}``
        (diff of observable side effects).
 
     The harness is a single-line python -c invocation so it can be
@@ -292,16 +338,77 @@ def _build_python_probe_harness(
     args_repr = repr(args_json)
     kwargs_repr = repr(kwargs_json)
     safe_function = function_name  # Pre-validated by the schema regex
+    deny_repr = repr(_PROBE_PREP_DENY_PREFIXES)
     return (
-        "import sys, os, json, traceback\n"
+        "import sys, os, json, traceback, re\n"
         "sys.path.insert(0, '/workspace')\n"
         "baseline_tmp = set()\n"
         "try:\n"
         "    baseline_tmp = set(os.listdir('/tmp'))\n"
         "except Exception:\n"
         "    pass\n"
+        # ── Path-prep preamble ─────────────────────────────────────────────
+        # Regex picks up '/letter[\\w./-]*' string literals from source.
+        # For each, mkdir-p the dirname (or the path itself if it ends in '/'
+        # or has no extension — i.e., looks like a dir prefix not a file).
+        # Skips system prefixes; swallows OSError/PermissionError silently.
+        f"_DENY = {deny_repr}\n"
+        f"_module_path = '/workspace/{module_name}.py'\n"
+        "_paths_to_prep = set()\n"
+        "try:\n"
+        "    _src = open(_module_path).read()\n"
+        "    _paths_to_prep = set(re.findall("
+        "r'''[\"\\']((?:/[A-Za-z_][\\w./-]*))[\"\\']''', _src))\n"
+        "except Exception:\n"
+        "    pass\n"
+        "_abs_dir_prefixes = set()\n"
+        "for _p in _paths_to_prep:\n"
+        "    if any(_p == d or _p.startswith(d + '/') for d in _DENY):\n"
+        "        continue\n"
+        "    try:\n"
+        "        _bn = os.path.basename(_p.rstrip('/'))\n"
+        "        # If it looks like a file (basename has '.'), mkdir parent;\n"
+        "        # else (looks like a dir prefix), mkdir the path itself.\n"
+        "        _looks_like_file = '.' in _bn and not _p.endswith('/')\n"
+        "        _to_mk = os.path.dirname(_p) if _looks_like_file else _p.rstrip('/')\n"
+        "        if _to_mk and _to_mk != '/':\n"
+        "            os.makedirs(_to_mk, exist_ok=True)\n"
+        "            _abs_dir_prefixes.add(_to_mk)\n"
+        "    except (OSError, PermissionError):\n"
+        "        pass\n"
+        # ── End source path-prep ──────────────────────────────────────────
         f"args = json.loads({args_repr})\n"
         f"kwargs = json.loads({kwargs_repr})\n"
+        # ── Input-derived path-prep ───────────────────────────────────────
+        # When the function is rooted at hard-coded prefix dirs (e.g.
+        # ``open("/data/" + path)``) and the attack input contains DIRECT
+        # path components (not just ``..``/``.``), Linux's path resolver
+        # needs ``<prefix>/<components>/...`` to exist before traversal
+        # can resolve through it. Example: input ``subdir/../../etc/passwd``
+        # against ``open("/data/" + path)`` resolves only when
+        # ``/data/subdir/`` exists. mkdir-p the cartesian product of
+        # source prefixes × input direct-component prefixes.
+        "_skip = {'..', '.', ''}\n"
+        "for _arg in args + list(kwargs.values()):\n"
+        "    if not (isinstance(_arg, str) and '/' in _arg):\n"
+        "        continue\n"
+        "    _comps = [c for c in _arg.split('/') if c not in _skip]\n"
+        "    if not _comps:\n"
+        "        continue\n"
+        # last component assumed to be the target file; build under
+        # progressively-deeper prefixes for each preceding component.
+        "    for _depth in range(1, len(_comps)):\n"
+        "        _rel = '/'.join(_comps[:_depth])\n"
+        "        for _src_dir in _abs_dir_prefixes:\n"
+        "            try:\n"
+        "                _full = _src_dir.rstrip('/') + '/' + _rel\n"
+        "                if any(_full == d or _full.startswith(d + '/') for d in _DENY):\n"
+        "                    continue\n"
+        "                os.makedirs(_full, exist_ok=True)\n"
+        "            except (OSError, PermissionError):\n"
+        "                pass\n"
+        # ── End input path-prep ───────────────────────────────────────────
+
         f"import {module_name} as _target\n"
         "fn = _target\n"
         f"for part in '{safe_function}'.split('.'):\n"

@@ -953,6 +953,13 @@ async def _run_phase_b_runtime_probe(
             if finding is None:
                 # Probe ran cleanly — exception raised AND no canary
                 # observed. BLOCKED-equivalent for runtime probes.
+                # v1.5: surface the exception type/message so debugging
+                # the "why didn't this exploit fire" question doesn't
+                # require pulling the raw sandbox event from Fly.
+                _pr = parsed_trace.parsed_result or {}
+                _exc_type = _pr.get("exception_type", "")
+                _exc_msg = (_pr.get("exception_msg") or "")[:160]
+                _ok = bool(_pr.get("ok"))
                 journal.append(
                     JournalRecord(
                         iter=iter_num,
@@ -964,7 +971,8 @@ async def _run_phase_b_runtime_probe(
                             f"Function={cand.function_name}, class={cand.attack_class}, "
                             f"input={test_in.args_json[:100]}, "
                             f"exit_code={parsed_trace.exit_code}, "
-                            f"parsed_ok={parsed_trace.parsed_result is not None}"
+                            f"call_ok={_ok}, "
+                            f"exc={_exc_type}: {_exc_msg}"
                         ),
                         evidence_refs=[trace.events[0].event_id] if trace.events else [],
                     )

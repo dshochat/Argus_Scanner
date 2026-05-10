@@ -45,6 +45,17 @@ RUN useradd -m -u 1000 -s /bin/bash runner && \
     mkdir -p /workspace && \
     chown runner:runner /workspace
 
+# Pre-create common app data directories that filesystem-rooted code
+# often references (e.g., open("/data/" + user_input)). Without these,
+# functions targeting hard-coded paths like /data/, /srv/app/, etc.
+# raise FileNotFoundError before path-traversal exploits can fire,
+# silently masking real vulns. v1.5 runtime probe needs Linux's path
+# resolver to be able to descend the prefix dir so ".." traversals
+# can resolve correctly. Mode 1777 (sticky bit + world-writable, like
+# /tmp) lets the unprivileged 'runner' user populate them safely.
+RUN mkdir -p /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app && \
+    chmod 1777 /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app
+
 COPY entrypoint.py /usr/local/bin/dast-entrypoint
 RUN chmod 755 /usr/local/bin/dast-entrypoint
 

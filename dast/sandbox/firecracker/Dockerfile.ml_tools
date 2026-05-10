@@ -75,6 +75,13 @@ RUN useradd -m -u 1000 -s /bin/bash runner && \
     mkdir -p /workspace && \
     chown runner:runner /workspace
 
+# Pre-create common app data directories (mirrors minimal Dockerfile).
+# Path-traversal probes need hard-coded prefix dirs to exist so Linux's
+# path resolver can descend through them. Mode 1777 = sticky-world-
+# writable, same as /tmp.
+RUN mkdir -p /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app && \
+    chmod 1777 /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app
+
 # Disable HF hub network calls by default — the sandbox is air-gapped
 # and HF would just hang on DNS hijack. Plans that need a specific
 # model must populate /workspace/.cache/huggingface/ before invocation.

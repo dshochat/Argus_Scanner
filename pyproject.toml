@@ -1,6 +1,6 @@
 [project]
 name = "argus-ai-scanner"
-version = "1.3.1"
+version = "1.5.0"
 description = "AI-native code security scanner with cascade analysis and Firecracker-microVM DAST runtime validation"
 readme = "README.md"
 requires-python = ">=3.12"
