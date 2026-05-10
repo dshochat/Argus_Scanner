@@ -31,6 +31,12 @@ argus scan-repo .
 
 # CI mode — only files changed vs main, SARIF for GitHub Code Scanning
 argus scan-repo . --diff origin/main --output sarif --output-file findings.sarif
+
+# Pre-install supply-chain gate — scan a PyPI package + its dep closure
+# BEFORE pip installs anything. Blocks day-zero malware at the ingestion boundary.
+argus install requests
+argus install -r requirements.txt --dry-run        # CI gate without installing
+argus install litellm --strict-coverage             # extra-paranoid mode
 ```
 
 Without DAST configured the CLI gracefully degrades to cascade-only verdicts. DAST mode (Firecracker sandbox) requires a Fly.io account — see [docs/dast-setup.md](./docs/dast-setup.md).
@@ -166,6 +172,31 @@ Anthropic's Claude Security and OpenAI's Codex Security are enterprise-tier and 
 | `--enable-discovery` | Proactive payload sweep on every DAST-eligible file |
 | `--dast-trigger-verdicts LIST` | Same as `scan` |
 | `--continue-on-error` / `--no-continue-on-error` | On per-file exception, record and continue (default) or abort run |
+
+### `argus install <pkg>` — pre-install supply-chain gate
+
+Stages the package via `pip download` (no `setup.py` execution), runs the full Argus pipeline on every wheel/sdist in the dependency closure, then either calls real `pip install` or blocks with the analysis printed. Catches day-zero supply-chain malware at the ingestion boundary — exactly the class advisory-based scanners (`pip-audit`, `safety`) miss.
+
+| Flag | Purpose |
+|---|---|
+| `<pkg>` | Package spec (e.g. `'requests'`, `'litellm==1.50.0'`, `'fastapi[all]'`). Mutually exclusive with `-r`. |
+| `-r PATH` / `--requirement PATH` | Install from a requirements.txt; Argus scans every wheel in the resolved closure. |
+| `--block-on LIST` | Comma-separated verdict tiers that block install. Default: `malicious,critical_malicious`. Use `suspicious,malicious,critical_malicious` for stricter gating. |
+| `--no-dast` | Cascade-only — skip DAST runtime detonation even if Fly is configured. Faster + cheaper, but leaves runtime-only exploits (load-time RCE in pickles, etc.) un-validated. |
+| `--no-cache` | Ignore the wheel-hash verdict cache. Re-scans every artifact from scratch. |
+| `--cache-dir PATH` | Override cache directory (default: `~/.cache/argus/install`). |
+| `--dry-run` | Run the scan + report verdict; do NOT call `pip install`. For CI gating without side effects. |
+| `--strict-coverage` | Escalate verdict to `suspicious` when Argus could only statically analyze <70% of files in a wheel (rest are typically native binaries: `.so`, `.pyd`, `.dll`, `.dylib`, `.exe`). For security-paranoid users / strict CI gates. |
+| `--max-cost USD` | Per-file cost cap (default: $1.00). |
+| `--parallel N` | Max number of artifacts scanned concurrently (default: 4). |
+| `--pip EXEC` | Pip executable. Default: `pip`. Pass `'uv pip'` for uv-managed envs. |
+| `--output {text,json}` | Output format. Default: text. JSON for CI consumption. |
+
+**Phase C is always disabled on the install path.** Remediation for a not-yet-installed package is "don't install", not "patch + replay." If the cascade flags a `malicious` verdict, the install is blocked; the user sees the analysis (CWE, runtime evidence, exfil destination) and decides.
+
+**Wheel-hash caching.** Verdicts are cached at `~/.cache/argus/install/<sha256>.json`. Wheel bytes are immutable on PyPI (re-uploads of the same name+version are rejected), so a verdict is permanently valid for that exact artifact. First-run cost is real; subsequent installs of the same wheel are free.
+
+**Coverage transparency.** A "clean" verdict on a wheel that's 50% native binaries (`.so`, `.pyd`) is honestly weaker evidence than a clean verdict on a wheel that's 100% Python — the report says so. Every artifact verdict reports `n_files_unscanned` + extension histogram. Native binaries are not silently scrubbed from the verdict — coverage warnings surface. `--strict-coverage` opt-in escalates the verdict on low-coverage artifacts.
 
 ## Security & Isolation
 

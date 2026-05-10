@@ -4,6 +4,54 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-05-10 — `argus install`: pre-install supply-chain gate
+
+**A new subcommand that scans every wheel/sdist in a pip install's dependency closure BEFORE pip touches site-packages. Blocks day-zero supply-chain malware (litellm-style attacks) at the ingestion boundary.**
+
+### Added
+
+- **`argus install <pkg>`** — stage via `pip download` (no `setup.py` execution), scan every artifact with the full Argus pipeline (cascade harness + DAST Phase A+B if Fly is configured), then either pass to real `pip install` or block with the analysis printed.
+- **`-r requirements.txt`** support — scans the entire dependency closure.
+- **Wheel-hash verdict cache** at `~/.cache/argus/install/<sha256>.json`. Wheel bytes are immutable on PyPI, so a verdict is permanently valid for that exact artifact. First-run cost is real; subsequent installs are free.
+- **Parallel per-artifact scanning** (default 4 concurrent, `--parallel N` override).
+- **`--block-on LIST`** — configurable verdict-tier threshold. Default: `malicious,critical_malicious`. Use `suspicious,malicious,critical_malicious` for stricter gating.
+- **`--no-dast`** — cascade-only install gate, ~10x faster, ~10x cheaper.
+- **`--dry-run`** — scan + report; do NOT call `pip install` at the end. For CI gating without side effects.
+- **`--strict-coverage`** — escalate verdict to `suspicious` when Argus could only statically analyze <70% of files in a wheel (rest are typically native binaries: `.so`, `.pyd`, `.dylib`, `.dll`, `.exe`). For security-paranoid users / strict CI gates that prefer to block on uncertainty.
+- **Coverage transparency** — every artifact verdict reports `n_files_unscanned` + extension histogram (`{".so": 3, ".pyd": 1}`). A "clean" verdict on a wheel that's 50% native binaries is honestly weaker evidence than a clean verdict on a wheel that's 100% Python — and the report says so.
+- **`--max-cost USD`**, **`--cache-dir PATH`**, **`--no-cache`**, **`--pip EXEC`**, **`--output {text,json}`** — round out the CLI surface.
+- **Phase C is always disabled on the install path** (defense-in-depth). Remediation for a not-yet-installed package is "don't install", not "patch + replay." The install code overrides `enable_phase_c=False` regardless of the caller's `ScanConfig`.
+
+### Changed
+
+- `scan-repo`'s `SUPPORTED_EXTENSIONS` now includes `.ipynb`, `.pt`, `.bin`, `.safetensors`, `.h5`, `.hdf5`, `.keras`, `.onnx` (the v1.2.1 file-type expansion). Means `argus install` and `argus scan-repo` now scan ML model artifacts inside wheels.
+
+### Threat model coverage
+
+Catches:
+- Postinstall / lifecycle scripts (setup.py, __init__.py, .pth path-hijack)
+- Obfuscated payloads (base64 / hex / eval-chain unwrapping)
+- ML-model exfil-on-load (pickletools disassembly + ML-load DAST detonation)
+- Prompt-injection in package READMEs / docs aimed at coding agents
+
+Does NOT catch:
+- Native-extension compromise (pre-built .so / .pyd) — surfaced as coverage warning instead
+- Time-bombed payloads (fires only on date X / specific hostname)
+- Env-conditional payloads (only triggers in AWS / specific region)
+
+Users should treat "Argus did not observe malicious behavior" as *evidence of safety*, not a *guarantee*.
+
+### Live smoke test
+
+`argus install six==1.16.0 --dry-run --no-dast` against real PyPI:
+- pip downloaded the wheel, cascade harness scanned the contents
+- triage `CLEAN`, verdict `clean`, blocked `False`
+- cost: $0.0011 / elapsed: 10.3s
+
+### Tests
+
+21 new unit tests covering cache roundtrip, miss/corrupt/version-mismatch, clean-passes-and-installs, malicious-blocks-and-skips-install, dry-run, --no-dast, --no-cache, parallel scanning, Phase C contract enforcement, worst-of aggregation across multi-wheel closures, pip download failure handling, --strict-coverage positive + negative cases, coverage_ratio property edge cases. Existing test_engine_smoke + test_repo_scanner unblocked. Full sweep green.
+
 ## [1.2.1] — 2026-05-10 — file-type expansion + ML-load DAST + remediation opt-out
 
 **Three new file types in the cascade harness, deterministic ML-artifact load detonation in DAST, and a production opt-out for the remediation pillar.**
