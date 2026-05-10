@@ -2,7 +2,7 @@
 
 **We don't flag what we can't exploit.**
 
-Argus is an AI-native code security scanner that runs every suspect path in a sandbox before it ships a verdict. Whether the bug is in code your team wrote (SQL injection, auth bypass, deserialization, command injection, crypto misuse) or in code your stack quietly pulled in (a malicious package, a poisoned `CLAUDE.md`, a backdoored `setup.py`, a tampered ML checkpoint loader about to run on someone's machine) — Argus detonates it in a Firecracker microVM, captures the exploit firing, generates a patch, replays the same exploit against the patched source, and ships the result as a CI gate.
+Argus is an AI-native code security scanner combining a cost-tiered LLM **harness** (Gemini Flash-Lite triage → Sonnet 4.6 → Opus 4.6 escalation) with runtime DAST detonation in a Firecracker microVM and sandbox-verified remediation. Whether the bug is in code your team wrote (SQL injection, auth bypass, deserialization, command injection, crypto misuse) or in code your stack quietly pulled in (a malicious package, a poisoned `CLAUDE.md`, a backdoored `setup.py`, a tampered ML checkpoint loader about to run on someone's machine) — Argus detonates it in the sandbox, captures the exploit firing, generates a patch, replays the same exploit against the patched source, and ships the result as a CI gate.
 
 It targets the gap between *"this looks suspicious"* (pattern-matching SAST) and *"this actually exploits something"* (manual reverse engineering).
 
@@ -14,81 +14,38 @@ You pay your providers directly — Anthropic + Google for the cascade, Fly.io f
 
 ---
 
-## Architecture at a glance
+## Quick Start
+
+Get from install to first scan in under 60 seconds:
+
+```bash
+pip install argus-ai-scanner
+export ANTHROPIC_API_KEY="your-anthropic-key"
+export GEMINI_API_KEY="your-gemini-key"
+
+# Single file
+argus scan path/to/suspicious.py
+
+# Whole repo (current directory)
+argus scan-repo .
+
+# CI mode — only files changed vs main, SARIF for GitHub Code Scanning
+argus scan-repo . --diff origin/main --output sarif --output-file findings.sarif
+```
+
+Without DAST configured the CLI gracefully degrades to cascade-only verdicts. DAST mode (Firecracker sandbox) requires a Fly.io account — see [docs/dast-setup.md](./docs/dast-setup.md).
+
+## Benchmark Performance
+
+Adversarial regression suite, labeled by a 4-LLM consensus oracle. Methodology, sample size, and per-file breakdown: [`bench_results/v1_1_launch/launch_report.md`](./bench_results/v1_1_launch/launch_report.md).
 
 ```
-                        ┌─────────────────────┐
-                        │   source file       │
-                        │   (any extension    │
-                        │    we recognize)    │
-                        └──────────┬──────────┘
-                                   │
-                                   ▼
-   ┌────────────────────────────────────────────────────────────┐
-   │  PILLAR 1 — Cascade harness                                │
-   │  ──────────────────────────                                │
-   │   Preprocessing (free, deterministic)                      │
-   │     hash · deobfuscation · deps · attack-vector flags      │
-   │     · AI-file pattern detection · .pth path-hijack guard   │
-   │                  │                                         │
-   │                  ▼                                         │
-   │   Triage  ──  Gemini Flash-Lite  (~$0.001/file)            │
-   │     ├─ CLEAN ────────────────────────────┐                 │
-   │     ├─ LOW   ──  Gemini Flash    (~$0.02)│                 │
-   │     ├─ HIGH  ──  Claude Sonnet 4.6 (~$0.07)                │
-   │     └─ borderline / high-stakes  →  Claude Opus 4.6 (~$0.15)│
-   │                  │                                         │
-   │                  ▼                                         │
-   │     findings: CWE · line · severity · code · explanation · │
-   │     suggested fix · proof-of-concept · attack chains       │
-   └─────────────────────┬──────────────────────────────────────┘
-                         │
-            verdict in {malicious, critical_malicious}?
-                  yes ──┴── no  →  return result
-                         │
-                         ▼
-   ┌────────────────────────────────────────────────────────────┐
-   │  PILLAR 2 — DAST runtime detonation                        │
-   │  ──────────────────────────────────                        │
-   │   Firecracker microVM (minimal-v1 / networked-v1 / ml_tools-v1)│
-   │                                                            │
-   │   ITERATION  it ∈ [1, 3]                                   │
-   │   ┌──────────────────┐    ┌──────────────────────┐         │
-   │   │ Phase A — VERIFY │ →  │ Phase B — DISCOVER    │         │
-   │   │ run exploit plan │    │ propose new hypotheses│         │
-   │   │ in microVM       │    │ validator gates them  │         │
-   │   │  → CONFIRMED     │    │  survivors → next iter│         │
-   │   │  → BLOCKED       │    └──────────────────────┘         │
-   │   │  → UNREACHED     │              │                      │
-   │   │  → NOT_TESTED    │              ▼                      │
-   │   └────────┬─────────┘   stop on convergence or it=3       │
-   │            │                                               │
-   │            ▼                                               │
-   │   per-finding runtime evidence + sandbox-captured PoC      │
-   └─────────────────────┬──────────────────────────────────────┘
-                         │
-              any finding CONFIRMED?  AND  --no-remediation NOT set?
-                  yes ──┴── no  →  return result
-                         │
-                         ▼
-   ┌────────────────────────────────────────────────────────────┐
-   │  PILLAR 3 — Remediation (fix-and-verify)                   │
-   │  ───────────────────────────────────────                   │
-   │   text source:    generate patch  →  replay exploit on     │
-   │                   patched code in same sandbox             │
-   │                   →  NEUTRALIZED / STILL_EXPLOITABLE /     │
-   │                      UNVERIFIABLE                          │
-   │                                                            │
-   │   binary artifact (.pkl/.pt/.bin/.safetensors/.h5/.onnx):  │
-   │                   no auto-patch (would corrupt the file).  │
-   │                   Emit structured guidance:                │
-   │                   "regenerate from clean pipeline +        │
-   │                    serialize using safetensors"            │
-   │                   →  UNVERIFIABLE + fix_summary            │
-   └─────────────────────┬──────────────────────────────────────┘
-                         │
-                         ▼
-                  ScanResult JSON / SARIF
+                       Verdict-exact (higher = better)
+Argus (cascade + DAST) ████████████████████  91.3%
+Gemini 3.1 Pro         █████████████████░░░  82.6%
+Grok 4.3               █████████████████░░░  82.6%
+Opus 4.6               █████████████████░░░  78.3%
+GPT 5.4                ████████████████░░░░  73.9%
 ```
 
 ## How Argus works (the three pillars)
@@ -145,23 +102,6 @@ What each pillar does, per file type. ✅ = supported, ⚠️ = supported with p
 | AI-agent config sentinels (`CLAUDE.md`, `AGENTS.md`, `SKILL.md`, `.cursorrules`, `.clinerules`, `mcp.json`, `plugin.json`, `openapi.{yaml,json}`, `agent-config.{yaml,json,toml}`, etc.) | ✅ prompt-injection surface | ❌ N/A | ❌ N/A | ❌ N/A |
 | Other languages tagged for harness (Java, Kotlin, Scala, Go, Rust, Ruby, PHP, C#, C/C++, PowerShell, Lua, Perl, R, Swift, Terraform, HCL) | ✅ generic harness analysis | ⏳ roadmap | ⏳ roadmap | ⏳ roadmap |
 
-### Notes
-
-* **Harness analysis** = preprocessing + LLM cascade. Always runs on recognized files unless the cost cap aborts.
-* **DAST exploit testing (Phase A)** = sandbox-validates the harness's findings. Triggered by verdict tier (`malicious`, `critical_malicious` by default; configurable via `--dast-trigger-verdicts`).
-* **DAST exploit discovery (Phase B)** = sandbox finds new exploits the harness missed. Runs alongside Phase A.
-* **Remediation (fix-and-verify)** = generates patched source + replays exploits against the patch. Toggle off with `--no-remediation`.
-* **`.pth` path-hijack** is force-elevated to priority-5 in the harness preprocessing layer regardless of model verdict — a classic Python supply-chain pattern that triage routinely misses.
-* **ML-artifact load detonation** validated end-to-end: 3/3 L1 findings reached `CONFIRMED` with sandbox-captured runtime evidence on a malicious `subprocess.Popen` pickle (real Fly Firecracker microVM, $0.22, 253s, 5 sandbox calls).
-
-### Roadmap (tracked in [ROADMAP.md](./ROADMAP.md))
-
-1. **Jupyter notebook DAST** — convert + execute the synthesized script in a sandbox image (cell-by-cell), watch the same syscall / egress signals as Python source
-2. **GitHub Actions workflow DAST** — run workflows under an `act`-shaped runner with adversarial event JSON, observe what gets exfiltrated
-3. **Java bytecode** (`.class`, `.jar`) — decompiler preprocessing + JDK sandbox profile
-4. **Go, Rust, .NET** — full DAST + remediation coverage
-5. **k8s / Helm / Terraform** (niche-adjacent; deferred until demand)
-
 ## Per-finding verdicts (where the FP kill happens)
 
 Every finding ships with one of these statuses:
@@ -189,19 +129,6 @@ A `CONFIRMED` finding looks like this:
 
 DAST cuts three ways: it **confirms** exploits with sandbox-captured evidence, **refutes** false positives with proof of non-exploitability, and **verifies remediations** by replaying the same exploits against the patched source.
 
-## Benchmark Performance
-
-Adversarial regression suite, labeled by a 4-LLM consensus oracle. Methodology, sample size, and per-file breakdown: [`bench_results/v1_1_launch/launch_report.md`](./bench_results/v1_1_launch/launch_report.md).
-
-```
-                       Verdict-exact (higher = better)
-Argus (cascade + DAST) ████████████████████  91.3%
-Gemini 3.1 Pro         █████████████████░░░  82.6%
-Grok 4.3               █████████████████░░░  82.6%
-Opus 4.6               █████████████████░░░  78.3%
-GPT 5.4                ████████████████░░░░  73.9%
-```
-
 ## Enterprise Invariants
 
 Anthropic's Claude Security and OpenAI's Codex Security are enterprise-tier and vendor-cloud-only. Argus is the open alternative.
@@ -209,27 +136,6 @@ Anthropic's Claude Security and OpenAI's Codex Security are enterprise-tier and 
 * **BYOK.** You control LLM access; bills go to your API meter, not ours.
 * **Zero telemetry.** In cascade-only mode, nothing leaves your machine. In DAST mode, file content is sent only to a Fly.io app *you own and control* — never to Argus-operated infrastructure.
 * **Local execution.** Fully self-contained pipeline; no SaaS dependency.
-
-## Quick Start
-
-Get from install to first scan in under 60 seconds:
-
-```bash
-pip install argus-ai-scanner
-export ANTHROPIC_API_KEY="your-anthropic-key"
-export GEMINI_API_KEY="your-gemini-key"
-
-# Single file
-argus scan path/to/suspicious.py
-
-# Whole repo (current directory)
-argus scan-repo .
-
-# CI mode — only files changed vs main, SARIF for GitHub Code Scanning
-argus scan-repo . --diff origin/main --output sarif --output-file findings.sarif
-```
-
-Without DAST configured the CLI gracefully degrades to cascade-only verdicts. DAST mode (Firecracker sandbox) requires a Fly.io account — see [docs/dast-setup.md](./docs/dast-setup.md).
 
 ## CLI Reference
 
