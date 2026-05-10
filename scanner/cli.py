@@ -422,6 +422,35 @@ def _build_parser() -> argparse.ArgumentParser:
         "affect the verdict.",
     )
     install.add_argument(
+        "--max-total-cost",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="aggregate cost cap across the whole dependency-closure "
+        "scan (default: $10.00). When cumulative API spend hits this, "
+        "remaining wheels are flagged 'suspicious / unscanned-due-to-cost-cap' "
+        "and the install fails closed. Pass 0 to disable. Use a higher "
+        "cap for big closures with --deep mode.",
+    )
+    install.add_argument(
+        "--deep",
+        action="store_true",
+        help="full-fidelity scan: enables thinking_budget=24000 on every "
+        "Sonnet/Opus call, sets per-file concurrency to 1 (sequential, "
+        "deterministic cost-cap enforcement), and lowers parallel_scans "
+        "to 4. Use when reasoning depth on subtle multi-step exploits "
+        "matters more than throughput. Cost: 5–10x more than default. "
+        "Mutually exclusive with --no-thinking.",
+    )
+    install.add_argument(
+        "--no-thinking",
+        action="store_true",
+        help="explicit: drop Anthropic extended-thinking on every "
+        "Sonnet/Opus call (sets thinking_budget=0). Already the install "
+        "default; pass this flag to make the choice explicit in scripts. "
+        "Mutually exclusive with --deep.",
+    )
+    install.add_argument(
         "--max-cost",
         type=float,
         default=None,
@@ -1202,9 +1231,31 @@ async def _run_install(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # --deep / --no-thinking are mutually exclusive
+    if args.deep and args.no_thinking:
+        print(
+            "ERROR: --deep and --no-thinking are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Tier the cascade depth based on flags. Default install path drops
+    # extended thinking entirely (5-10x faster on Sonnet/Opus calls); the
+    # ~3-5pp accuracy loss on subtle multi-step exploits is recovered by
+    # the deterministic preprocessing escalation flags. --deep flips it
+    # back to thinking_budget=24000 for users who want full fidelity.
+    thinking_budget = 24000 if args.deep else 0
+
+    # Per-file concurrency inside each wheel. v1.3.1 default = 4 inside
+    # a wheel × 8 wheels in parallel = up to 32 concurrent file scans on
+    # a big closure. --deep falls back to 1 (sequential per file) so the
+    # per-file cost-cap check stays strictly pre-scan.
+    file_concurrency = 1 if args.deep else 4
+    parallel_scans = 4 if args.deep else max(1, args.parallel)
+
     triage = make_gemini_triage_runner(gemini_key)
-    sonnet = make_sonnet_runner(anthropic_key)
-    opus = make_opus_runner(anthropic_key)
+    sonnet = make_sonnet_runner(anthropic_key, thinking_budget=thinking_budget)
+    opus = make_opus_runner(anthropic_key, thinking_budget=thinking_budget)
     dast_runner = None if args.no_dast else make_dast_runner_from_env(api_key=anthropic_key)
     if dast_runner is None and not args.no_dast:
         log.info("DAST not configured (Fly env missing); install gate runs cascade-only")
@@ -1217,6 +1268,12 @@ async def _run_install(args: argparse.Namespace) -> int:
     scan_cfg = ScanConfig(**config_kwargs)
 
     cache_dir = args.cache_dir or CACHE_DIR_DEFAULT
+
+    # Aggregate cost cap. CLI default is None (=> install function's
+    # DEFAULT_MAX_TOTAL_COST_USD = $10); user can override or disable.
+    max_total_cost = args.max_total_cost
+    if max_total_cost is not None and max_total_cost <= 0:
+        max_total_cost = None  # explicit "disable"
 
     report = await run_install(
         target=args.target,
@@ -1233,7 +1290,9 @@ async def _run_install(args: argparse.Namespace) -> int:
         sonnet_runner=sonnet,
         opus_runner=opus,
         dast_runner=dast_runner,
-        parallel_scans=args.parallel,
+        parallel_scans=parallel_scans,
+        file_concurrency=file_concurrency,
+        max_total_cost_usd=max_total_cost,
     )
 
     if args.output == "json":

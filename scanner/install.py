@@ -449,6 +449,7 @@ async def scan_one_artifact(
     sonnet_runner: Any,
     opus_runner: Any,
     dast_runner: Any,
+    file_concurrency: int = 1,
 ) -> WheelVerdict:
     """Extract one wheel/sdist + run the cascade (and DAST if configured)
     over its contents. Returns a per-artifact verdict.
@@ -510,6 +511,7 @@ async def scan_one_artifact(
             scan_config=install_cfg,
             respect_gitignore=False,  # wheel contents have no .gitignore
             continue_on_error=True,
+            scan_concurrency=max(1, file_concurrency),
         )
         report = await scan_repo(
             repo_cfg,
@@ -570,6 +572,26 @@ async def scan_one_artifact(
 #: because Argus cannot vouch for what's in the unscanned 30%+.
 STRICT_COVERAGE_RATIO_THRESHOLD: float = 0.7
 
+#: Default aggregate cost cap for ``argus install``. The whole
+#: dependency-closure scan (every wheel + every file) aborts when
+#: cumulative API spend hits this. Cap exists because a runaway scan
+#: on a big package like ``litellm`` can reach $20+ in cascade-only
+#: mode without pre-cached verdicts; the cap prevents a single
+#: ``argus install`` from surprising the user.
+DEFAULT_MAX_TOTAL_COST_USD: float = 10.0
+
+#: Default per-file scan concurrency inside each wheel. v1.3.1
+#: optimization — wheels with many files (29 in attrs, 42 in anyio,
+#: …) used to scan files sequentially, leading to 5–15 min per
+#: wheel. With concurrency=4 inside a wheel + parallel_scans=8
+#: across wheels, a typical 50-wheel install closes in ~5 min vs.
+#: ~60 min in v1.3.0.
+DEFAULT_INSTALL_FILE_CONCURRENCY: int = 4
+
+#: Default cross-wheel parallelism on the install path. Bumped from
+#: 4 to 8 in v1.3.1.
+DEFAULT_INSTALL_PARALLEL_SCANS: int = 8
+
 
 async def install(
     target: str | None = None,
@@ -588,7 +610,9 @@ async def install(
     opus_runner: Any = None,
     dast_runner: Any = None,
     pip_extra_args: Iterable[str] = (),
-    parallel_scans: int = 4,
+    parallel_scans: int = DEFAULT_INSTALL_PARALLEL_SCANS,
+    file_concurrency: int = DEFAULT_INSTALL_FILE_CONCURRENCY,
+    max_total_cost_usd: float | None = DEFAULT_MAX_TOTAL_COST_USD,
 ) -> InstallReport:
     """Argus install gate.
 
@@ -646,6 +670,14 @@ async def install(
         # ── 2. Per-artifact scan (cache-aware, parallel) ──────────────
         sem = asyncio.Semaphore(max(1, parallel_scans))
 
+        # Aggregate-cost-cap state: shared across the parallel gather.
+        # When tripped, all not-yet-started scans short-circuit and
+        # return a "skipped" WheelVerdict marked unverified. Race-y by
+        # design — worst case is up to ``parallel_scans`` extra wheels
+        # complete before the cap is observed; acceptable.
+        cumulative_cost = {"value": 0.0}
+        cap_hit = {"value": False}
+
         async def _scan_with_sem(art: Path) -> WheelVerdict:
             sha = _sha256_file(art)
             if use_cache:
@@ -653,6 +685,39 @@ async def install(
                 if cached:
                     cached.cached = True
                     return cached
+
+            # Aggregate-cost short-circuit. If the cap was already hit
+            # by another concurrent task, don't burn API spend on this
+            # one. Surface the wheel as unverified ("suspicious" with a
+            # cap-hit marker) so the install gate fails-closed.
+            if max_total_cost_usd is not None and (
+                cap_hit["value"] or cumulative_cost["value"] >= max_total_cost_usd
+            ):
+                cap_hit["value"] = True
+                pkg_name, version = _parse_artifact_name(art.name)
+                return WheelVerdict(
+                    sha256=sha,
+                    artifact_name=art.name,
+                    package_name=pkg_name,
+                    version=version,
+                    verdict="suspicious",
+                    risk_score=20,
+                    findings_summary=[
+                        {
+                            "file": art.name,
+                            "type": "unscanned_due_to_cost_cap",
+                            "severity": "info",
+                            "explanation": (
+                                f"Aggregate cost cap (${max_total_cost_usd:.2f}) "
+                                "was hit before this artifact could be scanned. "
+                                "Argus has no verdict for it. Re-run with "
+                                "--max-total-cost <higher> or scan this package "
+                                "individually with `argus scan`."
+                            ),
+                        }
+                    ],
+                )
+
             async with sem:
                 v = await scan_one_artifact(
                     art,
@@ -661,7 +726,14 @@ async def install(
                     sonnet_runner=sonnet_runner,
                     opus_runner=opus_runner,
                     dast_runner=effective_dast,
+                    file_concurrency=file_concurrency,
                 )
+            cumulative_cost["value"] += v.cost_usd
+            if (
+                max_total_cost_usd is not None
+                and cumulative_cost["value"] >= max_total_cost_usd
+            ):
+                cap_hit["value"] = True
             if use_cache:
                 write_cache(cache_dir, v)
             return v
