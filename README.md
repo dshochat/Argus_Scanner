@@ -24,6 +24,12 @@ Argus operates at three depths depending on what a file is. Items below the line
 
 **Executable code:** Python (`.py`, `.pyw`, `.pyi`, `.pth`), JavaScript / TypeScript (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`), shell (`.sh`, `.bash`, `.zsh`).
 
+**Jupyter notebooks** (`.ipynb`) — decomposed cell-by-cell. Code cells are treated as Python with cell banners preserved; markdown cells are surfaced as prompt-injection surface; shell magic (`!pip install …`) and IPython magic (`%load_ext …`) lines pass through verbatim so the cascade flags installs from suspicious indices, malicious extension loads, and base64'd C2 payloads in the same pass.
+
+**ML model artifacts** (`.pkl`, `.pickle`, `.pt`, `.bin`, `.safetensors`, `.h5`, `.hdf5`, `.keras`, `.onnx`) — disassembled WITHOUT execution via `pickletools`. Surfaces every `GLOBAL` / `STACK_GLOBAL` opcode whose target is a code-execution primitive (`os.system`, `subprocess.Popen`, `pty.spawn`, `builtins.eval`, …) plus the `REDUCE` / `BUILD` / `NEWOBJ` opcodes that turn a global into an invocation. PyTorch zip-of-pickles archives are walked across all members. Safetensors `__metadata__` blocks are extracted so attacker-controlled metadata is visible to the cascade.
+
+**GitHub Actions workflows** (`.github/workflows/*.yml`) — deterministic sweep for the supply-chain CI patterns: `pull_request_target` triggers, third-party actions referenced without SHA pinning (`uses: foo/bar@main`), `${{ github.event.* }}` interpolations into `run:` shells (the GHSL command-injection class), `permissions: write-all`, and `secrets.*` references near network verbs (curl / wget / fetch) inside the same `run:` block.
+
 **Supply-chain manifests** (parsed for dependency extraction + lifecycle-hook detection): `package.json`, `package-lock.json`, `yarn.lock`, `requirements.txt`, `pyproject.toml`, `Pipfile`, `setup.py`, `Cargo.toml`, `Cargo.lock`, `go.mod`, `go.sum`, `Gemfile`, `Gemfile.lock`, `pom.xml`, `build.gradle`, `*.csproj`, `packages.config`.
 
 **AI-agent config sentinels** (prompt-injection surface — the file your coding agent will load tomorrow): `CLAUDE.md`, `AGENTS.md`, `SKILL.md`, `.cursorrules`, `.cursorrc`, `.clinerules`, `.github/copilot-instructions.md`, `system_prompt.{md,txt,yaml}`, `mcp.json`, `mcp_*.json`, `plugin.json`, `ai-plugin.json`, `openapi.{yaml,json}`, `agent-config.{yaml,json,toml}`, `tools.{json,yaml}`.
@@ -32,20 +38,21 @@ Argus operates at three depths depending on what a file is. Items below the line
 
 **Other languages tagged for cascade analysis** (language-detected; the model-driven cascade still applies, but no specialized per-language detectors yet): Java, Kotlin, Scala, Go, Rust, Ruby, PHP, C#, C / C++, PowerShell, Lua, Perl, R, Swift, Terraform, HCL; Markdown, HTML, XML, JSON, YAML, TOML; Dockerfile, Makefile.
 
-### DAST runtime detonation (executable code only)
+### DAST runtime detonation
 
-Phase A verification + Phase B discovery + Phase C fix-and-verify run on Python, JavaScript / TypeScript, and shell. Sandbox image profiles: `minimal-v1`, `networked-v1`, `ml_tools-v1`. Other languages reach DAST only when invoked transitively (e.g., a shell script calling `python`).
+Phase A verification + Phase B discovery + Phase C fix-and-verify run on Python, JavaScript / TypeScript, and shell. Sandbox image profiles: `minimal-v1`, `networked-v1`, `ml_tools-v1`.
 
-Non-executable formats (manifests, Markdown, AI-agent configs, HTML / XML) are cascade-only by definition — there is no runtime to detonate. The cascade still surfaces malicious payloads, prompt-injection content, and lifecycle-hook backdoors.
+**ML-artifact load detonation (new):** for `.pkl` / `.pickle` / `.pt` / `.bin` / `.safetensors` / `.h5` / `.onnx`, Argus injects a deterministic load plan into iter 1 — `pickle.load()` / `torch.load(weights_only=False)` / `safe_open()` / `onnx.load()` runs against the original binary in the `ml_tools-v1` sandbox. Loading IS execution for these formats; if the artifact is malicious, the `__reduce__` payload fires and Argus captures the syscalls, egress, and exit codes that prove it.
+
+Other languages reach DAST only when invoked transitively (e.g., a shell script calling `python`). Non-executable formats (manifests, Markdown, AI-agent configs, HTML / XML) are cascade-only by definition. The cascade still surfaces malicious payloads, prompt-injection content, and lifecycle-hook backdoors.
 
 ### Roadmap (tracked in [ROADMAP.md](./ROADMAP.md))
 
-1. **Jupyter notebooks** (`.ipynb`) — cell-by-cell decomposition; treat each code cell as `.py`, each markdown cell as prompt-injection surface
-2. **ML model files** (`.pkl`, `.pt`, `.bin`, `.safetensors`, `.h5`, `.onnx`) — pickle-deserialization RCE detection, embedded payload extraction
-3. **GitHub Actions workflows** (`.github/workflows/*.yml`) — `pull_request_target` audits, third-party action SHA pinning, `${{ }}` injection in `run:` blocks, `GITHUB_TOKEN` exfil patterns
-4. **Java bytecode** (`.class`, `.jar`) — decompiler preprocessing + JDK sandbox profile
-5. **Go, Rust, .NET** — cascade + DAST coverage
-6. **k8s / Helm / Terraform** (niche-adjacent; deferred until demand)
+1. **Jupyter notebook DAST** — convert + execute the synthesized script in a sandbox image (cell-by-cell), watch for the same syscall/egress signals
+2. **GitHub Actions workflow DAST** — run workflows under an `act`-shaped harness with adversarial event JSON, observe what gets exfiltrated
+3. **Java bytecode** (`.class`, `.jar`) — decompiler preprocessing + JDK sandbox profile
+4. **Go, Rust, .NET** — cascade + DAST coverage
+5. **k8s / Helm / Terraform** (niche-adjacent; deferred until demand)
 
 ## The 4-Layer Moat
 
