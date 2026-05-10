@@ -20,13 +20,18 @@ import json
 import logging
 import os
 import sys
-from datetime import UTC
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 
 from dast.runner import make_dast_runner_from_env
+from scanner.engine import ScanConfig, ScanResult, scan_file
+from scanner.runners import (
+    make_gemini_triage_runner,
+    make_opus_runner,
+    make_sonnet_runner,
+)
 from methodology.bench import (
     BenchAborted,
     BenchRow,
@@ -35,12 +40,6 @@ from methodology.bench import (
     make_raw_opus_baseline_runner,
     run_argus_pipeline_one,
     run_suite,
-)
-from scanner.engine import ScanConfig, ScanResult, scan_file
-from scanner.runners import (
-    make_gemini_triage_runner,
-    make_opus_runner,
-    make_sonnet_runner,
 )
 
 log = logging.getLogger("argus.cli")
@@ -63,7 +62,8 @@ def format_markdown(result: ScanResult) -> str:
         f"**Language:** {result.language or '?'}  ",
         f"**Triage:** {result.triage_classification} — {result.triage_reason}",
         "",
-        f"**Cost:** ${result.total_cost_usd:.4f}  **Time:** {result.total_duration_ms} ms",
+        f"**Cost:** ${result.total_cost_usd:.4f}  "
+        f"**Time:** {result.total_duration_ms} ms",
         "",
         f"**Scan path:** {' → '.join(result.scan_path) or '(empty)'}",
         "",
@@ -73,7 +73,10 @@ def format_markdown(result: ScanResult) -> str:
         lines.append("")
         for v in result.vulnerabilities:
             line = v.get("line", "?")
-            lines.append(f"- **{v.get('type', '?')}** (severity: {v.get('severity', '?')}, line {line})")
+            lines.append(
+                f"- **{v.get('type', '?')}** "
+                f"(severity: {v.get('severity', '?')}, line {line})"
+            )
             if v.get("explanation"):
                 lines.append(f"  - {v['explanation']}")
             if v.get("fix"):
@@ -91,7 +94,7 @@ def format_markdown(result: ScanResult) -> str:
     bp = result.behavioral_profile or {}
     sensitivity = bp.get("sensitivity")
     if sensitivity:
-        lines.append("## Behavioral summary")
+        lines.append(f"## Behavioral summary")
         lines.append("")
         lines.append(f"- Sensitivity: **{sensitivity}**")
         purpose = bp.get("purpose_summary")
@@ -100,11 +103,12 @@ def format_markdown(result: ScanResult) -> str:
         lines.append("")
     if result.dast_attempted:
         lines.append(
-            f"## DAST: {len(result.dast_findings)} validated findings, {len(result.dast_iterations)} iterations"
+            f"## DAST: {len(result.dast_findings)} validated findings, "
+            f"{len(result.dast_iterations)} iterations"
         )
         lines.append("")
     if result.error:
-        lines.append("## Error")
+        lines.append(f"## Error")
         lines.append("")
         lines.append(f"`{result.error}`")
         lines.append("")
@@ -115,7 +119,9 @@ def format_markdown(result: ScanResult) -> str:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="argus", description="AI-native code security scanner")
+    parser = argparse.ArgumentParser(
+        prog="argus", description="AI-native code security scanner"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     scan = sub.add_parser("scan", help="Scan a single file")
@@ -130,6 +136,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-dast",
         action="store_true",
         help="skip DAST verification (no-op until Phase 3 / DAST-102)",
+    )
+    scan.add_argument(
+        "--no-remediation",
+        action="store_true",
+        help="skip Phase C (fix-and-verify). DAST still runs A+B "
+        "(verify L1 findings + discover new ones), but Argus will not "
+        "generate a patched source or replay exploits against it. Use "
+        "for compliance scans, CI gates that don't allow source "
+        "modification suggestions, read-only audits, or to save "
+        "~$0.05/file in patch-generation token cost.",
     )
     scan.add_argument(
         "--max-cost",
@@ -214,7 +230,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         metavar="K",
-        help="abort the run after K consecutive errored rows (default: 3). Pass 0 to disable.",
+        help="abort the run after K consecutive errored rows (default: 3). "
+        "Pass 0 to disable.",
     )
     bench.add_argument(
         "--no-resume",
@@ -298,6 +315,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="skip DAST verification on every file in the run.",
     )
     repo.add_argument(
+        "--no-remediation",
+        action="store_true",
+        help="skip Phase C (fix-and-verify) on every file. DAST still "
+        "runs A+B (verify + discover); Argus will not generate patches "
+        "or replay exploits against patched code. For compliance / CI "
+        "gate / read-only audit / cost-saving use cases.",
+    )
+    repo.add_argument(
         "--enable-discovery",
         action="store_true",
         help="enable DAST-204 v0.0 proactive vulnerability discovery on "
@@ -360,7 +385,10 @@ async def _run_scan(args: argparse.Namespace) -> int:
     else:
         dast_runner = make_dast_runner_from_env(api_key=anthropic_key)
         if dast_runner is None:
-            log.info("DAST disabled: missing Fly config (FLY_API_TOKEN / ECHO_DAST_IMAGE_*); running L1-only")
+            log.info(
+                "DAST disabled: missing Fly config "
+                "(FLY_API_TOKEN / ECHO_DAST_IMAGE_*); running L1-only"
+            )
 
     # Build per-scan config — only override the cost cap if the user
     # passed --max-cost (None means "use ScanConfig default of $1.00").
@@ -371,6 +399,8 @@ async def _run_scan(args: argparse.Namespace) -> int:
         config_kwargs["max_cost_per_file_usd"] = args.max_cost
     if getattr(args, "enable_discovery", False):
         config_kwargs["enable_discovery"] = True
+    if getattr(args, "no_remediation", False):
+        config_kwargs["enable_phase_c"] = False
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -378,7 +408,8 @@ async def _run_scan(args: argparse.Namespace) -> int:
         invalid = [v for v in verdicts if v not in valid]
         if invalid:
             print(
-                f"ERROR: invalid --dast-trigger-verdicts entries: {invalid}. Allowed: {sorted(valid)}",
+                f"ERROR: invalid --dast-trigger-verdicts entries: {invalid}. "
+                f"Allowed: {sorted(valid)}",
                 file=sys.stderr,
             )
             return 2
@@ -442,9 +473,8 @@ async def _run_bench(args: argparse.Namespace) -> int:
 
     # Output dir
     if args.output is None:
-        from datetime import datetime
-
-        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         out_dir = Path("bench_results") / ts
     else:
         out_dir = args.output
@@ -458,25 +488,21 @@ async def _run_bench(args: argparse.Namespace) -> int:
     avg_argus_per_file = 0.60 if not args.no_dast else 0.20
     proj_total = (avg_opus_per_file + avg_argus_per_file) * n_files * args.n
 
-    print("=== argus bench ===")
+    print(f"=== argus bench ===")
     print(f"  suite:        {suite_dir}")
     print(f"  baseline:     {baseline_path}  ({n_files} files)")
     print(f"  N (runs/cfg): {args.n}")
-    print("  configs:      raw_opus + argus_full" + (" (no DAST)" if args.no_dast else ""))
+    print(f"  configs:      raw_opus + argus_full" + (" (no DAST)" if args.no_dast else ""))
     print(f"  output dir:   {out_dir}")
-    print(
-        f"  cost (est.):  ~${proj_total:.2f}  "
-        f"({avg_opus_per_file:.2f} opus + {avg_argus_per_file:.2f} argus per file × {n_files} × N={args.n})"
-    )
+    print(f"  cost (est.):  ~${proj_total:.2f}  "
+          f"({avg_opus_per_file:.2f} opus + {avg_argus_per_file:.2f} argus per file × {n_files} × N={args.n})")
     # Per-file wall time observed live: raw Opus ~1-2 min, Argus full
     # pipeline 3-7 min when DAST fires. So per-pair-per-run: ~4-9 min.
-    avg_min = 1.5 + (5.0 if not args.no_dast else 1.5)  # opus + argus avg
+    avg_min = (1.5 + (5.0 if not args.no_dast else 1.5))  # opus + argus avg
     n_pairs = n_files * args.n
-    print(
-        f"  wall time:    ~{n_pairs * avg_min * 0.6 / 60:.1f}-"
-        f"{n_pairs * avg_min * 1.4 / 60:.1f} hours "
-        f"(per-file: {avg_min:.1f} min avg, sequential)"
-    )
+    print(f"  wall time:    ~{n_pairs * avg_min * 0.6 / 60:.1f}-"
+          f"{n_pairs * avg_min * 1.4 / 60:.1f} hours "
+          f"(per-file: {avg_min:.1f} min avg, sequential)")
     print()
 
     if args.dry_run:
@@ -503,13 +529,12 @@ async def _run_bench(args: argparse.Namespace) -> int:
     else:
         argus_dast = make_dast_runner_from_env(api_key=anthropic_key)
         if argus_dast is None:
-            print("warning: DAST not configured — Argus pipeline will run L1-only", file=sys.stderr)
+            print("warning: DAST not configured — Argus pipeline will run L1-only",
+                  file=sys.stderr)
 
     async def argus_full_runner(filename, content, baseline_meta):
         return await run_argus_pipeline_one(
-            filename,
-            content,
-            baseline_meta,
+            filename, content, baseline_meta,
             triage_runner=triage,
             sonnet_runner=sonnet,
             opus_runner=opus,
@@ -525,7 +550,6 @@ async def _run_bench(args: argparse.Namespace) -> int:
         """Per-row progress printer. flush=True so each line ships
         immediately even when stdout is a file (block-buffered by
         default; bench is typically captured to a log)."""
-
         def cb(idx: int, total: int, row: BenchRow) -> None:
             verdict = row.predicted_verdict or "ERROR"
             mark = "==" if row.predicted_verdict == row.oracle_verdict else "!="
@@ -541,7 +565,6 @@ async def _run_bench(args: argparse.Namespace) -> int:
                 f"{extra}{err}",
                 flush=True,
             )
-
         return cb
 
     for run_idx in range(1, args.n + 1):
@@ -550,9 +573,7 @@ async def _run_bench(args: argparse.Namespace) -> int:
         opus_path = out_dir / f"raw_opus_run{run_idx}.json"
         try:
             opus_rows = await run_suite(
-                suite_dir,
-                baseline_path,
-                raw_opus_runner,
+                suite_dir, baseline_path, raw_opus_runner,
                 output_path=opus_path,
                 progress_callback=_make_progress_cb(run_idx, args.n, "opus", None),
                 auto_abort_consecutive_errors=abort_threshold,
@@ -577,9 +598,7 @@ async def _run_bench(args: argparse.Namespace) -> int:
         argus_path = out_dir / f"argus_full_run{run_idx}.json"
         try:
             argus_rows = await run_suite(
-                suite_dir,
-                baseline_path,
-                argus_full_runner,
+                suite_dir, baseline_path, argus_full_runner,
                 output_path=argus_path,
                 progress_callback=_make_progress_cb(run_idx, args.n, "argus", opus_lookup),
                 auto_abort_consecutive_errors=abort_threshold,
@@ -611,7 +630,9 @@ async def _run_bench(args: argparse.Namespace) -> int:
     # subcommands once they land.
 
     summary_path = out_dir / "summary.json"
-    summary_path.write_text(json.dumps({"comparison": comparison, "gate": gate}, indent=2))
+    summary_path.write_text(
+        json.dumps({"comparison": comparison, "gate": gate}, indent=2)
+    )
 
     print(flush=True)
     print("=== summary (aggregated across all runs) ===", flush=True)
@@ -689,6 +710,8 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         pass
     if getattr(args, "enable_discovery", False):
         config_kwargs["enable_discovery"] = True
+    if getattr(args, "no_remediation", False):
+        config_kwargs["enable_phase_c"] = False
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -696,7 +719,8 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         invalid = [v for v in verdicts if v not in valid]
         if invalid:
             print(
-                f"error: invalid --dast-trigger-verdicts entries: {invalid}. Allowed: {sorted(valid)}",
+                f"error: invalid --dast-trigger-verdicts entries: {invalid}. "
+                f"Allowed: {sorted(valid)}",
                 file=sys.stderr,
             )
             return 2
@@ -720,12 +744,12 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         dast_runner = make_dast_runner_from_env(api_key=anthropic_key)
         if dast_runner is None:
             log.info(
-                "DAST disabled: missing Fly config (FLY_API_TOKEN / ECHO_DAST_IMAGE_*); running L1-only on every file"
+                "DAST disabled: missing Fly config (FLY_API_TOKEN / "
+                "ECHO_DAST_IMAGE_*); running L1-only on every file"
             )
 
     # Build RepoScanConfig.
     from scanner.repo_scanner import RepoScanConfig, scan_repo
-
     repo_cfg_kwargs: dict[str, Any] = {
         "root": root,
         "extra_excludes": tuple(args.exclude),
@@ -753,7 +777,8 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         n_vulns = len(result.vulnerabilities) if result and result.vulnerabilities else 0
         cost = result.total_cost_usd if result else 0.0
         print(
-            f"  [{idx:>3}/{total}] {str(rel)[:60]:<60}  {verdict:<20} vulns={n_vulns:<2} ${cost:.4f}",
+            f"  [{idx:>3}/{total}] {str(rel)[:60]:<60}  {verdict:<20} "
+            f"vulns={n_vulns:<2} ${cost:.4f}",
             file=sys.stderr,
             flush=True,
         )
@@ -785,7 +810,8 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
     )
     if report.cost_cap_hit:
         print(
-            f"  WARNING: aggregate cost cap (${args.max_cost:.2f}) hit — some files were not scanned.",
+            f"  WARNING: aggregate cost cap (${args.max_cost:.2f}) hit — "
+            f"some files were not scanned.",
             file=sys.stderr,
             flush=True,
         )
@@ -810,7 +836,6 @@ def _render_repo_output(report: Any, fmt: str) -> str:
     """Render a RepoScanReport in markdown / json / sarif."""
     if fmt == "sarif":
         from scanner.sarif import render_repo_scan_sarif, to_sarif_string
-
         return to_sarif_string(render_repo_scan_sarif(report))
     if fmt == "json":
         return json.dumps(
@@ -821,7 +846,10 @@ def _render_repo_output(report: Any, fmt: str) -> str:
                 "cost_cap_hit": report.cost_cap_hit,
                 "verdict_counts": report.verdict_counts,
                 "results": [r.to_dict() for r in report.results],
-                "skips": [{"path": str(s.path), "reason": s.reason, "detail": s.detail} for s in report.skips],
+                "skips": [
+                    {"path": str(s.path), "reason": s.reason, "detail": s.detail}
+                    for s in report.skips
+                ],
                 "errors": [
                     {
                         "path": str(e.path),
@@ -855,12 +883,18 @@ def _render_repo_markdown(report: Any) -> str:
     if report.verdict_counts:
         lines.append("## Verdicts")
         lines.append("")
-        for verdict, count in sorted(report.verdict_counts.items(), key=lambda kv: -kv[1]):
+        for verdict, count in sorted(
+            report.verdict_counts.items(), key=lambda kv: -kv[1]
+        ):
             lines.append(f"- `{verdict}` × {count}")
         lines.append("")
 
     # Notable findings — anything not clean / low_concern.
-    notable = [r for r in report.results if r.final_verdict and r.final_verdict not in ("clean", "low_concern")]
+    notable = [
+        r
+        for r in report.results
+        if r.final_verdict and r.final_verdict not in ("clean", "low_concern")
+    ]
     if notable:
         lines.append(f"## Notable findings ({len(notable)})")
         lines.append("")
@@ -874,7 +908,10 @@ def _render_repo_markdown(report: Any) -> str:
             for v in (r.vulnerabilities or [])[:5]:
                 line_no = v.get("line", "?")
                 cwe = v.get("cwe", "?")
-                lines.append(f"  - [{cwe}] {v.get('type', '?')} ({v.get('severity', '?')}, line {line_no})")
+                lines.append(
+                    f"  - [{cwe}] {v.get('type', '?')} "
+                    f"({v.get('severity', '?')}, line {line_no})"
+                )
                 if v.get("status"):
                     lines.append(f"    - status: `{v['status']}`")
         lines.append("")

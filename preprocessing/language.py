@@ -55,6 +55,16 @@ _EXTENSION_MAP: dict[str, str] = {
     ".css": "css",
     ".md": "markdown",
     ".dockerfile": "dockerfile",
+    ".ipynb": "jupyter",
+    # ── ML model artifact formats (binary; analyzed via preprocessing/ml_model.py) ──
+    ".pkl": "pickle",
+    ".pickle": "pickle",
+    ".pt": "pytorch",
+    ".safetensors": "safetensors",
+    ".h5": "hdf5",
+    ".hdf5": "hdf5",
+    ".keras": "hdf5",
+    ".onnx": "onnx",
 }
 
 _MANIFEST_MAP: dict[str, str] = {
