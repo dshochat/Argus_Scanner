@@ -381,9 +381,9 @@ def build_runtime_probe_plan(
     # temp file in /workspace first, then invoke it. Two-command plan.
     harness_path = f"/workspace/_argus_probe_{candidate_idx}_{input_idx}.py"
     write_cmd = (
-        f"python3 -c \"import base64,sys; "
+        f'python3 -c "import base64,sys; '
         f"open({harness_path!r},'wb').write("
-        f"base64.b64decode(sys.argv[1]))\" "
+        f'base64.b64decode(sys.argv[1]))" '
         f"{base64.b64encode(harness.encode('utf-8')).decode('ascii')}"
     )
     run_cmd = f"python3 {harness_path}"
@@ -521,9 +521,7 @@ def interpret_probe_trace(
             f"Function returned without raising (value preview: {str(preview)[:200]})"
         )
     if canary_hit:
-        evidence_parts.append(
-            f"Sandbox observed canary file(s) created in /tmp: {tmp_added[:5]}"
-        )
+        evidence_parts.append(f"Sandbox observed canary file(s) created in /tmp: {tmp_added[:5]}")
     if not evidence_parts:
         # Probe ran cleanly — exception raised AND no side-effect canary.
         # That's BLOCKED/UNREACHED-equivalent: no exploit observed.

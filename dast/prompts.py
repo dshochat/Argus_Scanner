@@ -1774,10 +1774,8 @@ def build_phase_b_runtime_probe_prompt(
     # str.replace, NOT .format — the prompt body contains literal {}
     # (JSON examples, dict syntax in code) that .format() mis-interprets
     # as positional placeholders.
-    body = (
-        _PHASE_B_RUNTIME_PROBE_BODY
-        .replace("{MAX_CANDIDATES}", str(MAX_CANDIDATES))
-        .replace("{MAX_INPUTS_PER_CANDIDATE}", str(MAX_INPUTS_PER_CANDIDATE))
+    body = _PHASE_B_RUNTIME_PROBE_BODY.replace("{MAX_CANDIDATES}", str(MAX_CANDIDATES)).replace(
+        "{MAX_INPUTS_PER_CANDIDATE}", str(MAX_INPUTS_PER_CANDIDATE)
     )
     payload = _format_inputs(file_text, l1_output, journal_summary)
     return body + payload
@@ -1833,15 +1831,12 @@ def phase_c_fix_schema() -> dict[str, Any]:
             },
             "fix_summary": {
                 "type": "string",
-                "description": (
-                    "1-3 sentence summary of what was changed and why."
-                ),
+                "description": ("1-3 sentence summary of what was changed and why."),
             },
             "per_finding_fixes": {
                 "type": "array",
                 "description": (
-                    "One entry per confirmed finding; describe the "
-                    "specific change applied."
+                    "One entry per confirmed finding; describe the specific change applied."
                 ),
                 "items": {
                     "type": "object",
@@ -1866,7 +1861,7 @@ def build_phase_c_fix_prompt(
     findings_lines = []
     for i, f in enumerate(confirmed_findings):
         findings_lines.append(
-            f"\n--- Finding {i+1} (finding_ref={f.get('finding_ref', '?')}) ---\n"
+            f"\n--- Finding {i + 1} (finding_ref={f.get('finding_ref', '?')}) ---\n"
             f"  type:        {f.get('type', 'unknown')}\n"
             f"  severity:    {f.get('severity', 'unknown')}\n"
             f"  description: {(f.get('description') or f.get('claim') or '').strip()[:600]}\n"
@@ -1880,4 +1875,3 @@ def build_phase_c_fix_prompt(
         f"Output JSON conforming to the provided schema."
     )
     return _PHASE_C_FIX_BODY + payload
-

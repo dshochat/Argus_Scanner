@@ -57,6 +57,11 @@ class IterationStats:
     phase_a_verdict_out: int = 0
     phase_b_in: int = 0
     phase_b_out: int = 0
+    # v1.5: Phase B+ runtime exploit probing — token usage from the
+    # candidate-generation inference call. Zero when the probe stage
+    # doesn't fire (default path).
+    phase_b_runtime_probe_in: int = 0
+    phase_b_runtime_probe_out: int = 0
     new_confirmed_findings: int = 0
     hypotheses_proposed: int = 0
     hypotheses_accepted: int = 0
@@ -198,9 +203,7 @@ async def run_dast(
     total_out = 0
     total_sb = 0
     last_verdict: dict[str, Any] = {
-        "verdict_label": (l1_output.get("verdict") or {}).get(
-            "verdict_label", "suspicious"
-        ),
+        "verdict_label": (l1_output.get("verdict") or {}).get("verdict_label", "suspicious"),
         "log_summary": "no DAST iteration completed yet",
         "validated_findings": [],
         "confirmed_categories": [],
@@ -216,9 +219,7 @@ async def run_dast(
 
     # iter 1 starts with L1 hypotheses; iter ≥ 2 starts with the previous
     # iteration's validator-accepted Phase B hypotheses
-    pending_hypotheses: list[dict] = list(
-        l1_output.get("hypotheses") or []
-    )
+    pending_hypotheses: list[dict] = list(l1_output.get("hypotheses") or [])
 
     # v1.2: capture iter-1 plans for Phase C replay (fix-and-verify).
     # Iter 1 is the natural plan set for re-testing the patched file because
@@ -228,18 +229,24 @@ async def run_dast(
     iter1_plan_records: list[dict] | None = None
 
     # v1.5 Phase B+ — runtime exploit probing. Runs ONCE before the
-    # iteration loop. Its findings (if any) get appended to
-    # ``l1_output["hypotheses"]`` AND ``pending_hypotheses`` so Phase A
-    # in iter 1 picks them up. Critical: this runs BEFORE the
-    # "no_pending_hypotheses_for_iter" early-exit, so even files where
-    # L1 found nothing get the probe pass when the flag is on.
+    # iteration loop, so even files where L1 found nothing get a probe
+    # pass when the flag is on. Findings are surfaced via
+    # ``findings_validated`` (NOT via l1_output.hypotheses — see Fix #2).
+    #
+    # Pre-create iter-1 stats here so the probe's token-usage
+    # accounting (Fix #4) goes into the actual stats record the iter
+    # loop will pick up — not a throwaway. The loop below detects this
+    # pre-init via ``iterations`` non-empty + iter==1 and reuses.
+    probe_pre_init_stats: IterationStats | None = None
     if (
         enable_runtime_probe
         and file_name.lower().endswith(".py")
         and isinstance(file_record.get("original_bytes"), (bytes, bytearray))
     ):
+        probe_pre_init_stats = IterationStats(iter=1)
+        iterations.append(probe_pre_init_stats)
         try:
-            await _run_phase_b_runtime_probe(
+            probe_findings = await _run_phase_b_runtime_probe(
                 file_record=file_record,
                 l1_output=l1_output,
                 journal=journal,
@@ -247,25 +254,78 @@ async def run_dast(
                 inference=inference,
                 sandbox=sandbox,
                 iter_num=1,
-                stats=iterations[0] if iterations else IterationStats(iter=1),
+                stats=probe_pre_init_stats,
             )
-            # Re-derive pending_hypotheses from the (possibly expanded)
-            # l1_output. The probe stage may have appended HRP_* findings.
-            pending_hypotheses = list(l1_output.get("hypotheses") or [])
+            # Fix #2: HRPs are NOT appended to l1_output.hypotheses (would
+            # cause Phase A re-test + contradiction). They flow only via
+            # findings_validated. pending_hypotheses stays as the original
+            # L1 set.
+
+            # Fix #3 (surfacing): every confirmed HRP id reaches engine.py
+            # via findings_validated → ScanResult.dast_findings.
+            for f in probe_findings:
+                fid = f.get("finding_ref")
+                if fid and fid not in findings_validated:
+                    findings_validated.append(fid)
+
+            # Fix #1 (verdict bump): a probe-CONFIRMED finding at
+            # severity >= high is GROUNDED runtime evidence of a real
+            # exploit. Bump the DAST max-verdict floor so the
+            # iter-erosion guard (which clamps downgrades to within
+            # ``max_dast_verdict_rank``) protects this signal against
+            # later iterations downgrading.
+            #
+            # Safety: only bump UP, never down. Only by one tier max.
+            # Only on high/critical severity. medium/low don't bump.
+            # Critical+code-exec attack class → critical_malicious;
+            # everything else high/critical → malicious.
+            _CRITICAL_EXEC_CLASSES = {"code_injection", "command_injection", "deserialization"}
+            for f in probe_findings:
+                sev = (f.get("severity") or "").lower()
+                if sev not in {"high", "critical"}:
+                    continue
+                if sev == "critical" and f.get("finding_type") in _CRITICAL_EXEC_CLASSES:
+                    target_label = "critical_malicious"
+                else:
+                    target_label = "malicious"
+                target_rank = _VERDICT_RANK.get(target_label, -1)
+                if target_rank > max_dast_verdict_rank:
+                    max_dast_verdict_rank = target_rank
+                    max_dast_verdict_label = target_label
+            # If the probe established a floor higher than the current
+            # last_verdict, lift last_verdict to the floor so the
+            # downstream verdict logic sees the probe-grounded evidence.
+            current_rank = _VERDICT_RANK.get(
+                str(last_verdict.get("verdict_label", "suspicious")), -1
+            )
+            if max_dast_verdict_rank > current_rank and max_dast_verdict_label:
+                last_verdict["verdict_label"] = max_dast_verdict_label
+                last_verdict["log_summary"] = (
+                    f"runtime probe CONFIRMED {len([f for f in probe_findings if f.get('severity') in {'high', 'critical'}])} "
+                    f"high/critical exploit(s); verdict raised to {max_dast_verdict_label}"
+                )
         except Exception as exc:  # noqa: BLE001
-            journal.append(JournalRecord(
-                iter=1,
-                phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                claim_id="HRP_ERROR",
-                verdict="rejected",
-                rationale=f"runtime probe stage failed: {type(exc).__name__}: {str(exc)[:240]}",
-                evidence_refs=[],
-            ))
+            journal.append(
+                JournalRecord(
+                    iter=1,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id="HRP_ERROR",
+                    verdict="rejected",
+                    rationale=f"runtime probe stage failed: {type(exc).__name__}: {str(exc)[:240]}",
+                    evidence_refs=[],
+                )
+            )
 
     for it in range(1, MAX_ITERATIONS + 1):
         it_started = time.time()
-        st = IterationStats(iter=it)
-        iterations.append(st)
+        # Fix #4 ordering: when the v1.5 probe stage pre-created iter-1
+        # stats, reuse that record so probe token usage isn't orphaned.
+        # All later iters create fresh stats normally.
+        if it == 1 and probe_pre_init_stats is not None:
+            st = probe_pre_init_stats
+        else:
+            st = IterationStats(iter=it)
+            iterations.append(st)
 
         prior_summary = journal.summarize(up_to_iter=it - 1)
         st.journal_input_tokens = prior_summary.token_count
@@ -313,6 +373,7 @@ async def run_dast(
         # — i.e., the canonical "load = execution" attack surface.
         if it == 1 and file_record.get("ml_format"):
             from dast.ml_detonation import build_ml_load_plan  # noqa: PLC0415
+
             ml_bytes = file_record.get("original_bytes")
             if isinstance(ml_bytes, (bytes, bytearray)):
                 ml_plan = build_ml_load_plan(
@@ -337,15 +398,17 @@ async def run_dast(
             hid = p.get("hypothesis_id", "")
             if p.get("plan_status") != "executable":
                 # Not_testable plans are journaled but no sandbox call.
-                journal.append(JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.PHASE_A_PLAN,
-                    claim_id=hid,
-                    verdict=None,
-                    rationale=f"not_testable: {p.get('rationale', '')[:200]}",
-                    evidence_refs=[],
-                    sandbox_event_id=None,
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=it,
+                        phase=JournalPhase.PHASE_A_PLAN,
+                        claim_id=hid,
+                        verdict=None,
+                        rationale=f"not_testable: {p.get('rationale', '')[:200]}",
+                        evidence_refs=[],
+                        sandbox_event_id=None,
+                    )
+                )
                 plan_records.append(p)
                 continue
             # DAST-005: pass through image_hint. Default to "minimal" so
@@ -365,8 +428,7 @@ async def run_dast(
                 image_hint=image_hint,
                 file_name=file_name,
                 synthesis_context={
-                    "upstream_chain": (hyp_index.get(hid) or {}).get("upstream_chain")
-                    or {},
+                    "upstream_chain": (hyp_index.get(hid) or {}).get("upstream_chain") or {},
                     "hypothesis": hyp_index.get(hid) or {},
                 },
             )
@@ -389,15 +451,17 @@ async def run_dast(
             total_sb += 1
             plan_records.append(p)
             trace_records.append(trace.model_dump())
-            journal.append(JournalRecord(
-                iter=it,
-                phase=JournalPhase.SANDBOX_EXEC,
-                claim_id=hid,
-                verdict=None,
-                rationale=trace.stub_synthesis_note or "",
-                evidence_refs=[e.event_id for e in trace.events],
-                sandbox_event_id=(trace.events[0].event_id if trace.events else None),
-            ))
+            journal.append(
+                JournalRecord(
+                    iter=it,
+                    phase=JournalPhase.SANDBOX_EXEC,
+                    claim_id=hid,
+                    verdict=None,
+                    rationale=trace.stub_synthesis_note or "",
+                    evidence_refs=[e.event_id for e in trace.events],
+                    sandbox_event_id=(trace.events[0].event_id if trace.events else None),
+                )
+            )
 
         # v1.2: snapshot iter-1 plans for Phase C replay (fix-and-verify)
         if it == 1:
@@ -420,7 +484,9 @@ async def run_dast(
         st.phase_a_verdict_out = (verdict_resp.get("usage") or {}).get("completion_tokens", 0) or 0
         st.finish_reasons["verdict"] = verdict_resp.get("finish_reason") or "?"
         verdict_obj = _parse_json_or_empty(verdict_resp.get("text", ""))
-        claim_verdicts = (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
+        claim_verdicts = (
+            (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
+        )
         cur = (verdict_obj.get("current_verdict") or {}) if isinstance(verdict_obj, dict) else {}
 
         prev_confirmed = set(prior_summary.confirmed_findings)
@@ -444,15 +510,17 @@ async def run_dast(
             if fref:
                 evidence_refs.append(fref)
             evidence_refs.extend(ev_ids if isinstance(ev_ids, list) else [])
-            journal.append(JournalRecord(
-                iter=it,
-                phase=JournalPhase.PHASE_A_VERDICT,
-                claim_id=hid,
-                verdict=v,
-                rationale=rationale,
-                evidence_refs=evidence_refs,
-                sandbox_event_id=(ev_ids[0] if isinstance(ev_ids, list) and ev_ids else None),
-            ))
+            journal.append(
+                JournalRecord(
+                    iter=it,
+                    phase=JournalPhase.PHASE_A_VERDICT,
+                    claim_id=hid,
+                    verdict=v,
+                    rationale=rationale,
+                    evidence_refs=evidence_refs,
+                    sandbox_event_id=(ev_ids[0] if isinstance(ev_ids, list) and ev_ids else None),
+                )
+            )
             if v == "confirmed" and fref and fref not in prev_confirmed:
                 new_confirmed_count += 1
                 if fref not in findings_validated:
@@ -530,7 +598,9 @@ async def run_dast(
         st.phase_b_out = (explore_resp.get("usage") or {}).get("completion_tokens", 0) or 0
         st.finish_reasons["explore"] = explore_resp.get("finish_reason") or "?"
         explore_obj = _parse_json_or_empty(explore_resp.get("text", ""))
-        new_hyps = (explore_obj.get("new_hypotheses") or []) if isinstance(explore_obj, dict) else []
+        new_hyps = (
+            (explore_obj.get("new_hypotheses") or []) if isinstance(explore_obj, dict) else []
+        )
         st.hypotheses_proposed = len(new_hyps)
 
         # Validator gate
@@ -544,30 +614,47 @@ async def run_dast(
             hid = h.get("id") or "H???"
             if v.accepted:
                 accepted_hyps.append(h)
-                journal.append(JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                    claim_id=hid,
-                    verdict="confirmed" if v.is_borderline else "confirmed",
-                    rationale=f"validator accepted{' (borderline)' if v.is_borderline else ''}: {v.reasoning[:240]}",
-                    evidence_refs=[],
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=it,
+                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                        claim_id=hid,
+                        verdict="confirmed" if v.is_borderline else "confirmed",
+                        rationale=f"validator accepted{' (borderline)' if v.is_borderline else ''}: {v.reasoning[:240]}",
+                        evidence_refs=[],
+                    )
+                )
             else:
                 rejected_hyps.append(h)
-                journal.append(JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                    claim_id=hid,
-                    verdict="rejected",
-                    rationale=f"validator rejected: {v.reasoning[:240]}",
-                    evidence_refs=[],
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=it,
+                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                        claim_id=hid,
+                        verdict="rejected",
+                        rationale=f"validator rejected: {v.reasoning[:240]}",
+                        evidence_refs=[],
+                    )
+                )
         st.hypotheses_accepted = len(accepted_hyps)
         st.hypotheses_rejected = len(rejected_hyps)
 
         # Per-iteration totals
-        iter_in = st.phase_a_plan_in + st.phase_a_verdict_in + st.phase_b_in
-        iter_out = st.phase_a_plan_out + st.phase_a_verdict_out + st.phase_b_out
+        iter_in = (
+            st.phase_a_plan_in
+            + st.phase_a_verdict_in
+            + st.phase_b_in
+            # v1.5 Fix #4: include probe inference tokens in the iter
+            # roll-up so they reach total_tokens_in → DAST cost → install
+            # path's aggregate cost cap.
+            + st.phase_b_runtime_probe_in
+        )
+        iter_out = (
+            st.phase_a_plan_out
+            + st.phase_a_verdict_out
+            + st.phase_b_out
+            + st.phase_b_runtime_probe_out
+        )
         total_in += iter_in
         total_out += iter_out
         st.elapsed_s = round(time.time() - it_started, 2)
@@ -598,9 +685,7 @@ async def run_dast(
     # without having to re-read the file. JournalRecord is a Pydantic
     # model — model_dump() gives a JSON-serializable dict.
     try:
-        journal_dump: list[dict[str, Any]] = [
-            r.model_dump(mode="json") for r in journal.read_all()
-        ]
+        journal_dump: list[dict[str, Any]] = [r.model_dump(mode="json") for r in journal.read_all()]
     except Exception:  # noqa: BLE001
         journal_dump = []
 
@@ -692,7 +777,7 @@ async def _run_phase_b_runtime_probe(
     sandbox: SandboxClient,
     iter_num: int,
     stats: IterationStats,
-) -> None:
+) -> list[dict]:
     """Phase B+ — runtime-guided exploit discovery (v1.5).
 
     Three steps:
@@ -724,7 +809,7 @@ async def _run_phase_b_runtime_probe(
     if not isinstance(original_bytes, (bytes, bytearray)):
         # No original bytes available — can't stage the file for execution.
         # Skip silently; orchestrator will fall through to standard Phase B.
-        return
+        return []
     original_bytes = bytes(original_bytes)
     file_name = file_record.get("file_name") or "module.py"
     file_id = file_record.get("file_id", "")
@@ -733,30 +818,43 @@ async def _run_phase_b_runtime_probe(
     probe_prompt = dast_prompts.build_phase_b_runtime_probe_prompt(
         file_text=source_text,
         l1_output=l1_output,
-        journal_summary=journal_summary.to_dict() if hasattr(journal_summary, "to_dict") else journal_summary,
+        journal_summary=journal_summary.to_dict()
+        if hasattr(journal_summary, "to_dict")
+        else journal_summary,
     )
     probe_resp = await inference(
         probe_prompt,
         {"temperature": 0.0, "max_tokens": 4096, "seed": 0},
         dast_prompts.phase_b_runtime_probe_schema(),
     )
+    # Fix #4: track probe inference tokens on the iteration stats so
+    # they roll into total_tokens_in/out → DAST cost_usd → engine
+    # ScanResult.total_cost_usd → install path's aggregate cost cap.
+    # Without this, probe tokens leak out of cost accounting and the
+    # aggregate cap can be silently exceeded.
+    stats.phase_b_runtime_probe_in = (probe_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
+    stats.phase_b_runtime_probe_out = (probe_resp.get("usage") or {}).get(
+        "completion_tokens", 0
+    ) or 0
     probe_obj = _parse_json_or_empty(probe_resp.get("text", ""))
     if not isinstance(probe_obj, dict):
-        return
+        return []
     raw_candidates = probe_obj.get("candidates") or []
     if not isinstance(raw_candidates, list) or not raw_candidates:
         # Model legitimately declined to probe (file has no probe-attractive
         # functions). Journal the rationale so downstream telemetry sees it.
         rationale = str(probe_obj.get("non_probable_reason") or "no candidates")
-        journal.append(JournalRecord(
-            iter=iter_num,
-            phase=JournalPhase.PHASE_B_HYPOTHESIS,
-            claim_id="HRP_NONE",
-            verdict="rejected",
-            rationale=f"runtime probe declined: {rationale[:200]}",
-            evidence_refs=[],
-        ))
-        return
+        journal.append(
+            JournalRecord(
+                iter=iter_num,
+                phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                claim_id="HRP_NONE",
+                verdict="rejected",
+                rationale=f"runtime probe declined: {rationale[:200]}",
+                evidence_refs=[],
+            )
+        )
+        return []
 
     # Decode + cap to bounded sizes (schema enforces but defense-in-depth)
     candidates: list[RuntimeProbeCandidate] = []
@@ -765,9 +863,7 @@ async def _run_phase_b_runtime_probe(
             continue
         inputs_raw = c.get("test_inputs") or []
         inputs: list[RuntimeProbeInput] = []
-        for i in (inputs_raw if isinstance(inputs_raw, list) else [])[
-            :MAX_INPUTS_PER_CANDIDATE
-        ]:
+        for i in (inputs_raw if isinstance(inputs_raw, list) else [])[:MAX_INPUTS_PER_CANDIDATE]:
             if not isinstance(i, dict):
                 continue
             inputs.append(
@@ -775,9 +871,7 @@ async def _run_phase_b_runtime_probe(
                     args_json=str(i.get("args_json") or "[]"),
                     kwargs_json=str(i.get("kwargs_json") or "{}"),
                     expected_observable=str(i.get("expected_observable") or ""),
-                    exploit_proof_if_observed=str(
-                        i.get("exploit_proof_if_observed") or ""
-                    ),
+                    exploit_proof_if_observed=str(i.get("exploit_proof_if_observed") or ""),
                 )
             )
         candidates.append(
@@ -828,14 +922,16 @@ async def _run_phase_b_runtime_probe(
             try:
                 trace: SandboxTrace = await sandbox.submit(plan)
             except Exception as exc:  # noqa: BLE001
-                journal.append(JournalRecord(
-                    iter=iter_num,
-                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                    claim_id=hid,
-                    verdict="rejected",
-                    rationale=f"sandbox submit failed: {type(exc).__name__}: {str(exc)[:200]}",
-                    evidence_refs=[],
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=iter_num,
+                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                        claim_id=hid,
+                        verdict="rejected",
+                        rationale=f"sandbox submit failed: {type(exc).__name__}: {str(exc)[:200]}",
+                        evidence_refs=[],
+                    )
+                )
                 continue
 
             # ── Step 3: trace interpretation ─────────────────────────────
@@ -848,64 +944,84 @@ async def _run_phase_b_runtime_probe(
                 elapsed_ms=trace.elapsed_ms,
             )
             finding = interpret_probe_trace(
-                parsed_trace, cand, test_in,
-                candidate_idx=c_idx, input_idx=i_idx,
+                parsed_trace,
+                cand,
+                test_in,
+                candidate_idx=c_idx,
+                input_idx=i_idx,
             )
             if finding is None:
                 # Probe ran cleanly — exception raised AND no canary
                 # observed. BLOCKED-equivalent for runtime probes.
-                journal.append(JournalRecord(
-                    iter=iter_num,
-                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                    claim_id=hid,
-                    verdict="rejected",
-                    rationale=(
-                        f"runtime probe ran; no exploit observed. "
-                        f"Function={cand.function_name}, class={cand.attack_class}, "
-                        f"input={test_in.args_json[:100]}, "
-                        f"exit_code={parsed_trace.exit_code}, "
-                        f"parsed_ok={parsed_trace.parsed_result is not None}"
-                    ),
-                    evidence_refs=[trace.events[0].event_id] if trace.events else [],
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=iter_num,
+                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                        claim_id=hid,
+                        verdict="rejected",
+                        rationale=(
+                            f"runtime probe ran; no exploit observed. "
+                            f"Function={cand.function_name}, class={cand.attack_class}, "
+                            f"input={test_in.args_json[:100]}, "
+                            f"exit_code={parsed_trace.exit_code}, "
+                            f"parsed_ok={parsed_trace.parsed_result is not None}"
+                        ),
+                        evidence_refs=[trace.events[0].event_id] if trace.events else [],
+                    )
+                )
                 continue
 
             # CONFIRMED via runtime evidence.
             evidence_ref = trace.events[0].event_id if trace.events else ""
-            journal.append(JournalRecord(
-                iter=iter_num,
-                phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                claim_id=hid,
-                verdict="confirmed",
-                rationale=(
-                    f"runtime probe CONFIRMED {finding.attack_class} in "
-                    f"{cand.function_name}: {finding.runtime_evidence[:280]}"
-                ),
-                evidence_refs=[evidence_ref] if evidence_ref else [],
-            ))
-            findings_from_probes.append({
-                "id": hid,
-                "finding_ref": hid,
-                "finding_type": finding.attack_class,
-                "severity": finding.severity,
-                "cwe": finding.cwe,
-                "line": None,
-                "code_snippet": cand.function_name,
-                "explanation": finding.description,
-                "data_flow_trace": f"runtime probe via Phase B+: {finding.runtime_evidence}",
-                "proof_of_concept": (
-                    f"{cand.function_name}(*{finding.test_input_args})"
-                ),
-                "confidence": 1.0,
-                "runtime_evidence": finding.runtime_evidence,
-            })
+            journal.append(
+                JournalRecord(
+                    iter=iter_num,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=hid,
+                    verdict="confirmed",
+                    rationale=(
+                        f"runtime probe CONFIRMED {finding.attack_class} in "
+                        f"{cand.function_name}: {finding.runtime_evidence[:280]}"
+                    ),
+                    evidence_refs=[evidence_ref] if evidence_ref else [],
+                )
+            )
+            findings_from_probes.append(
+                {
+                    "id": hid,
+                    "finding_ref": hid,
+                    "finding_type": finding.attack_class,
+                    "severity": finding.severity,
+                    "cwe": finding.cwe,
+                    "line": None,
+                    "code_snippet": cand.function_name,
+                    "explanation": finding.description,
+                    "data_flow_trace": f"runtime probe via Phase B+: {finding.runtime_evidence}",
+                    "proof_of_concept": (f"{cand.function_name}(*{finding.test_input_args})"),
+                    "confidence": 1.0,
+                    "runtime_evidence": finding.runtime_evidence,
+                }
+            )
 
     stats.sandbox_calls += n_probes_run
-    # Attach findings to l1_output so subsequent Phase A iterations see them
-    # as pending hypotheses. The convention matches how Phase B accepted
-    # hypotheses flow forward: append to ``hypotheses`` list.
-    existing = list(l1_output.get("hypotheses") or [])
-    l1_output["hypotheses"] = existing + findings_from_probes
+
+    # v1.5 design choice (Fix #2): probe-confirmed HRP findings are
+    # SURFACED via findings_validated (engine → ScanResult.dast_findings)
+    # but are NOT appended to ``l1_output["hypotheses"]``. The probe
+    # stage IS the test — re-running them through Phase A in iter 1
+    # would (a) double the sandbox cost, (b) produce contradictory
+    # NOT_TESTED verdicts when Fly returns stub traces, (c) make the
+    # journal a mess of duplicate records.
+    #
+    # Phase B (iter ≥ 2, model-driven exploration) still has visibility
+    # of HRP findings via journal_summary — it sees the
+    # ``phase_b_hypothesis verdict=confirmed`` records and won't re-
+    # propose them as new hypotheses.
+
+    # Return the confirmed HRP_ finding dicts so run_dast can:
+    # 1. Extend findings_validated with their IDs (→ engine surfacing).
+    # 2. Decide whether to bump max_dast_verdict_rank (Fix #1).
+    return findings_from_probes
 
 
 def _iter_inner_sandbox_clients(sandbox: SandboxClient):
@@ -951,7 +1067,7 @@ async def _run_phase_c_fix_verify(
     # Index by both id and finding_ref since journal claim_id ↔ hypothesis
     # id, but findings_validated may use either form.
     hyp_by_ref: dict[str, dict] = {}
-    for h in (l1_output.get("hypotheses") or []):
+    for h in l1_output.get("hypotheses") or []:
         if not isinstance(h, dict):
             continue
         h_id = h.get("id")
@@ -1064,9 +1180,7 @@ async def _run_phase_c_fix_verify(
                 continue
             hid = p.get("hypothesis_id", "")
             raw_hint = p.get("image_hint")
-            image_hint = (
-                raw_hint if isinstance(raw_hint, str) and raw_hint else "minimal"
-            )
+            image_hint = raw_hint if isinstance(raw_hint, str) and raw_hint else "minimal"
             plan = SandboxPlan(
                 plan_id=f"phaseC-{hid}",
                 file_id=file_id,
@@ -1139,8 +1253,8 @@ async def _run_phase_c_fix_verify(
     cur = (verdict_obj.get("current_verdict") or {}) if isinstance(verdict_obj, dict) else {}
     post_patch_verdict = cur.get("verdict_label", "unknown")
     new_claim_verdicts = (
-        verdict_obj.get("claim_verdicts") or []
-    ) if isinstance(verdict_obj, dict) else []
+        (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
+    )
     new_v_by_hid = {
         cv.get("hypothesis_id"): cv.get("verdict")
         for cv in new_claim_verdicts
@@ -1162,17 +1276,17 @@ async def _run_phase_c_fix_verify(
             status = "NEUTRALIZED"
         else:
             status = "UNVERIFIABLE"
-        per_finding.append({
-            "finding_ref": ref,
-            "hypothesis_id": hid,
-            "original_status": "CONFIRMED",
-            "post_patch_status": status,
-            "post_patch_verdict": new_v or "unknown",
-        })
+        per_finding.append(
+            {
+                "finding_ref": ref,
+                "hypothesis_id": hid,
+                "original_status": "CONFIRMED",
+                "post_patch_status": status,
+                "post_patch_verdict": new_v or "unknown",
+            }
+        )
 
-    n_neutralized = sum(
-        1 for pf in per_finding if pf["post_patch_status"] == "NEUTRALIZED"
-    )
+    n_neutralized = sum(1 for pf in per_finding if pf["post_patch_status"] == "NEUTRALIZED")
     n_still_exploitable = sum(
         1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE"
     )

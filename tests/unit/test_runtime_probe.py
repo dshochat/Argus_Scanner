@@ -17,6 +17,7 @@ Covers:
 No live API; no sandbox booted. Uses synthetic SandboxTrace-shape
 objects for the trace path.
 """
+
 from __future__ import annotations
 
 import base64
@@ -40,7 +41,6 @@ from dast.runtime_probe import (
     parse_probe_trace,
     severity_for_attack_class,
 )
-
 
 # ── Attack-class mapping ───────────────────────────────────────────────
 
@@ -93,9 +93,7 @@ def test_module_name_replaces_illegal_chars() -> None:
     """Hyphens / dots aren't valid in Python module names — replaced
     with underscores so the harness ``import`` succeeds."""
     assert _python_module_name_for_file("foo-bar-baz.py") == "foo_bar_baz"
-    assert (
-        _python_module_name_for_file("dotted.file.name.py") == "dotted_file_name"
-    )
+    assert _python_module_name_for_file("dotted.file.name.py") == "dotted_file_name"
 
 
 # ── Harness generation ─────────────────────────────────────────────────
@@ -135,8 +133,10 @@ def test_harness_emits_result_json_and_side_effects_markers() -> None:
     """Harness output is parsed via the ``RESULT_JSON:`` / ``SIDE_EFFECTS:``
     line markers — they must be in the generated code."""
     h = _build_python_probe_harness(
-        module_name="m", function_name="f",
-        args_json="[]", kwargs_json="{}",
+        module_name="m",
+        function_name="f",
+        args_json="[]",
+        kwargs_json="{}",
     )
     assert "RESULT_JSON:" in h
     assert "SIDE_EFFECTS:" in h
@@ -148,7 +148,10 @@ def test_harness_captures_exceptions_without_crashing() -> None:
     """Harness wraps the call in try/except so a raised exception
     still produces a marker line."""
     h = _build_python_probe_harness(
-        module_name="m", function_name="f", args_json="[]", kwargs_json="{}",
+        module_name="m",
+        function_name="f",
+        args_json="[]",
+        kwargs_json="{}",
     )
     assert "except BaseException" in h or "except SystemExit" in h
     assert "exception_type" in h
@@ -250,8 +253,8 @@ def test_build_plan_hypothesis_id_uses_candidate_input_indices() -> None:
 def test_parse_trace_recovers_result_json_marker() -> None:
     stdout = (
         "some warning to stderr-but-on-stdout\n"
-        "RESULT_JSON:{\"ok\": true, \"type\": \"str\", \"value_preview\": \"root:x:0:0\"}\n"
-        "SIDE_EFFECTS:{\"tmp_files_added\": []}\n"
+        'RESULT_JSON:{"ok": true, "type": "str", "value_preview": "root:x:0:0"}\n'
+        'SIDE_EFFECTS:{"tmp_files_added": []}\n'
     )
     trace = parse_probe_trace(
         candidate_function="read_file",
@@ -269,7 +272,7 @@ def test_parse_trace_recovers_result_json_marker() -> None:
 
 def test_parse_trace_recovers_canary_files_in_side_effects() -> None:
     stdout = (
-        "RESULT_JSON:{\"ok\": false, \"exception_type\": \"OSError\"}\n"
+        'RESULT_JSON:{"ok": false, "exception_type": "OSError"}\n'
         'SIDE_EFFECTS:{"tmp_files_added": ["argus_probe_pwned", "other.tmp"]}\n'
     )
     trace = parse_probe_trace(
@@ -483,9 +486,7 @@ def test_runtime_probe_schema_function_name_regex_blocks_bad_names() -> None:
     import re
 
     schema = dast_prompts.phase_b_runtime_probe_schema()
-    pattern = schema["properties"]["candidates"]["items"][
-        "properties"
-    ]["function_name"]["pattern"]
+    pattern = schema["properties"]["candidates"]["items"]["properties"]["function_name"]["pattern"]
     regex = re.compile(pattern)
     # Accepted
     assert regex.match("read_file")
@@ -506,9 +507,7 @@ def test_runtime_probe_schema_function_name_regex_blocks_bad_names() -> None:
 def test_runtime_probe_schema_attack_class_enum() -> None:
     """attack_class is an enum — model can't invent random strings."""
     schema = dast_prompts.phase_b_runtime_probe_schema()
-    attack_class_schema = schema["properties"]["candidates"]["items"][
-        "properties"
-    ]["attack_class"]
+    attack_class_schema = schema["properties"]["candidates"]["items"]["properties"]["attack_class"]
     assert "path_traversal" in attack_class_schema["enum"]
     assert "command_injection" in attack_class_schema["enum"]
     assert "code_injection" in attack_class_schema["enum"]
@@ -548,7 +547,8 @@ def test_max_probe_runs_equals_candidates_times_inputs() -> None:
 # ── Orchestrator integration (stub sandbox + fake inference) ──────────
 
 
-from dataclasses import dataclass, field as dc_field  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+from dataclasses import field as dc_field
 from pathlib import Path  # noqa: E402
 
 from dast.orchestrator import run_dast  # noqa: E402
@@ -592,29 +592,35 @@ class _CapturingProbeSandbox:
 
 def _phase_b_probe_response(candidates: list[dict]) -> str:
     """Stub Sonnet response shape for Phase B+ candidate generation."""
-    return json.dumps({
-        "non_probable_reason": "" if candidates else "no probe-attractive functions",
-        "candidates": candidates,
-    })
+    return json.dumps(
+        {
+            "non_probable_reason": "" if candidates else "no probe-attractive functions",
+            "candidates": candidates,
+        }
+    )
 
 
 def _phase_a_verdict_response() -> str:
     """Minimal Phase A verdict JSON the orchestrator's parser accepts."""
-    return json.dumps({
-        "verdict_label": "malicious",
-        "log_summary": "stub",
-        "validated_findings": [],
-        "confirmed_categories": [],
-    })
+    return json.dumps(
+        {
+            "verdict_label": "malicious",
+            "log_summary": "stub",
+            "validated_findings": [],
+            "confirmed_categories": [],
+        }
+    )
 
 
 def _phase_b_response() -> str:
     """Minimal Phase B JSON — zero new hypotheses → loop terminates."""
-    return json.dumps({
-        "stop_reason": "no_new_hypotheses",
-        "non_code_regions_inspected": [],
-        "new_hypotheses": [],
-    })
+    return json.dumps(
+        {
+            "stop_reason": "no_new_hypotheses",
+            "non_code_regions_inspected": [],
+            "new_hypotheses": [],
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -630,8 +636,7 @@ async def test_runtime_probe_skipped_when_flag_disabled(tmp_path) -> None:
         # Detect whether this is the probe schema (would be wrong here)
         if schema.get("required") == ["candidates", "non_probable_reason"]:
             raise AssertionError(
-                "runtime probe inference should not be called when "
-                "enable_runtime_probe is False"
+                "runtime probe inference should not be called when enable_runtime_probe is False"
             )
         return {"text": _phase_a_verdict_response(), "usage": {}, "finish_reason": "stop"}
 
@@ -656,9 +661,9 @@ async def test_runtime_probe_skipped_when_flag_disabled(tmp_path) -> None:
         inference=fake_inference,
         enable_runtime_probe=False,
     )
-    assert not any(
-        "adversarial penetration tester" in c[0] for c in inference_calls
-    ), "probe prompt should not have been issued"
+    assert not any("adversarial penetration tester" in c[0] for c in inference_calls), (
+        "probe prompt should not have been issued"
+    )
 
 
 @pytest.mark.asyncio
@@ -721,22 +726,25 @@ async def test_runtime_probe_fires_and_finds_exploit_via_canary(tmp_path) -> Non
         if required == ["candidates", "non_probable_reason"]:
             # Phase B+ probe candidates
             return {
-                "text": _phase_b_probe_response([
-                    {
-                        "function_name": "read_file_safely",
-                        "attack_class": "path_traversal",
-                        "rationale": "function takes user path",
-                        "test_inputs": [
-                            {
-                                "args_json": '["../etc/passwd"]',
-                                "kwargs_json": "{}",
-                                "expected_observable": "returns /etc/passwd content",
-                                "exploit_proof_if_observed": "path traversal — reads outside data dir",
-                            }
-                        ],
-                    }
-                ]),
-                "usage": {}, "finish_reason": "stop",
+                "text": _phase_b_probe_response(
+                    [
+                        {
+                            "function_name": "read_file_safely",
+                            "attack_class": "path_traversal",
+                            "rationale": "function takes user path",
+                            "test_inputs": [
+                                {
+                                    "args_json": '["../etc/passwd"]',
+                                    "kwargs_json": "{}",
+                                    "expected_observable": "returns /etc/passwd content",
+                                    "exploit_proof_if_observed": "path traversal — reads outside data dir",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "usage": {},
+                "finish_reason": "stop",
             }
         # Phase A verdict / Phase B (standard) — return benign defaults
         text = _phase_a_verdict_response()
@@ -769,20 +777,36 @@ async def test_runtime_probe_fires_and_finds_exploit_via_canary(tmp_path) -> Non
     assert hrp_plans[0].image_hint == "minimal"
     assert "python3 /workspace/_argus_probe_0_0.py" in hrp_plans[0].commands[1]
 
-    # The orchestrator extended l1_output with the runtime-probe finding
-    assert any(
-        h.get("id", "").startswith("HRP_")
-        for h in (l1_output.get("hypotheses") or [])
-    ), "probe finding should be appended to l1_output.hypotheses for next iter"
+    # Fix #2 contract: HRP findings are NOT appended to l1_output.hypotheses.
+    # The probe IS the test — Phase A re-testing them would (a) double the
+    # sandbox cost and (b) produce contradictory NOT_TESTED verdicts when
+    # Fly returns stub traces. Probe findings surface only via
+    # findings_validated (and from there → engine's dast_findings).
+    assert not any(
+        h.get("id", "").startswith("HRP_") for h in (l1_output.get("hypotheses") or [])
+    ), "Fix #2: HRP findings should NOT pollute l1_output.hypotheses"
+
+    # Fix #3 (surfacing) contract: confirmed HRPs reach findings_validated
+    # so engine.py picks them up as result.dast_findings.
+    assert any(fid.startswith("HRP_") for fid in result.findings_validated), (
+        f"expected HRP_ in findings_validated; got {result.findings_validated}"
+    )
 
     # And the journal has a phase_b_hypothesis record with verdict=confirmed
     journal_records = result.journal_records
     confirmed_probes = [
-        r for r in journal_records
+        r
+        for r in journal_records
         if r.get("claim_id", "").startswith("HRP_") and r.get("verdict") == "confirmed"
     ]
     assert len(confirmed_probes) >= 1, (
         f"expected at least one confirmed runtime probe; got {journal_records}"
+    )
+
+    # Fix #1 contract: probe-confirmed path_traversal at severity=high
+    # should bump the DAST max-verdict floor to "malicious".
+    assert result.final_verdict.get("verdict_label") == "malicious", (
+        f"Fix #1: expected verdict bumped to malicious; got {result.final_verdict}"
     )
 
 
@@ -808,28 +832,33 @@ async def test_runtime_probe_blocked_when_sandbox_shows_no_exploit(tmp_path) -> 
     async def fake_inference(prompt, options, schema):
         if schema.get("required") == ["candidates", "non_probable_reason"]:
             return {
-                "text": _phase_b_probe_response([
-                    {
-                        "function_name": "read_file_safely",
-                        "attack_class": "path_traversal",
-                        "rationale": "x",
-                        "test_inputs": [
-                            {
-                                "args_json": '["../etc/passwd"]',
-                                "kwargs_json": "{}",
-                                "expected_observable": "returns content",
-                                "exploit_proof_if_observed": "path traversal",
-                            }
-                        ],
-                    }
-                ]),
-                "usage": {}, "finish_reason": "stop",
+                "text": _phase_b_probe_response(
+                    [
+                        {
+                            "function_name": "read_file_safely",
+                            "attack_class": "path_traversal",
+                            "rationale": "x",
+                            "test_inputs": [
+                                {
+                                    "args_json": '["../etc/passwd"]',
+                                    "kwargs_json": "{}",
+                                    "expected_observable": "returns content",
+                                    "exploit_proof_if_observed": "path traversal",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "usage": {},
+                "finish_reason": "stop",
             }
         return {"text": _phase_a_verdict_response(), "usage": {}, "finish_reason": "stop"}
 
     file_record = {
-        "file_id": "h", "source_text": "def f(p): return open(p).read()\n",
-        "file_name": "v.py", "original_bytes": b"def f(p): return open(p).read()\n",
+        "file_id": "h",
+        "source_text": "def f(p): return open(p).read()\n",
+        "file_name": "v.py",
+        "original_bytes": b"def f(p): return open(p).read()\n",
         "ml_format": None,
     }
     l1_output = {"verdict": {"verdict_label": "malicious"}, "hypotheses": []}
@@ -846,14 +875,270 @@ async def test_runtime_probe_blocked_when_sandbox_shows_no_exploit(tmp_path) -> 
 
     # Probe ran but no exploit was confirmed
     rejected_probes = [
-        r for r in result.journal_records
+        r
+        for r in result.journal_records
         if r.get("claim_id", "").startswith("HRP_") and r.get("verdict") == "rejected"
     ]
     assert len(rejected_probes) >= 1
     # No new HRP hypothesis added to l1_output (no exploit to forward)
-    assert not any(
-        h.get("id", "").startswith("HRP_")
-        for h in (l1_output.get("hypotheses") or [])
+    assert not any(h.get("id", "").startswith("HRP_") for h in (l1_output.get("hypotheses") or []))
+
+
+@pytest.mark.asyncio
+async def test_runtime_probe_critical_code_injection_bumps_to_critical_malicious(
+    tmp_path,
+) -> None:
+    """Fix #1: probe-confirmed CRITICAL severity in
+    {code_injection, command_injection, deserialization} → verdict
+    bumped to critical_malicious (not just malicious)."""
+    sandbox = _CapturingProbeSandbox(
+        traces_by_hypothesis={
+            "HRP_0_0": {
+                "stdout": (
+                    'RESULT_JSON:{"ok": true, "type": "int", "value_preview": "0"}\n'
+                    'SIDE_EFFECTS:{"tmp_files_added": ["argus_probe_pwned"]}\n'
+                ),
+                "exit_code": 0,
+                "elapsed_ms": 50,
+            },
+        },
+    )
+
+    async def fake_inference(prompt, options, schema):
+        if schema.get("required") == ["candidates", "non_probable_reason"]:
+            return {
+                "text": _phase_b_probe_response(
+                    [
+                        {
+                            "function_name": "exec_user_code",
+                            "attack_class": "code_injection",
+                            "rationale": "calls exec() on user input",
+                            "test_inputs": [
+                                {
+                                    "args_json": '["__import__(\\"os\\").system(\\"touch /tmp/argus_probe_pwned\\")"]',
+                                    "kwargs_json": "{}",
+                                    "expected_observable": "canary file appears",
+                                    "exploit_proof_if_observed": "code injection via exec",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        return {
+            "text": _phase_a_verdict_response(),
+            "usage": {},
+            "finish_reason": "stop",
+        }
+
+    file_record = {
+        "file_id": "h",
+        "source_text": "def exec_user_code(s):\n    exec(s)\n",
+        "file_name": "evil.py",
+        "original_bytes": b"def exec_user_code(s):\n    exec(s)\n",
+        "ml_format": None,
+    }
+    l1_output = {"verdict": {"verdict_label": "suspicious"}, "hypotheses": []}
+
+    result = await run_dast(
+        file_record=file_record,
+        l1_output=l1_output,
+        sandbox=sandbox,
+        validator=HypothesisValidator(),
+        journal_dir=Path(tmp_path),
+        inference=fake_inference,
+        enable_runtime_probe=True,
+    )
+    # Critical + code_injection → critical_malicious (one tier higher
+    # than vanilla malicious bump)
+    assert result.final_verdict.get("verdict_label") == "critical_malicious"
+
+
+@pytest.mark.asyncio
+async def test_runtime_probe_medium_severity_does_not_bump_verdict(
+    tmp_path,
+) -> None:
+    """Fix #1 safety: probe-confirmed MEDIUM severity (e.g., xss,
+    crypto_weakness) does NOT bump the verdict — those FP-prone classes
+    need stronger evidence than one runtime observation."""
+    sandbox = _CapturingProbeSandbox(
+        traces_by_hypothesis={
+            "HRP_0_0": {
+                "stdout": (
+                    'RESULT_JSON:{"ok": true, "type": "str", '
+                    '"value_preview": "<script>alert(1)</script>"}\n'
+                    'SIDE_EFFECTS:{"tmp_files_added": []}\n'
+                ),
+                "exit_code": 0,
+                "elapsed_ms": 20,
+            },
+        },
+    )
+
+    async def fake_inference(prompt, options, schema):
+        if schema.get("required") == ["candidates", "non_probable_reason"]:
+            return {
+                "text": _phase_b_probe_response(
+                    [
+                        {
+                            "function_name": "render_template",
+                            "attack_class": "xss",  # severity = medium
+                            "rationale": "echoes user input into HTML",
+                            "test_inputs": [
+                                {
+                                    "args_json": '["<script>alert(1)</script>"]',
+                                    "kwargs_json": "{}",
+                                    "expected_observable": "script tag in return value",
+                                    "exploit_proof_if_observed": "xss",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        return {
+            "text": _phase_a_verdict_response(),
+            "usage": {},
+            "finish_reason": "stop",
+        }
+
+    file_record = {
+        "file_id": "h",
+        "source_text": "def render(s): return s\n",
+        "file_name": "view.py",
+        "original_bytes": b"def render(s): return s\n",
+        "ml_format": None,
+    }
+    l1_output = {"verdict": {"verdict_label": "suspicious"}, "hypotheses": []}
+
+    result = await run_dast(
+        file_record=file_record,
+        l1_output=l1_output,
+        sandbox=sandbox,
+        validator=HypothesisValidator(),
+        journal_dir=Path(tmp_path),
+        inference=fake_inference,
+        enable_runtime_probe=True,
+    )
+    # Medium severity → verdict NOT bumped. The probe finding still
+    # surfaces in findings_validated (the user sees it), but the verdict
+    # tier stays where Phase A left it.
+    label = result.final_verdict.get("verdict_label", "")
+    assert label != "malicious" and label != "critical_malicious", (
+        f"Fix #1 safety: medium-severity probe should not bump verdict; got {label}"
+    )
+    # But the finding still surfaces:
+    assert any(fid.startswith("HRP_") for fid in result.findings_validated)
+
+
+@pytest.mark.asyncio
+async def test_runtime_probe_does_not_re_test_hrp_via_phase_a(tmp_path) -> None:
+    """Fix #2: when the probe stage emits HRP_ findings, Phase A in
+    iter 1 should NOT see them in its pending_hypotheses (otherwise we
+    pay 2× sandbox cost and risk contradictory verdicts). Probe-only
+    findings reach the engine via findings_validated, not via the
+    iteration loop."""
+    sandbox = _CapturingProbeSandbox(
+        traces_by_hypothesis={
+            "HRP_0_0": {
+                "stdout": (
+                    'RESULT_JSON:{"ok": true, "value_preview": "exfil"}\n'
+                    'SIDE_EFFECTS:{"tmp_files_added": []}\n'
+                ),
+                "exit_code": 0,
+                "elapsed_ms": 50,
+            },
+        },
+    )
+
+    async def fake_inference(prompt, options, schema):
+        if schema.get("required") == ["candidates", "non_probable_reason"]:
+            return {
+                "text": _phase_b_probe_response(
+                    [
+                        {
+                            "function_name": "read_file",
+                            "attack_class": "path_traversal",
+                            "rationale": "x",
+                            "test_inputs": [
+                                {
+                                    "args_json": '["../etc/passwd"]',
+                                    "kwargs_json": "{}",
+                                    "expected_observable": "returns content",
+                                    "exploit_proof_if_observed": "path traversal",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        return {
+            "text": _phase_a_verdict_response(),
+            "usage": {},
+            "finish_reason": "stop",
+        }
+
+    file_record = {
+        "file_id": "h",
+        "source_text": "def read_file(p): return open(p).read()\n",
+        "file_name": "io.py",
+        "original_bytes": b"def read_file(p): return open(p).read()\n",
+        "ml_format": None,
+    }
+    # Start with ONE L1 hypothesis. Phase A should plan against ONLY this
+    # one — NOT against the HRP_0_0 finding the probe will discover.
+    l1_output = {
+        "verdict": {"verdict_label": "malicious"},
+        "hypotheses": [
+            {
+                "id": "H001",
+                "finding_ref": "H001",
+                "cwe": "CWE-22",
+                "severity": "critical",
+                "type": "path_traversal",
+                "explanation": "",
+                "code_snippet": "",
+                "line": 1,
+                "data_flow_trace": "",
+                "proof_of_concept": "",
+                "confidence": 0.9,
+            }
+        ],
+    }
+
+    await run_dast(
+        file_record=file_record,
+        l1_output=l1_output,
+        sandbox=sandbox,
+        validator=HypothesisValidator(),
+        journal_dir=Path(tmp_path),
+        inference=fake_inference,
+        enable_runtime_probe=True,
+    )
+
+    # Plans submitted to sandbox: the probe's HRP_0_0 (1 plan) + Phase A's
+    # plan for H001 (if any). Critical: Phase A should NOT have submitted
+    # a plan with hypothesis_id="HRP_0_0" (that would mean re-testing).
+    hrp_phase_a_resubmits = [
+        p
+        for p in sandbox.submitted_plans
+        if p.hypothesis_id.startswith("HRP_")
+        and p.plan_id.startswith("i1-")
+        and "_argus_probe_" not in (p.commands[1] if len(p.commands) > 1 else "")
+    ]
+    # The probe plan's commands have ``_argus_probe_`` in them; a Phase A
+    # re-test would NOT (it'd be a model-generated plan). So we filter on
+    # commands shape: any HRP_ plan WITHOUT the _argus_probe_ marker is
+    # a Phase A re-test.
+    assert hrp_phase_a_resubmits == [], (
+        f"Fix #2: Phase A re-tested HRP findings (cost doubled): "
+        f"{[p.plan_id for p in hrp_phase_a_resubmits]}"
     )
 
 
@@ -867,17 +1152,22 @@ async def test_runtime_probe_model_declines_journal_records_rationale(tmp_path) 
     async def fake_inference(prompt, options, schema):
         if schema.get("required") == ["candidates", "non_probable_reason"]:
             return {
-                "text": json.dumps({
-                    "candidates": [],
-                    "non_probable_reason": "file only contains data constants",
-                }),
-                "usage": {}, "finish_reason": "stop",
+                "text": json.dumps(
+                    {
+                        "candidates": [],
+                        "non_probable_reason": "file only contains data constants",
+                    }
+                ),
+                "usage": {},
+                "finish_reason": "stop",
             }
         return {"text": _phase_a_verdict_response(), "usage": {}, "finish_reason": "stop"}
 
     file_record = {
-        "file_id": "h", "source_text": "X = 1\nY = 'literal'\n",
-        "file_name": "consts.py", "original_bytes": b"X = 1\n",
+        "file_id": "h",
+        "source_text": "X = 1\nY = 'literal'\n",
+        "file_name": "consts.py",
+        "original_bytes": b"X = 1\n",
         "ml_format": None,
     }
     l1_output = {"verdict": {"verdict_label": "malicious"}, "hypotheses": []}
@@ -892,10 +1182,7 @@ async def test_runtime_probe_model_declines_journal_records_rationale(tmp_path) 
         enable_runtime_probe=True,
     )
 
-    declines = [
-        r for r in result.journal_records
-        if r.get("claim_id") == "HRP_NONE"
-    ]
+    declines = [r for r in result.journal_records if r.get("claim_id") == "HRP_NONE"]
     assert len(declines) == 1
     assert "declined" in declines[0].get("rationale", "").lower()
     assert "data constants" in declines[0].get("rationale", "")
