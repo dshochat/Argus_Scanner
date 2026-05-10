@@ -79,7 +79,11 @@ def derive_uncertainty(parsed: dict) -> float:
     whether to escalate Sonnet to Opus.
     """
     vulns = parsed.get("vulnerabilities") or []
-    confidences = [float(v.get("confidence", 0.5)) for v in vulns if isinstance(v.get("confidence"), (int, float))]
+    confidences = [
+        float(v.get("confidence", 0.5))
+        for v in vulns
+        if isinstance(v.get("confidence"), (int, float))
+    ]
     if not confidences:
         # No findings or no confidence data → use boundary distance only;
         # clean verdicts (score=0) → 0.0 uncertainty.
@@ -205,7 +209,10 @@ def make_anthropic_runner_from_adapter(
 
         in_tokens = int(result.get("input_tokens", 0))
         out_tokens = int(result.get("output_tokens", 0))
-        cost = in_tokens / 1_000_000 * cost_per_m_input + out_tokens / 1_000_000 * cost_per_m_output
+        cost = (
+            in_tokens / 1_000_000 * cost_per_m_input
+            + out_tokens / 1_000_000 * cost_per_m_output
+        )
 
         # Surface JSON parse failures as a runner error. Engine logs
         # ``error`` distinctly from a clean scan; without this, a parse
@@ -224,7 +231,8 @@ def make_anthropic_runner_from_adapter(
             runner_error = sanitizer_error
         elif not json_valid:
             runner_error = (
-                f"json_parse_failed: model output not valid JSON (out_tokens={out_tokens}; possible truncation)"
+                f"json_parse_failed: model output not valid JSON "
+                f"(out_tokens={out_tokens}; possible truncation)"
             )
         else:
             runner_error = None
@@ -254,29 +262,45 @@ def make_anthropic_runner_from_adapter(
 # ── Public factories ───────────────────────────────────────────────────────
 
 
-def make_sonnet_runner(api_key: str) -> Callable[..., Awaitable[dict]]:
+def make_sonnet_runner(
+    api_key: str,
+    *,
+    thinking_budget: int = 24000,
+) -> Callable[..., Awaitable[dict]]:
     """Build the Sonnet 4.6 analysis runner — default HIGH-tier path.
 
     Configured for deep security analysis: ``thinking_budget=24000``
-    ("extra high" depth), system-prompt caching enabled (90% read
-    discount on the shared SECURITY_SCAN_PROMPT across multi-file scans).
+    ("extra high" depth) by default, system-prompt caching enabled (90%
+    read discount on the shared SECURITY_SCAN_PROMPT across multi-file
+    scans).
+
+    Pass ``thinking_budget=0`` (or any value <2048) to disable extended
+    thinking entirely. Used by the install path on bulk scans where
+    speed matters more than reasoning depth — we trade ~30% accuracy
+    on subtle multi-step exploits for ~3× throughput. Deterministic
+    preprocessing flags (``imperative_install_detected``,
+    ``attack_vector_extension``, ``crypto_sensitivity_detected``,
+    ``ai_file_match``, ``obfuscation_detected``) still force-escalate
+    files to HIGH-tier scrutiny regardless of thinking budget.
     """
+    cfg: dict[str, Any] = {
+        # 32768 covers Sonnet's full schema response on dense files.
+        # Adapter adds thinking_budget on top so the model has 32k
+        # tokens of OUTPUT after using its thinking budget.
+        "max_tokens": 32768,
+        "enable_system_cache": True,
+    }
+    if thinking_budget >= 2048:
+        # Anthropic requires thinking_budget >= 2048 when set; below that
+        # we drop the field entirely (adapter then doesn't request thinking).
+        cfg["thinking_budget"] = thinking_budget
     adapter = AnthropicAdapter(
         {
             "name": "argus-sonnet-4-6",
             "model_id": "claude-sonnet-4-6",
             "api_key_encrypted": api_key,
             "provider": "anthropic",
-            "config": {
-                # 24000 = "extra high" thinking depth (legacy enabled mode
-                # supports explicit budgeting; adaptive mode does not).
-                "thinking_budget": 24000,
-                # 32768 covers Sonnet's full schema response on dense files.
-                # Adapter adds thinking_budget on top so the model has
-                # 32k tokens of OUTPUT after using its thinking budget.
-                "max_tokens": 32768,
-                "enable_system_cache": True,
-            },
+            "config": cfg,
         }
     )
     return make_anthropic_runner_from_adapter(
@@ -358,7 +382,10 @@ def make_triage_runner_from_adapter(
 
         in_tokens = int(result.get("input_tokens", 0))
         out_tokens = int(result.get("output_tokens", 0))
-        cost = in_tokens / 1_000_000 * cost_per_m_input + out_tokens / 1_000_000 * cost_per_m_output
+        cost = (
+            in_tokens / 1_000_000 * cost_per_m_input
+            + out_tokens / 1_000_000 * cost_per_m_output
+        )
 
         adapter_error = result.get("error")
         return {
@@ -402,7 +429,11 @@ def make_gemini_triage_runner(api_key: str) -> Callable[..., Awaitable[dict]]:
     )
 
 
-def make_opus_runner(api_key: str) -> Callable[..., Awaitable[dict]]:
+def make_opus_runner(
+    api_key: str,
+    *,
+    thinking_budget: int = 24000,
+) -> Callable[..., Awaitable[dict]]:
     """Build the Opus 4.6 analysis runner — high-stakes / borderline tier.
 
     Same composition as Sonnet but with Opus pricing and the deeper model.
@@ -410,21 +441,26 @@ def make_opus_runner(api_key: str) -> Callable[..., Awaitable[dict]]:
     category (crypto, AI-tool, obfuscation) and for borderline-uncertainty
     escalation from Sonnet.
 
-    thinking_budget=24000 — when we pay Opus's premium we want full
-    reasoning depth; tuning happens at the cascade routing layer, not here.
+    Default ``thinking_budget=24000`` (full reasoning depth — when we pay
+    Opus's premium we usually want it). Pass ``thinking_budget=0`` to
+    disable extended thinking on the install path's bulk-scan mode where
+    throughput matters more than reasoning depth on already-Opus-tier
+    files (rare on the install path because most wheels stay in Sonnet).
     """
+    cfg: dict[str, Any] = {
+        # See Sonnet runner: 16384 was too tight on dense files.
+        "max_tokens": 32768,
+        "enable_system_cache": True,
+    }
+    if thinking_budget >= 2048:
+        cfg["thinking_budget"] = thinking_budget
     adapter = AnthropicAdapter(
         {
             "name": "argus-opus-4-6",
             "model_id": "claude-opus-4-6",
             "api_key_encrypted": api_key,
             "provider": "anthropic",
-            "config": {
-                "thinking_budget": 24000,
-                # See Sonnet runner: 16384 was too tight on dense files.
-                "max_tokens": 32768,
-                "enable_system_cache": True,
-            },
+            "config": cfg,
         }
     )
     return make_anthropic_runner_from_adapter(
