@@ -108,6 +108,16 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
         ".htm",
         ".svg",
         ".xml",
+        # v1.2.1 file-type expansion: Jupyter + ML model artifacts.
+        # Notebook decomposer + ML-pickletools inspector handle these.
+        ".ipynb",
+        ".pt",
+        ".bin",
+        ".safetensors",
+        ".h5",
+        ".hdf5",
+        ".keras",
+        ".onnx",
     }
 )
 
@@ -546,7 +556,10 @@ async def scan_repo(
                 FileSkip(
                     path=path,
                     reason="cost_cap_reached",
-                    detail=(f"cumulative ${report.total_cost_usd:.4f} >= cap ${cfg.max_cost_run_usd:.2f}"),
+                    detail=(
+                        f"cumulative ${report.total_cost_usd:.4f} "
+                        f">= cap ${cfg.max_cost_run_usd:.2f}"
+                    ),
                 )
             )
             if progress_cb:
