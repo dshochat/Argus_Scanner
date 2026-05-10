@@ -155,9 +155,7 @@ def _has_refutation_of_prior_confirmed(
         if not (isinstance(ev_ids, list) and ev_ids):
             continue
         hyp = hyp_index.get(cv.get("hypothesis_id", "")) or {}
-        fref = hyp.get("finding_ref") or (
-            (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
-        )
+        fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
         if fref and fref in prev_confirmed:
             return True
     return False
@@ -197,9 +195,7 @@ async def run_dast(
     total_out = 0
     total_sb = 0
     last_verdict: dict[str, Any] = {
-        "verdict_label": (l1_output.get("verdict") or {}).get(
-            "verdict_label", "suspicious"
-        ),
+        "verdict_label": (l1_output.get("verdict") or {}).get("verdict_label", "suspicious"),
         "log_summary": "no DAST iteration completed yet",
         "validated_findings": [],
         "confirmed_categories": [],
@@ -215,9 +211,7 @@ async def run_dast(
 
     # iter 1 starts with L1 hypotheses; iter ≥ 2 starts with the previous
     # iteration's validator-accepted Phase B hypotheses
-    pending_hypotheses: list[dict] = list(
-        l1_output.get("hypotheses") or []
-    )
+    pending_hypotheses: list[dict] = list(l1_output.get("hypotheses") or [])
 
     # v1.2: capture iter-1 plans for Phase C replay (fix-and-verify).
     # Iter 1 is the natural plan set for re-testing the patched file because
@@ -277,6 +271,7 @@ async def run_dast(
         # — i.e., the canonical "load = execution" attack surface.
         if it == 1 and file_record.get("ml_format"):
             from dast.ml_detonation import build_ml_load_plan  # noqa: PLC0415
+
             ml_bytes = file_record.get("original_bytes")
             if isinstance(ml_bytes, (bytes, bytearray)):
                 ml_plan = build_ml_load_plan(
@@ -301,15 +296,17 @@ async def run_dast(
             hid = p.get("hypothesis_id", "")
             if p.get("plan_status") != "executable":
                 # Not_testable plans are journaled but no sandbox call.
-                journal.append(JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.PHASE_A_PLAN,
-                    claim_id=hid,
-                    verdict=None,
-                    rationale=f"not_testable: {p.get('rationale', '')[:200]}",
-                    evidence_refs=[],
-                    sandbox_event_id=None,
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=it,
+                        phase=JournalPhase.PHASE_A_PLAN,
+                        claim_id=hid,
+                        verdict=None,
+                        rationale=f"not_testable: {p.get('rationale', '')[:200]}",
+                        evidence_refs=[],
+                        sandbox_event_id=None,
+                    )
+                )
                 plan_records.append(p)
                 continue
             # DAST-005: pass through image_hint. Default to "minimal" so
@@ -329,8 +326,7 @@ async def run_dast(
                 image_hint=image_hint,
                 file_name=file_name,
                 synthesis_context={
-                    "upstream_chain": (hyp_index.get(hid) or {}).get("upstream_chain")
-                    or {},
+                    "upstream_chain": (hyp_index.get(hid) or {}).get("upstream_chain") or {},
                     "hypothesis": hyp_index.get(hid) or {},
                 },
             )
@@ -353,15 +349,17 @@ async def run_dast(
             total_sb += 1
             plan_records.append(p)
             trace_records.append(trace.model_dump())
-            journal.append(JournalRecord(
-                iter=it,
-                phase=JournalPhase.SANDBOX_EXEC,
-                claim_id=hid,
-                verdict=None,
-                rationale=trace.stub_synthesis_note or "",
-                evidence_refs=[e.event_id for e in trace.events],
-                sandbox_event_id=(trace.events[0].event_id if trace.events else None),
-            ))
+            journal.append(
+                JournalRecord(
+                    iter=it,
+                    phase=JournalPhase.SANDBOX_EXEC,
+                    claim_id=hid,
+                    verdict=None,
+                    rationale=trace.stub_synthesis_note or "",
+                    evidence_refs=[e.event_id for e in trace.events],
+                    sandbox_event_id=(trace.events[0].event_id if trace.events else None),
+                )
+            )
 
         # v1.2: snapshot iter-1 plans for Phase C replay (fix-and-verify)
         if it == 1:
@@ -402,21 +400,21 @@ async def run_dast(
             hyp = hyp_index.get(hid) or {}
             # L1 hypotheses use ``finding_ref``; Phase B hypotheses use
             # ``upstream_chain.confirmed_finding_ref``. Try both.
-            fref = hyp.get("finding_ref") or (
-                (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
-            )
+            fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
             if fref:
                 evidence_refs.append(fref)
             evidence_refs.extend(ev_ids if isinstance(ev_ids, list) else [])
-            journal.append(JournalRecord(
-                iter=it,
-                phase=JournalPhase.PHASE_A_VERDICT,
-                claim_id=hid,
-                verdict=v,
-                rationale=rationale,
-                evidence_refs=evidence_refs,
-                sandbox_event_id=(ev_ids[0] if isinstance(ev_ids, list) and ev_ids else None),
-            ))
+            journal.append(
+                JournalRecord(
+                    iter=it,
+                    phase=JournalPhase.PHASE_A_VERDICT,
+                    claim_id=hid,
+                    verdict=v,
+                    rationale=rationale,
+                    evidence_refs=evidence_refs,
+                    sandbox_event_id=(ev_ids[0] if isinstance(ev_ids, list) and ev_ids else None),
+                )
+            )
             if v == "confirmed" and fref and fref not in prev_confirmed:
                 new_confirmed_count += 1
                 if fref not in findings_validated:
@@ -439,9 +437,7 @@ async def run_dast(
                 max_dast_verdict_rank >= 0
                 and new_rank < max_dast_verdict_rank
                 and max_dast_verdict_label is not None
-                and not _has_refutation_of_prior_confirmed(
-                    claim_verdicts, hyp_index, prev_confirmed
-                )
+                and not _has_refutation_of_prior_confirmed(claim_verdicts, hyp_index, prev_confirmed)
             ):
                 clamp_msg = (
                     f"[iter_erosion_guard] iter {it} model emitted "
@@ -502,24 +498,28 @@ async def run_dast(
             hid = h.get("id") or "H???"
             if v.accepted:
                 accepted_hyps.append(h)
-                journal.append(JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                    claim_id=hid,
-                    verdict="confirmed" if v.is_borderline else "confirmed",
-                    rationale=f"validator accepted{' (borderline)' if v.is_borderline else ''}: {v.reasoning[:240]}",
-                    evidence_refs=[],
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=it,
+                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                        claim_id=hid,
+                        verdict="confirmed" if v.is_borderline else "confirmed",
+                        rationale=f"validator accepted{' (borderline)' if v.is_borderline else ''}: {v.reasoning[:240]}",
+                        evidence_refs=[],
+                    )
+                )
             else:
                 rejected_hyps.append(h)
-                journal.append(JournalRecord(
-                    iter=it,
-                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                    claim_id=hid,
-                    verdict="rejected",
-                    rationale=f"validator rejected: {v.reasoning[:240]}",
-                    evidence_refs=[],
-                ))
+                journal.append(
+                    JournalRecord(
+                        iter=it,
+                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                        claim_id=hid,
+                        verdict="rejected",
+                        rationale=f"validator rejected: {v.reasoning[:240]}",
+                        evidence_refs=[],
+                    )
+                )
         st.hypotheses_accepted = len(accepted_hyps)
         st.hypotheses_rejected = len(rejected_hyps)
 
@@ -556,9 +556,7 @@ async def run_dast(
     # without having to re-read the file. JournalRecord is a Pydantic
     # model — model_dump() gives a JSON-serializable dict.
     try:
-        journal_dump: list[dict[str, Any]] = [
-            r.model_dump(mode="json") for r in journal.read_all()
-        ]
+        journal_dump: list[dict[str, Any]] = [r.model_dump(mode="json") for r in journal.read_all()]
     except Exception:  # noqa: BLE001
         journal_dump = []
 
@@ -683,7 +681,7 @@ async def _run_phase_c_fix_verify(
     # Index by both id and finding_ref since journal claim_id ↔ hypothesis
     # id, but findings_validated may use either form.
     hyp_by_ref: dict[str, dict] = {}
-    for h in (l1_output.get("hypotheses") or []):
+    for h in l1_output.get("hypotheses") or []:
         if not isinstance(h, dict):
             continue
         h_id = h.get("id")
@@ -735,8 +733,7 @@ async def _run_phase_c_fix_verify(
                     "finding_id": h.get("id") or h.get("finding_ref"),
                     "post_patch_status": "UNVERIFIABLE",
                     "rationale": (
-                        "Binary ML artifact — Argus declined to auto-patch. "
-                        "See fix_summary for remediation guidance."
+                        "Binary ML artifact — Argus declined to auto-patch. See fix_summary for remediation guidance."
                     ),
                 }
                 for h in confirmed
@@ -796,9 +793,7 @@ async def _run_phase_c_fix_verify(
                 continue
             hid = p.get("hypothesis_id", "")
             raw_hint = p.get("image_hint")
-            image_hint = (
-                raw_hint if isinstance(raw_hint, str) and raw_hint else "minimal"
-            )
+            image_hint = raw_hint if isinstance(raw_hint, str) and raw_hint else "minimal"
             plan = SandboxPlan(
                 plan_id=f"phaseC-{hid}",
                 file_id=file_id,
@@ -870,14 +865,8 @@ async def _run_phase_c_fix_verify(
     verdict_obj = _parse_json_or_empty(verdict_resp.get("text", ""))
     cur = (verdict_obj.get("current_verdict") or {}) if isinstance(verdict_obj, dict) else {}
     post_patch_verdict = cur.get("verdict_label", "unknown")
-    new_claim_verdicts = (
-        verdict_obj.get("claim_verdicts") or []
-    ) if isinstance(verdict_obj, dict) else []
-    new_v_by_hid = {
-        cv.get("hypothesis_id"): cv.get("verdict")
-        for cv in new_claim_verdicts
-        if isinstance(cv, dict)
-    }
+    new_claim_verdicts = (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
+    new_v_by_hid = {cv.get("hypothesis_id"): cv.get("verdict") for cv in new_claim_verdicts if isinstance(cv, dict)}
 
     verdict_in = (verdict_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
     verdict_out = (verdict_resp.get("usage") or {}).get("completion_tokens", 0) or 0
@@ -894,20 +883,18 @@ async def _run_phase_c_fix_verify(
             status = "NEUTRALIZED"
         else:
             status = "UNVERIFIABLE"
-        per_finding.append({
-            "finding_ref": ref,
-            "hypothesis_id": hid,
-            "original_status": "CONFIRMED",
-            "post_patch_status": status,
-            "post_patch_verdict": new_v or "unknown",
-        })
+        per_finding.append(
+            {
+                "finding_ref": ref,
+                "hypothesis_id": hid,
+                "original_status": "CONFIRMED",
+                "post_patch_status": status,
+                "post_patch_verdict": new_v or "unknown",
+            }
+        )
 
-    n_neutralized = sum(
-        1 for pf in per_finding if pf["post_patch_status"] == "NEUTRALIZED"
-    )
-    n_still_exploitable = sum(
-        1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE"
-    )
+    n_neutralized = sum(1 for pf in per_finding if pf["post_patch_status"] == "NEUTRALIZED")
+    n_still_exploitable = sum(1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE")
 
     return {
         "attempted": True,

@@ -1,4 +1,5 @@
 """Unit tests for the Jupyter notebook decomposer."""
+
 from __future__ import annotations
 
 import json
@@ -10,12 +11,14 @@ from preprocessing.notebook import decompose_notebook
 
 def _make_nb(cells: list[dict]) -> str:
     """Tiny .ipynb fabricator. Avoids string-concat fragility in tests."""
-    return json.dumps({
-        "cells": cells,
-        "metadata": {"kernelspec": {"name": "python3"}},
-        "nbformat": 4,
-        "nbformat_minor": 5,
-    })
+    return json.dumps(
+        {
+            "cells": cells,
+            "metadata": {"kernelspec": {"name": "python3"}},
+            "nbformat": 4,
+            "nbformat_minor": 5,
+        }
+    )
 
 
 def test_extension_routes_to_jupyter() -> None:
@@ -25,10 +28,12 @@ def test_extension_routes_to_jupyter() -> None:
 
 
 def test_decompose_basic_code_and_markdown() -> None:
-    raw = _make_nb([
-        {"cell_type": "markdown", "source": ["# Title\n", "Some text\n"]},
-        {"cell_type": "code", "source": ["import os\n", "print(os.getcwd())\n"]},
-    ])
+    raw = _make_nb(
+        [
+            {"cell_type": "markdown", "source": ["# Title\n", "Some text\n"]},
+            {"cell_type": "code", "source": ["import os\n", "print(os.getcwd())\n"]},
+        ]
+    )
     out = decompose_notebook(raw)
     assert out.is_valid
     assert out.parse_error is None
@@ -45,9 +50,11 @@ def test_decompose_basic_code_and_markdown() -> None:
 
 
 def test_decompose_detects_pip_install_shell_magic() -> None:
-    raw = _make_nb([
-        {"cell_type": "code", "source": "!pip install evil-pkg\n"},
-    ])
+    raw = _make_nb(
+        [
+            {"cell_type": "code", "source": "!pip install evil-pkg\n"},
+        ]
+    )
     out = decompose_notebook(raw)
     assert out.is_valid
     assert out.has_pip_install_magic
@@ -55,9 +62,11 @@ def test_decompose_detects_pip_install_shell_magic() -> None:
 
 
 def test_decompose_detects_load_ext_magic() -> None:
-    raw = _make_nb([
-        {"cell_type": "code", "source": "%load_ext mal_ext\n"},
-    ])
+    raw = _make_nb(
+        [
+            {"cell_type": "code", "source": "%load_ext mal_ext\n"},
+        ]
+    )
     out = decompose_notebook(raw)
     assert out.is_valid
     assert out.has_load_ext_magic
@@ -66,9 +75,11 @@ def test_decompose_detects_load_ext_magic() -> None:
 
 def test_decompose_handles_pip_install_via_percent_magic() -> None:
     # %pip install is the IPython-magic equivalent — should also flag.
-    raw = _make_nb([
-        {"cell_type": "code", "source": "%pip install evil-pkg\n"},
-    ])
+    raw = _make_nb(
+        [
+            {"cell_type": "code", "source": "%pip install evil-pkg\n"},
+        ]
+    )
     out = decompose_notebook(raw)
     assert out.is_valid
     assert out.has_pip_install_magic
@@ -76,9 +87,11 @@ def test_decompose_handles_pip_install_via_percent_magic() -> None:
 
 def test_decompose_handles_string_source() -> None:
     # nbformat permits source as a plain string OR a list of strings.
-    raw = _make_nb([
-        {"cell_type": "code", "source": "x = 1\n"},
-    ])
+    raw = _make_nb(
+        [
+            {"cell_type": "code", "source": "x = 1\n"},
+        ]
+    )
     out = decompose_notebook(raw)
     assert out.is_valid
     assert "x = 1" in out.synthesized_source
@@ -101,14 +114,16 @@ def test_decompose_skips_non_dict_cells() -> None:
     # Pathological notebook: a non-dict in the cells array. Should be
     # skipped silently rather than crashing the parser — defensive
     # handling for fuzz-like inputs.
-    raw = json.dumps({
-        "cells": [
-            "not_a_dict",
-            {"cell_type": "code", "source": "ok = True\n"},
-        ],
-        "metadata": {},
-        "nbformat": 4,
-    })
+    raw = json.dumps(
+        {
+            "cells": [
+                "not_a_dict",
+                {"cell_type": "code", "source": "ok = True\n"},
+            ],
+            "metadata": {},
+            "nbformat": 4,
+        }
+    )
     out = decompose_notebook(raw)
     assert out.is_valid
     assert out.n_code_cells == 1
@@ -118,10 +133,12 @@ def test_decompose_skips_non_dict_cells() -> None:
 def test_decompose_unknown_cell_type_skipped() -> None:
     # Custom Jupyter-extension cell types should be skipped without
     # erroring or counting as code/markdown/raw.
-    raw = _make_nb([
-        {"cell_type": "custom_extension", "source": "<rendered>"},
-        {"cell_type": "code", "source": "y = 2\n"},
-    ])
+    raw = _make_nb(
+        [
+            {"cell_type": "custom_extension", "source": "<rendered>"},
+            {"cell_type": "code", "source": "y = 2\n"},
+        ]
+    )
     out = decompose_notebook(raw)
     assert out.is_valid
     assert out.n_code_cells == 1

@@ -25,7 +25,6 @@ from dast.runner import (
 )
 from scanner.engine import ScanResult
 
-
 # ── Translation: scan_result → l1_output ───────────────────────────────────
 
 

@@ -75,7 +75,7 @@ async def stub_opus(filename, content, pp, classification):
     }
 
 
-async def stub_dast_confirms(filename, content, pp, scan_result):
+async def stub_dast_confirms(filename, content, pp, scan_result, **kwargs):
     return {
         "final_verdict": {"verdict_label": "critical_malicious"},
         "validated_findings": ["F001"],
@@ -85,7 +85,7 @@ async def stub_dast_confirms(filename, content, pp, scan_result):
     }
 
 
-async def stub_dast_attempts_downgrade(filename, content, pp, scan_result):
+async def stub_dast_attempts_downgrade(filename, content, pp, scan_result, **kwargs):
     """Mirrors the megatron / litellm-pre-fix pattern: DAST returns a
     lower verdict than L1 with no validated_findings (sandbox failed to
     confirm hypotheses). DAST-105 guard should ignore this."""
@@ -98,7 +98,7 @@ async def stub_dast_attempts_downgrade(filename, content, pp, scan_result):
     }
 
 
-async def stub_dast_grounded_downgrade(filename, content, pp, scan_result):
+async def stub_dast_grounded_downgrade(filename, content, pp, scan_result, **kwargs):
     """DAST-105 v2: DAST returns a lower verdict AND has journal records
     showing every L1 finding is BLOCKED or UNREACHED (i.e., refuted with
     sandbox-grounded evidence). Engine should DOWNGRADE to DAST's
@@ -119,7 +119,7 @@ async def stub_dast_grounded_downgrade(filename, content, pp, scan_result):
     }
 
 
-async def stub_dast_partial_grounded_downgrade(filename, content, pp, scan_result):
+async def stub_dast_partial_grounded_downgrade(filename, content, pp, scan_result, **kwargs):
     """DAST-105 v2 negative case: DAST wants to downgrade but ONE finding
     is NOT_TESTED (no journal entry). Engine should KEEP L1's verdict
     because we don't have grounded evidence for every finding.
