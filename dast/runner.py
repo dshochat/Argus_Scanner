@@ -168,19 +168,49 @@ def make_dast_runner(
         content: bytes,
         pp: Any,
         scan_result: Any,
+        *,
+        enable_phase_c: bool = True,
     ) -> dict:
         text = content.decode("utf-8", errors="replace")
-        file_id = (getattr(pp, "file_hash", None) if pp is not None else None) or filename
+        file_id = (
+            getattr(pp, "file_hash", None) if pp is not None else None
+        ) or filename
 
         l1_output = _scan_result_to_l1_output(scan_result)
         # The basename (with extension) is what the sandbox stages at
         # /workspace/<basename>. Strip any path components so a
         # caller-supplied "samples/foo.js" still lands as "foo.js".
         file_name = Path(filename).name or filename
+
+        # ML-artifact detonation: when the file is a recognized model
+        # format (.pkl/.pt/.bin/.safetensors/.h5/.onnx), prepend a
+        # synthetic L1 hypothesis so the orchestrator plans a load
+        # against it even when the static cascade emitted zero findings.
+        # The deterministic load plan is the cleanest "load = detonation"
+        # demo Argus has — pickle.load() / torch.load() runs __reduce__
+        # opcodes that may not surface in static analysis at all.
+        from .ml_detonation import (  # noqa: PLC0415
+            detect_format as _detect_ml_format,
+            synthesize_ml_load_hypothesis,
+        )
+        ml_format = _detect_ml_format(file_name, content[:32])
+        if ml_format is not None:
+            ml_hyp = synthesize_ml_load_hypothesis(file_format=ml_format)
+            existing = list(l1_output.get("hypotheses") or [])
+            l1_output = {
+                **l1_output,
+                "hypotheses": [ml_hyp, *existing],
+            }
+
         file_record = {
             "file_id": file_id,
             "source_text": text,
             "file_name": file_name,
+            "ml_format": ml_format,  # None for non-ML files
+            # Original raw bytes (pre-decode) — needed for ML detonation
+            # plans which must stage the *binary* in the sandbox, not the
+            # synthesized text representation. Non-ML callers ignore.
+            "original_bytes": content if ml_format else None,
         }
 
         # Populate the file content map so FirecrackerSandboxClient can
@@ -199,6 +229,7 @@ def make_dast_runner(
             validator=val,
             journal_dir=journal_root,
             inference=inference,
+            enable_phase_c=enable_phase_c,
         )
         elapsed_ms = int((time.time() - t0) * 1000)
         return _dast_result_to_engine_dict(result, elapsed_ms)
@@ -283,9 +314,15 @@ def make_dast_runner_from_env(api_key: str | None = None) -> DastRunner | None:
 
     sandbox = MultiImageSandboxClient(
         inner_by_hint={
-            "minimal": FirecrackerSandboxClient(fly_client=fly_client, image=image_minimal),
-            "networked": FirecrackerSandboxClient(fly_client=fly_client, image=image_networked),
-            "ml_tools": FirecrackerSandboxClient(fly_client=fly_client, image=image_ml_tools),
+            "minimal": FirecrackerSandboxClient(
+                fly_client=fly_client, image=image_minimal
+            ),
+            "networked": FirecrackerSandboxClient(
+                fly_client=fly_client, image=image_networked
+            ),
+            "ml_tools": FirecrackerSandboxClient(
+                fly_client=fly_client, image=image_ml_tools
+            ),
         },
         fallback_hint="minimal",
     )

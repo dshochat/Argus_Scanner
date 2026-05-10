@@ -25,6 +25,7 @@ from dast.runner import (
 )
 from scanner.engine import ScanResult
 
+
 # ── Translation: scan_result → l1_output ───────────────────────────────────
 
 
@@ -212,6 +213,92 @@ async def test_runner_calls_orchestrator_with_correct_payload(
 
     # File content was loaded into the sandbox map
     assert sandbox.file_content_map["abc123"] == b"import os\n"
+
+
+@pytest.mark.asyncio
+async def test_runner_injects_synthetic_ml_hypothesis_for_pickle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """When the engine reaches DAST on an ML artifact, the runner must
+    prepend a synthetic ``HML_LOAD`` hypothesis to ``l1_output.hypotheses``
+    so the orchestrator plans a deterministic load against it. The
+    original binary bytes must reach ``file_record.original_bytes`` so
+    the orchestrator's iter-1 hook can build the deterministic plan."""
+    captured: dict[str, Any] = {}
+
+    async def fake_run_dast(**kwargs: Any) -> DastResult:
+        captured.update(kwargs)
+        return _sample_dast_result()
+
+    monkeypatch.setattr(dast_runner_mod, "run_dast", fake_run_dast)
+
+    async def fake_inference(prompt, options, schema):
+        return {"text": "{}", "usage": {}, "finish_reason": "stop"}
+
+    runner = make_dast_runner(
+        inference=fake_inference,
+        sandbox=_FakeStubSandbox(),
+        journal_dir=tmp_path / "j",
+    )
+
+    # A "real-looking" pickle byte sequence (proto >= 2 magic byte at
+    # the head) — detect_format keys on extension OR magic.
+    pickle_bytes = b"\x80\x04\x95\x10\x00\x00\x00\x00\x00\x00\x00ABC"
+    out = await runner(
+        "evil_model.pkl",
+        pickle_bytes,
+        _FakePreprocessing(file_hash="ml-hash"),
+        _sample_scan_result(),
+    )
+    assert out["validated_findings"] == ["F1", "F2"]
+
+    # file_record carries ml_format + original_bytes
+    fr = captured["file_record"]
+    assert fr["ml_format"] == "pickle"
+    assert fr["original_bytes"] == pickle_bytes
+
+    # l1_output's hypotheses list got HML_LOAD prepended
+    hyps = captured["l1_output"]["hypotheses"]
+    assert hyps[0]["id"] == "HML_LOAD"
+    assert hyps[0]["cwe"] == "CWE-502"
+    # The previously-existing model-emitted hypotheses are preserved AFTER
+    # the synthetic one — the orchestrator still plans against them.
+    assert any(h.get("id") == "H001" for h in hyps[1:])
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_inject_ml_hypothesis_for_python_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Sanity guard: regular .py files must not get the synthetic
+    HML_LOAD prepended (otherwise every DAST run would burn an extra
+    sandbox call on a no-op load)."""
+    captured: dict[str, Any] = {}
+
+    async def fake_run_dast(**kwargs: Any) -> DastResult:
+        captured.update(kwargs)
+        return _sample_dast_result()
+
+    monkeypatch.setattr(dast_runner_mod, "run_dast", fake_run_dast)
+
+    runner = make_dast_runner(
+        inference=lambda *a, **kw: None,  # type: ignore[arg-type, return-value]
+        sandbox=_FakeStubSandbox(),
+        journal_dir=tmp_path,
+    )
+    await runner(
+        "regular.py",
+        b"import os\nos.system('ls')\n",
+        _FakePreprocessing(file_hash="py-hash"),
+        _sample_scan_result(),
+    )
+    fr = captured["file_record"]
+    assert fr["ml_format"] is None
+    assert fr["original_bytes"] is None
+    hyps = captured["l1_output"]["hypotheses"]
+    assert all(h["id"] != "HML_LOAD" for h in hyps)
 
 
 @pytest.mark.asyncio

@@ -37,8 +37,8 @@ from shared.utils.tokens import approx_token_count
 
 from .ai_file_patterns import detect_ai_file
 from .attack_vector_extensions import detect_attack_vector_extension
-from .binary_detect import classify_binary_or_empty
 from .crypto_sensitivity import analyze_file as analyze_crypto_sensitivity
+from .binary_detect import classify_binary_or_empty
 from .deobfuscation import deobfuscate
 from .framework_markers import detect_framework
 from .imperative_install import analyze_file as analyze_imperative_install
@@ -123,6 +123,29 @@ class Preprocessor:
                 imperative_install_reasons=[],
             )
 
+        # ML model files (.pkl, .pt, .bin, .safetensors, .h5, .onnx) are
+        # binary by construction; classify_binary_or_empty would skip them.
+        # Decompose first: extract a textual summary (suspicious globals,
+        # REDUCE opcodes, safetensors metadata, …) WITHOUT executing any
+        # callables, then feed that text through the rest of the pipeline.
+        # The cascade then sees a Python-with-comments report describing
+        # what's structurally inside the artifact.
+        ml_lower = str(p).lower()
+        ml_extensions = (
+            ".pkl", ".pickle", ".pt", ".bin", ".safetensors",
+            ".h5", ".hdf5", ".keras", ".onnx",
+        )
+        if ml_lower.endswith(ml_extensions):
+            from .ml_model import decompose_ml_model  # noqa: PLC0415
+            ml = decompose_ml_model(str(p), content)
+            if ml.is_valid:
+                synth_bytes = ml.synthesized_source.encode("utf-8")
+                # Replace content for downstream stages — file_hash stays
+                # the original-bytes hash (already computed above), so the
+                # report tracks the real artifact even though analysis
+                # operates on the synthesized text.
+                content = synth_bytes
+
         # PREP-010 empty / binary skip. Runs after the oversize check so
         # the ordering of ``skip_reason`` values is deterministic:
         # too_large > binary > empty. Preservation principle: hash + size
@@ -153,6 +176,38 @@ class Preprocessor:
         raw_text = content.decode("utf-8", errors="replace")
         language = detect_language(p, raw_text)
 
+        # GitHub Actions workflow files: a YAML at .github/workflows/*.yml
+        # is a CI-supply-chain attack surface. Run the deterministic
+        # sweep (pull_request_target, unpinned third-party actions,
+        # ${{ }} injection, secrets-near-network-verb) and synthesize a
+        # report that the cascade reads as Python-with-comments.
+        from .github_actions import (  # noqa: PLC0415
+            analyze_workflow,
+            is_github_actions_workflow,
+        )
+        if language == "yaml" and is_github_actions_workflow(p):
+            wfa = analyze_workflow(raw_text)
+            if wfa.is_valid:
+                raw_text = wfa.synthesized_source
+                language = "github_actions"
+
+        # Jupyter notebooks: decompose into a Python-with-comments blob so
+        # all downstream detectors (deobfuscation, prompt-injection scan,
+        # imperative-install analysis, model cascade) see the cells as
+        # one synthesized source. Shell magic (``!pip install``) and
+        # IPython magic (``%load_ext``) lines survive verbatim in the
+        # synthesized text, so the model and existing detectors can
+        # reason about them without notebook-specific machinery. Falls
+        # back to raw text on parse failure (we don't want a malformed
+        # notebook to skip cascade analysis entirely — a malicious
+        # notebook with intentionally-corrupt JSON should still get
+        # scanned).
+        if language == "jupyter":
+            from .notebook import decompose_notebook  # noqa: PLC0415
+            decomp = decompose_notebook(raw_text)
+            if decomp.is_valid:
+                raw_text = decomp.synthesized_source
+
         deob = deobfuscate(raw_text)
 
         token_count = approx_token_count(deob.content)
@@ -161,7 +216,9 @@ class Preprocessor:
 
         signal = analyze_imperative_install(p, raw_text)
 
-        prompt_injection_indicators = detect_prompt_injection(raw_text, decoded_content=deob.content)
+        prompt_injection_indicators = detect_prompt_injection(
+            raw_text, decoded_content=deob.content
+        )
         ai_file_match = detect_ai_file(p)
         framework_hint = detect_framework(deob.content)
         attack_vector_extension = detect_attack_vector_extension(p)
