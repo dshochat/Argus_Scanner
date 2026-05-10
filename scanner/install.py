@@ -272,9 +272,7 @@ def write_cache(cache_dir: Path, verdict: WheelVerdict) -> None:
             "scanned_at_unix": int(time.time()),
             "verdict": verdict.to_dict(),
         }
-        _cache_path(cache_dir, verdict.sha256).write_text(
-            json.dumps(payload, indent=2), encoding="utf-8"
-        )
+        _cache_path(cache_dir, verdict.sha256).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except OSError as exc:
         log.warning("install cache write failed for %s: %s", verdict.sha256, exc)
 
@@ -342,11 +340,7 @@ def _list_artifacts(staging_dir: Path) -> list[Path]:
     a pip artifact we don't care about (lock file, hash list, etc.)."""
     out: list[Path] = []
     for p in sorted(staging_dir.iterdir()):
-        if (
-            p.suffix.lower() in {".whl"}
-            or p.name.endswith(".tar.gz")
-            or p.suffix.lower() in {".zip"}
-        ):
+        if p.suffix.lower() in {".whl"} or p.name.endswith(".tar.gz") or p.suffix.lower() in {".zip"}:
             out.append(p)
     return out
 
@@ -549,9 +543,7 @@ async def scan_one_artifact(
             (r.risk_score for r in report.results if isinstance(r, ScanResult)),
             default=0,
         ),
-        n_vulnerabilities=sum(
-            len(r.vulnerabilities or []) for r in report.results if isinstance(r, ScanResult)
-        ),
+        n_vulnerabilities=sum(len(r.vulnerabilities or []) for r in report.results if isinstance(r, ScanResult)),
         n_files_scanned=len([r for r in report.results if isinstance(r, ScanResult)]),
         n_files_unscanned=n_unscanned,
         unscanned_extensions=ext_histogram,
@@ -690,9 +682,7 @@ async def install(
             # by another concurrent task, don't burn API spend on this
             # one. Surface the wheel as unverified ("suspicious" with a
             # cap-hit marker) so the install gate fails-closed.
-            if max_total_cost_usd is not None and (
-                cap_hit["value"] or cumulative_cost["value"] >= max_total_cost_usd
-            ):
+            if max_total_cost_usd is not None and (cap_hit["value"] or cumulative_cost["value"] >= max_total_cost_usd):
                 cap_hit["value"] = True
                 pkg_name, version = _parse_artifact_name(art.name)
                 return WheelVerdict(
@@ -729,10 +719,7 @@ async def install(
                     file_concurrency=file_concurrency,
                 )
             cumulative_cost["value"] += v.cost_usd
-            if (
-                max_total_cost_usd is not None
-                and cumulative_cost["value"] >= max_total_cost_usd
-            ):
+            if max_total_cost_usd is not None and cumulative_cost["value"] >= max_total_cost_usd:
                 cap_hit["value"] = True
             if use_cache:
                 write_cache(cache_dir, v)
@@ -773,14 +760,9 @@ async def install(
     if report.worst_verdict in block_on:
         report.blocked = True
         culprits = [
-            w
-            for w in wheel_verdicts
-            if VERDICT_RANK.get(w.verdict, 0) >= VERDICT_RANK.get(report.worst_verdict, 0)
+            w for w in wheel_verdicts if VERDICT_RANK.get(w.verdict, 0) >= VERDICT_RANK.get(report.worst_verdict, 0)
         ]
-        names = ", ".join(
-            f"{w.package_name}=={w.version}" if w.package_name else w.artifact_name
-            for w in culprits[:5]
-        )
+        names = ", ".join(f"{w.package_name}=={w.version}" if w.package_name else w.artifact_name for w in culprits[:5])
         report.block_reason = (
             f"verdict={report.worst_verdict} in {culprits[0].artifact_name if culprits else 'unknown'} "
             f"(blocked artifacts: {names})"

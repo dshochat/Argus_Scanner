@@ -130,23 +130,18 @@ def decompose_notebook(raw_text: str) -> NotebookDecomposition:
                     magic_lines.append(stripped)
         elif cell_type == "markdown":
             n_md += 1
-            commented = "\n".join(
-                f"# {ln}" if ln else "#" for ln in text.splitlines()
-            )
+            commented = "\n".join(f"# {ln}" if ln else "#" for ln in text.splitlines())
             parts.append(f"# === NOTEBOOK CELL {idx} (markdown) ===\n{commented}")
         elif cell_type == "raw":
             n_raw += 1
-            commented = "\n".join(
-                f"# (raw) {ln}" if ln else "#" for ln in text.splitlines()
-            )
+            commented = "\n".join(f"# (raw) {ln}" if ln else "#" for ln in text.splitlines())
             parts.append(f"# === NOTEBOOK CELL {idx} (raw) ===\n{commented}")
         # Unknown cell types are skipped silently — nbformat allows
         # extension cell types and we don't want to false-positive on
         # them.
 
     has_pip = any(
-        ("pip install" in ln) or ("pip3 install" in ln) or ("uv pip install" in ln)
-        for ln in shell_lines + magic_lines
+        ("pip install" in ln) or ("pip3 install" in ln) or ("uv pip install" in ln) for ln in shell_lines + magic_lines
     )
     has_load_ext = any("load_ext" in ln for ln in magic_lines)
 

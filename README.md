@@ -75,7 +75,7 @@ The harness emits structured findings: CWE, line, severity, code, explanation, s
 
 ### Pillar 2 — DAST runtime detonation
 
-When the harness flags suspicion at sufficient verdict tier, the file moves to a Firecracker microVM (`minimal-v1`, `networked-v1`, or `ml_tools-v1` image profile) for two phases:
+When the harness flags suspicion at sufficient verdict tier, the file moves to a Firecracker microVM (`minimal-v2`, `networked-v2`, or `ml_tools-v2` image profile) for two phases:
 
 * **Phase A — exploit testing.** Plan an exploit per harness finding, run it in the sandbox, capture syscalls / egress / filesystem writes, classify each finding as `CONFIRMED` / `BLOCKED` / `UNREACHED` / `NOT_TESTED` based on what actually happened.
 * **Phase B — exploit discovery.** Given accumulated evidence, propose NEW hypotheses the harness missed. A deterministic validator gates the proposals; survivors carry forward into the next iteration's Phase A. Up to 3 iterations or until convergence.
@@ -154,6 +154,7 @@ Anthropic's Claude Security and OpenAI's Codex Security are enterprise-tier and 
 | `--no-remediation` | Skip Phase C (fix-and-verify). Phase A + B still run; no patch is generated. Compliance / CI-gate / read-only-audit use cases. Saves ~$0.05/file. |
 | `--max-cost USD` | Abort this file's scan if **per-file** API spend exceeds USD (default: $1.00; pass `0` to disable) |
 | `--enable-discovery` | Proactive payload sweep — runs library of attack payloads against the file in sandbox; surfaces runtime-confirmed CWEs as new findings (+~$0.25/file) |
+| `--enable-runtime-probe` | **Phase B+ runtime exploit probing (v1.5).** Sonnet generates concrete attack inputs targeting probe-attractive functions; sandbox executes each; deterministic rules confirm exploits via runtime evidence (return value, side-effect canaries). Python only in v1.5; opt-in (~$0.20–0.50/file). |
 | `--dast-trigger-verdicts LIST` | Comma-separated L1 verdicts that trigger DAST. Default: `malicious,critical_malicious`. Allowed: `clean,suspicious,malicious,critical_malicious` |
 
 ### `argus scan-repo <path>` — directory tree scan
@@ -170,6 +171,7 @@ Anthropic's Claude Security and OpenAI's Codex Security are enterprise-tier and 
 | `--no-dast` | Skip DAST verification on every file |
 | `--no-remediation` | Skip Phase C on every file. Phase A + B still run; no patches generated. |
 | `--enable-discovery` | Proactive payload sweep on every DAST-eligible file |
+| `--enable-runtime-probe` | Phase B+ runtime exploit probing (v1.5) on every DAST-eligible Python file. See `argus scan` for description. |
 | `--dast-trigger-verdicts LIST` | Same as `scan` |
 | `--continue-on-error` / `--no-continue-on-error` | On per-file exception, record and continue (default) or abort run |
 
@@ -192,6 +194,7 @@ Stages the package via `pip download` (no `setup.py` execution), runs the full A
 | `--deep` | Full-fidelity scan — `thinking_budget=24000` on every Sonnet/Opus call, sequential per-file scan, 4 wheels concurrent. ~5–10× more expensive but catches subtle multi-step exploits the default mode might miss. |
 | `--no-thinking` | Explicit way to set `thinking_budget=0`. Already the install default; flag exists for script readability. Mutually exclusive with `--deep`. |
 | `--parallel N` | Max number of artifacts scanned concurrently (default: **8**). Pass lower if you hit API rate limits. |
+| `--enable-runtime-probe` | Phase B+ runtime exploit probing (v1.5) on every DAST-eligible Python file in the dependency closure. Adds ~$0.20–0.50/file. See `argus scan`. |
 | `--pip EXEC` | Pip executable. Default: `pip`. Pass `'uv pip'` for uv-managed envs. |
 | `--output {text,json}` | Output format. Default: text. JSON for CI consumption. |
 

@@ -73,9 +73,7 @@ def format_markdown(result: ScanResult) -> str:
         lines.append("")
         for v in result.vulnerabilities:
             line = v.get("line", "?")
-            lines.append(
-                f"- **{v.get('type', '?')}** (severity: {v.get('severity', '?')}, line {line})"
-            )
+            lines.append(f"- **{v.get('type', '?')}** (severity: {v.get('severity', '?')}, line {line})")
             if v.get("explanation"):
                 lines.append(f"  - {v['explanation']}")
             if v.get("fix"):
@@ -102,8 +100,7 @@ def format_markdown(result: ScanResult) -> str:
         lines.append("")
     if result.dast_attempted:
         lines.append(
-            f"## DAST: {len(result.dast_findings)} validated findings, "
-            f"{len(result.dast_iterations)} iterations"
+            f"## DAST: {len(result.dast_findings)} validated findings, {len(result.dast_iterations)} iterations"
         )
         lines.append("")
     if result.error:
@@ -143,6 +140,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "for compliance scans, CI gates that don't allow source "
         "modification suggestions, read-only audits, or to save "
         "~$0.05/file in patch-generation token cost.",
+    )
+    scan.add_argument(
+        "--enable-runtime-probe",
+        action="store_true",
+        help="enable Phase B+ runtime exploit probing (v1.5). Sonnet "
+        "generates concrete attack inputs for probe-attractive "
+        "functions; the sandbox executes each in a Firecracker microVM; "
+        "findings come from observed runtime evidence rather than "
+        "static analysis. Python-only in v1.5. Adds ~$0.20-0.50/file "
+        "in API cost on top of Phase A. Requires DAST configured (Fly).",
     )
     scan.add_argument(
         "--max-cost",
@@ -370,8 +377,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="PATH",
-        help="install from a requirements.txt file. Argus scans every wheel "
-        "in the resolved closure.",
+        help="install from a requirements.txt file. Argus scans every wheel in the resolved closure.",
     )
     install.add_argument(
         "--block-on",
@@ -451,6 +457,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "Mutually exclusive with --deep.",
     )
     install.add_argument(
+        "--enable-runtime-probe",
+        action="store_true",
+        help="enable Phase B+ runtime exploit probing (v1.5). Sonnet "
+        "generates concrete attack inputs for probe-attractive "
+        "functions inside each wheel; the sandbox executes each in a "
+        "Firecracker microVM; findings come from runtime evidence "
+        "rather than static analysis. Python-only in v1.5. Adds "
+        "~$0.20-0.50/file in API cost on top of Phase A. Requires "
+        "DAST configured (Fly) and --no-dast NOT set.",
+    )
+    install.add_argument(
         "--max-cost",
         type=float,
         default=None,
@@ -477,8 +494,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         metavar="N",
-        help="max number of artifacts scanned concurrently (default: 4). "
-        "Lower if you hit API rate limits.",
+        help="max number of artifacts scanned concurrently (default: 4). Lower if you hit API rate limits.",
     )
     return parser
 
@@ -521,10 +537,7 @@ async def _run_scan(args: argparse.Namespace) -> int:
     else:
         dast_runner = make_dast_runner_from_env(api_key=anthropic_key)
         if dast_runner is None:
-            log.info(
-                "DAST disabled: missing Fly config "
-                "(FLY_API_TOKEN / ECHO_DAST_IMAGE_*); running L1-only"
-            )
+            log.info("DAST disabled: missing Fly config (FLY_API_TOKEN / ECHO_DAST_IMAGE_*); running L1-only")
 
     # Build per-scan config — only override the cost cap if the user
     # passed --max-cost (None means "use ScanConfig default of $1.00").
@@ -537,6 +550,8 @@ async def _run_scan(args: argparse.Namespace) -> int:
         config_kwargs["enable_discovery"] = True
     if getattr(args, "no_remediation", False):
         config_kwargs["enable_phase_c"] = False
+    if getattr(args, "enable_runtime_probe", False):
+        config_kwargs["enable_runtime_probe"] = True
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -544,8 +559,7 @@ async def _run_scan(args: argparse.Namespace) -> int:
         invalid = [v for v in verdicts if v not in valid]
         if invalid:
             print(
-                f"ERROR: invalid --dast-trigger-verdicts entries: {invalid}. "
-                f"Allowed: {sorted(valid)}",
+                f"ERROR: invalid --dast-trigger-verdicts entries: {invalid}. Allowed: {sorted(valid)}",
                 file=sys.stderr,
             )
             return 2
@@ -858,6 +872,8 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         config_kwargs["enable_discovery"] = True
     if getattr(args, "no_remediation", False):
         config_kwargs["enable_phase_c"] = False
+    if getattr(args, "enable_runtime_probe", False):
+        config_kwargs["enable_runtime_probe"] = True
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -865,8 +881,7 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         invalid = [v for v in verdicts if v not in valid]
         if invalid:
             print(
-                f"error: invalid --dast-trigger-verdicts entries: {invalid}. "
-                f"Allowed: {sorted(valid)}",
+                f"error: invalid --dast-trigger-verdicts entries: {invalid}. Allowed: {sorted(valid)}",
                 file=sys.stderr,
             )
             return 2
@@ -890,8 +905,7 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         dast_runner = make_dast_runner_from_env(api_key=anthropic_key)
         if dast_runner is None:
             log.info(
-                "DAST disabled: missing Fly config (FLY_API_TOKEN / "
-                "ECHO_DAST_IMAGE_*); running L1-only on every file"
+                "DAST disabled: missing Fly config (FLY_API_TOKEN / ECHO_DAST_IMAGE_*); running L1-only on every file"
             )
 
     # Build RepoScanConfig.
@@ -924,8 +938,7 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         n_vulns = len(result.vulnerabilities) if result and result.vulnerabilities else 0
         cost = result.total_cost_usd if result else 0.0
         print(
-            f"  [{idx:>3}/{total}] {str(rel)[:60]:<60}  {verdict:<20} "
-            f"vulns={n_vulns:<2} ${cost:.4f}",
+            f"  [{idx:>3}/{total}] {str(rel)[:60]:<60}  {verdict:<20} vulns={n_vulns:<2} ${cost:.4f}",
             file=sys.stderr,
             flush=True,
         )
@@ -957,8 +970,7 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
     )
     if report.cost_cap_hit:
         print(
-            f"  WARNING: aggregate cost cap (${args.max_cost:.2f}) hit — "
-            f"some files were not scanned.",
+            f"  WARNING: aggregate cost cap (${args.max_cost:.2f}) hit — some files were not scanned.",
             file=sys.stderr,
             flush=True,
         )
@@ -994,10 +1006,7 @@ def _render_repo_output(report: Any, fmt: str) -> str:
                 "cost_cap_hit": report.cost_cap_hit,
                 "verdict_counts": report.verdict_counts,
                 "results": [r.to_dict() for r in report.results],
-                "skips": [
-                    {"path": str(s.path), "reason": s.reason, "detail": s.detail}
-                    for s in report.skips
-                ],
+                "skips": [{"path": str(s.path), "reason": s.reason, "detail": s.detail} for s in report.skips],
                 "errors": [
                     {
                         "path": str(e.path),
@@ -1036,11 +1045,7 @@ def _render_repo_markdown(report: Any) -> str:
         lines.append("")
 
     # Notable findings — anything not clean / low_concern.
-    notable = [
-        r
-        for r in report.results
-        if r.final_verdict and r.final_verdict not in ("clean", "low_concern")
-    ]
+    notable = [r for r in report.results if r.final_verdict and r.final_verdict not in ("clean", "low_concern")]
     if notable:
         lines.append(f"## Notable findings ({len(notable)})")
         lines.append("")
@@ -1054,9 +1059,7 @@ def _render_repo_markdown(report: Any) -> str:
             for v in (r.vulnerabilities or [])[:5]:
                 line_no = v.get("line", "?")
                 cwe = v.get("cwe", "?")
-                lines.append(
-                    f"  - [{cwe}] {v.get('type', '?')} ({v.get('severity', '?')}, line {line_no})"
-                )
+                lines.append(f"  - [{cwe}] {v.get('type', '?')} ({v.get('severity', '?')}, line {line_no})")
                 if v.get("status"):
                     lines.append(f"    - status: `{v['status']}`")
         lines.append("")
@@ -1075,9 +1078,7 @@ def _render_repo_markdown(report: Any) -> str:
 # ── argus install handler ─────────────────────────────────────────────────
 
 
-_VALID_VERDICT_TIERS: frozenset[str] = frozenset(
-    {"clean", "suspicious", "malicious", "critical_malicious"}
-)
+_VALID_VERDICT_TIERS: frozenset[str] = frozenset({"clean", "suspicious", "malicious", "critical_malicious"})
 
 
 def _format_install_text(report: Any) -> str:
@@ -1138,13 +1139,10 @@ def _format_install_text(report: Any) -> str:
     low_coverage = [w for w in report.wheels if w.coverage_ratio < 0.7 and w.n_files_unscanned >= 2]
     if low_coverage:
         lines.append("")
-        lines.append(
-            "   ⚠ Coverage warning — these artifacts contain files Argus could not statically analyze:"
-        )
+        lines.append("   ⚠ Coverage warning — these artifacts contain files Argus could not statically analyze:")
         for w in low_coverage:
             ext_summary = ", ".join(
-                f"{ext}×{n}"
-                for ext, n in sorted(w.unscanned_extensions.items(), key=lambda kv: -kv[1])[:5]
+                f"{ext}×{n}" for ext, n in sorted(w.unscanned_extensions.items(), key=lambda kv: -kv[1])[:5]
             )
             lines.append(
                 f"     {w.artifact_name}: "
@@ -1194,8 +1192,7 @@ async def _run_install(args: argparse.Namespace) -> int:
     # Validate exactly-one of target / -r
     if args.target is None and args.requirement is None:
         print(
-            "ERROR: provide either a package spec (e.g. 'argus install requests') "
-            "or -r requirements.txt",
+            "ERROR: provide either a package spec (e.g. 'argus install requests') or -r requirements.txt",
             file=sys.stderr,
         )
         return 2
@@ -1211,8 +1208,7 @@ async def _run_install(args: argparse.Namespace) -> int:
     invalid = [t for t in block_on if t not in _VALID_VERDICT_TIERS]
     if invalid:
         print(
-            f"ERROR: invalid --block-on entries: {invalid}. "
-            f"Allowed: {sorted(_VALID_VERDICT_TIERS)}",
+            f"ERROR: invalid --block-on entries: {invalid}. Allowed: {sorted(_VALID_VERDICT_TIERS)}",
             file=sys.stderr,
         )
         return 2
@@ -1265,6 +1261,8 @@ async def _run_install(args: argparse.Namespace) -> int:
     config_kwargs: dict[str, Any] = {"enable_phase_c": False}
     if args.max_cost is not None:
         config_kwargs["max_cost_per_file_usd"] = args.max_cost
+    if getattr(args, "enable_runtime_probe", False):
+        config_kwargs["enable_runtime_probe"] = True
     scan_cfg = ScanConfig(**config_kwargs)
 
     cache_dir = args.cache_dir or CACHE_DIR_DEFAULT

@@ -5,6 +5,7 @@ in opaque blobs — pickle / safetensors / zipfile bytes are unreadable
 in code review and pickle bytes that reference ``os.system`` would
 trip secret scanners.
 """
+
 from __future__ import annotations
 
 import io
@@ -12,11 +13,10 @@ import json
 import pickle
 import struct
 import zipfile
-
-from preprocessing.ml_model import decompose_ml_model
-from preprocessing.language import detect_language
 from pathlib import Path
 
+from preprocessing.language import detect_language
+from preprocessing.ml_model import decompose_ml_model
 
 # ── Pickle generators ──────────────────────────────────────────────────────
 
@@ -29,12 +29,14 @@ class _OSSystem:
 
     def __reduce__(self):
         import os  # noqa: PLC0415
+
         return (os.system, ("echo pwned",))
 
 
 class _SubprocessPopen:
     def __reduce__(self):
         import subprocess  # noqa: PLC0415
+
         return (subprocess.Popen, (["/bin/sh", "-c", "id"],))
 
 

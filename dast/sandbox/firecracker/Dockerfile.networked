@@ -45,6 +45,14 @@ RUN useradd -m -u 1000 -s /bin/bash runner && \
     mkdir -p /workspace && \
     chown runner:runner /workspace
 
+# Pre-create common app data directories (mirrors minimal Dockerfile).
+# Path-traversal probes targeting hard-coded prefixes like /data/ need
+# the prefix to exist before Linux's path resolver can descend through
+# it; without these, FileNotFoundError fires before the exploit can.
+# Mode 1777 = sticky-world-writable, same as /tmp.
+RUN mkdir -p /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app && \
+    chmod 1777 /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app
+
 # Same entrypoint stack as minimal. The init script handles DNS-hijack
 # capture setup (needs root) then drops to `runner` for plan execution.
 COPY entrypoint.py /usr/local/bin/dast-entrypoint

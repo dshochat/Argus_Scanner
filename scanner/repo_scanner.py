@@ -556,7 +556,9 @@ async def scan_repo(
     # users who want strict pre-scan cost gating leave concurrency at 1.
     if cfg.scan_concurrency > 1:
         await _scan_repo_parallel(
-            cfg, enumerated, report,
+            cfg,
+            enumerated,
+            report,
             scan_fn=scan_fn,
             triage_runner=triage_runner,
             sonnet_runner=sonnet_runner,
@@ -585,10 +587,7 @@ async def scan_repo(
                 FileSkip(
                     path=path,
                     reason="cost_cap_reached",
-                    detail=(
-                        f"cumulative ${report.total_cost_usd:.4f} "
-                        f">= cap ${cfg.max_cost_run_usd:.2f}"
-                    ),
+                    detail=(f"cumulative ${report.total_cost_usd:.4f} >= cap ${cfg.max_cost_run_usd:.2f}"),
                 )
             )
             if progress_cb:
@@ -688,10 +687,7 @@ async def _scan_repo_parallel(
                 FileSkip(
                     path=path,
                     reason="cost_cap_reached",
-                    detail=(
-                        f"cumulative ${report.total_cost_usd:.4f} "
-                        f">= cap ${cfg.max_cost_run_usd:.2f}"
-                    ),
+                    detail=(f"cumulative ${report.total_cost_usd:.4f} >= cap ${cfg.max_cost_run_usd:.2f}"),
                 )
             )
             if progress_cb:
@@ -701,9 +697,7 @@ async def _scan_repo_parallel(
         try:
             content = path.read_bytes()
         except OSError as exc:
-            report.errors.append(
-                FileError(path=path, error_type="read_error", error_msg=str(exc))
-            )
+            report.errors.append(FileError(path=path, error_type="read_error", error_msg=str(exc)))
             if progress_cb:
                 progress_cb(idx, total, path, None, "read_error")
             return
@@ -741,10 +735,7 @@ async def _scan_repo_parallel(
             progress_cb(idx, total, path, result, None)
 
     await asyncio.gather(
-        *(
-            _scan_one(idx, path, skip)
-            for idx, (path, skip) in enumerate(enumerated, start=1)
-        ),
+        *(_scan_one(idx, path, skip) for idx, (path, skip) in enumerate(enumerated, start=1)),
         return_exceptions=False,
     )
 

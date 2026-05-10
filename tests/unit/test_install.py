@@ -98,9 +98,7 @@ def test_cache_wrong_format_version_returns_none(tmp_path: Path) -> None:
     """A cache entry from an older Argus must not be honored — schema
     might've changed."""
     sha = "c" * 64
-    (tmp_path / f"{sha}.json").write_text(
-        json.dumps({"cache_format_version": 99, "verdict": {"sha256": sha}})
-    )
+    (tmp_path / f"{sha}.json").write_text(json.dumps({"cache_format_version": 99, "verdict": {"sha256": sha}}))
     assert read_cache(tmp_path, sha) is None
 
 
@@ -113,9 +111,7 @@ def _patch_pip_download_with(monkeypatch: pytest.MonkeyPatch, wheels: list[Path]
 
     This lets tests pass real wheel files without touching PyPI."""
 
-    def fake_download(
-        *, target, requirement_file, dest, pip_executable, extra_args=(), timeout_sec=600
-    ):
+    def fake_download(*, target, requirement_file, dest, pip_executable, extra_args=(), timeout_sec=600):
         import shutil
 
         for w in wheels:
@@ -145,15 +141,19 @@ def _patch_pip_install_to_record(monkeypatch: pytest.MonkeyPatch) -> list[list[s
     return calls
 
 
-def _patch_scan_one_with_verdict(
-    monkeypatch: pytest.MonkeyPatch, verdict: str, **extra: Any
-) -> None:
+def _patch_scan_one_with_verdict(monkeypatch: pytest.MonkeyPatch, verdict: str, **extra: Any) -> None:
     """Make every artifact scan return a hard-coded verdict. Used to test
     the gate logic in isolation from the real cascade."""
 
     async def fake_scan(
-        artifact: Path, *, scan_cfg, triage_runner, sonnet_runner, opus_runner,
-        dast_runner, **_,
+        artifact: Path,
+        *,
+        scan_cfg,
+        triage_runner,
+        sonnet_runner,
+        opus_runner,
+        dast_runner,
+        **_,
     ):
         # Verify the install path is forcing Phase C off — that's the
         # production-safety contract.
@@ -227,9 +227,7 @@ async def test_install_blocks_malicious_package_and_skips_pip(tmp_path, monkeypa
     assert report.block_reason is not None and "malicious" in report.block_reason
     # pip install MUST NOT have been invoked
     install_calls = [c for c in pip_calls if "install" in c]
-    assert install_calls == [], (
-        f"pip install was invoked despite malicious verdict: {install_calls}"
-    )
+    assert install_calls == [], f"pip install was invoked despite malicious verdict: {install_calls}"
     # The blocking finding surfaces in the report
     assert report.wheels[0].findings_summary[0]["cwe"] == "CWE-200"
 
@@ -462,9 +460,7 @@ async def test_install_pip_download_failure_surfaces_as_error(tmp_path, monkeypa
     """When pip download fails (network down, package not found), we
     report it as ``error`` rather than blocking + don't try to install."""
 
-    def fake_download_fail(
-        *, target, requirement_file, dest, pip_executable, extra_args=(), timeout_sec=600
-    ):
+    def fake_download_fail(*, target, requirement_file, dest, pip_executable, extra_args=(), timeout_sec=600):
         return (
             False,
             "ERROR: Could not find a version that satisfies the requirement nonexistent-pkg-xyz123",
@@ -626,12 +622,11 @@ async def test_install_aggregate_cost_cap_aborts_remaining_wheels(tmp_path, monk
     flagged 'suspicious / unscanned-due-to-cost-cap' and the install
     fails closed (worst verdict comes from the cap-hit markers, NOT from
     a real malicious finding)."""
-    wheels = [
-        _make_clean_wheel(tmp_path, name=f"pkg{i}-1.0.0-py3-none-any.whl")
-        for i in range(5)
-    ]
+    wheels = [_make_clean_wheel(tmp_path, name=f"pkg{i}-1.0.0-py3-none-any.whl") for i in range(5)]
     _patch_pip_download_with(monkeypatch, wheels)
-    pip_calls = _patch_pip_install_to_record(monkeypatch)
+    # Side-effect-only patch — the return value isn't asserted in this test
+    # but the patch must be applied so the install never reaches real pip.
+    _patch_pip_install_to_record(monkeypatch)
 
     # Each scan costs $3 — by the third one we're at $9; by the fourth
     # we'd be at $12, exceeding the $10 cap.
@@ -642,6 +637,7 @@ async def test_install_aggregate_cost_cap_aborts_remaining_wheels(tmp_path, monk
             verdict="clean",
             cost_usd=3.0,
         )
+
     monkeypatch.setattr(install_mod, "scan_one_artifact", expensive_scan)
 
     report = await install(
@@ -656,11 +652,7 @@ async def test_install_aggregate_cost_cap_aborts_remaining_wheels(tmp_path, monk
     # At least one wheel was scanned (cost > 0) and at least one was
     # cap-skipped (suspicious + unscanned_due_to_cost_cap marker).
     cap_hits = [
-        w for w in report.wheels
-        if any(
-            f.get("type") == "unscanned_due_to_cost_cap"
-            for f in w.findings_summary
-        )
+        w for w in report.wheels if any(f.get("type") == "unscanned_due_to_cost_cap" for f in w.findings_summary)
     ]
     assert len(cap_hits) >= 1, "expected at least one cap-skipped wheel"
     # Worst verdict is suspicious (the cap markers carry that)
@@ -669,9 +661,7 @@ async def test_install_aggregate_cost_cap_aborts_remaining_wheels(tmp_path, monk
     # block_on (malicious+) the install proceeds clean. Test the explicit
     # aggregate-cap-marker path:
     assert any(
-        w.findings_summary
-        and w.findings_summary[0].get("type") == "unscanned_due_to_cost_cap"
-        for w in report.wheels
+        w.findings_summary and w.findings_summary[0].get("type") == "unscanned_due_to_cost_cap" for w in report.wheels
     )
 
 
@@ -679,10 +669,7 @@ async def test_install_aggregate_cost_cap_aborts_remaining_wheels(tmp_path, monk
 async def test_install_max_total_cost_none_disables_cap(tmp_path, monkeypatch):
     """Passing max_total_cost_usd=None lets the scan run regardless of
     cost — used by --max-total-cost 0 from the CLI."""
-    wheels = [
-        _make_clean_wheel(tmp_path, name=f"big{i}-1.0.0-py3-none-any.whl")
-        for i in range(3)
-    ]
+    wheels = [_make_clean_wheel(tmp_path, name=f"big{i}-1.0.0-py3-none-any.whl") for i in range(3)]
     _patch_pip_download_with(monkeypatch, wheels)
     _patch_pip_install_to_record(monkeypatch)
 
@@ -693,6 +680,7 @@ async def test_install_max_total_cost_none_disables_cap(tmp_path, monkeypatch):
             verdict="clean",
             cost_usd=50.0,  # absurd but allowed when cap is None
         )
+
     monkeypatch.setattr(install_mod, "scan_one_artifact", expensive_scan)
 
     report = await install(
@@ -703,10 +691,7 @@ async def test_install_max_total_cost_none_disables_cap(tmp_path, monkeypatch):
     )
     # All three wheels actually scanned; no cap-skipped markers.
     assert all(
-        not (
-            w.findings_summary
-            and w.findings_summary[0].get("type") == "unscanned_due_to_cost_cap"
-        )
+        not (w.findings_summary and w.findings_summary[0].get("type") == "unscanned_due_to_cost_cap")
         for w in report.wheels
     )
     assert report.aggregate_cost_usd == 150.0
@@ -730,6 +715,7 @@ async def test_install_file_concurrency_threaded_into_scan_one(tmp_path, monkeyp
             artifact_name=artifact.name,
             verdict="clean",
         )
+
     monkeypatch.setattr(install_mod, "scan_one_artifact", capture_concurrency_scan)
 
     await install(

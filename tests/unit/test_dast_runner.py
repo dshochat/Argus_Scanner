@@ -25,7 +25,6 @@ from dast.runner import (
 )
 from scanner.engine import ScanResult
 
-
 # ── Translation: scan_result → l1_output ───────────────────────────────────
 
 
@@ -296,7 +295,12 @@ async def test_runner_does_not_inject_ml_hypothesis_for_python_source(
     )
     fr = captured["file_record"]
     assert fr["ml_format"] is None
-    assert fr["original_bytes"] is None
+    # v1.5: original_bytes is now ALWAYS populated on file_record (the
+    # Phase B+ runtime probe stage needs them for any Python file when
+    # enable_runtime_probe is True; threading them through unconditionally
+    # is the simplest invariant). Non-ML files still skip the ML-detonation
+    # HML_LOAD path because ``ml_format`` is None.
+    assert fr["original_bytes"] == b"import os\nos.system('ls')\n"
     hyps = captured["l1_output"]["hypotheses"]
     assert all(h["id"] != "HML_LOAD" for h in hyps)
 

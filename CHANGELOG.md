@@ -4,6 +4,63 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-05-10 — Phase B+ runtime exploit probing
+
+**DAST now finds new vulnerabilities by ACTUALLY EXECUTING the code, not by re-reading it. Sonnet generates concrete attack inputs; the Firecracker microVM runs them; runtime evidence becomes the finding. Live-validated end-to-end on multiple fixture classes — shell injection, command injection, path traversal — with exploits proven via the actual exfil bytes captured in the trace (e.g., `/etc/passwd` content returned by a vulnerable file-read function).**
+
+### The wedge
+
+Phase B as it shipped through v1.3.x asked Sonnet/Opus to brainstorm new vulnerabilities by re-reading the file + Phase A's journal evidence. That's still **model-driven static analysis with runtime context** — the sandbox was used only to TEST hypotheses, never to GENERATE them.
+
+v1.5 closes that gap. New Phase B+ flow:
+
+1. Sonnet identifies up to 3 candidate functions in the file with attack-attractive signatures (take user input, call a sink, manipulate filesystem/network/process).
+2. For each candidate, Sonnet generates up to 3 concrete attack inputs paired with `expected_observable` + `exploit_proof_if_observed`.
+3. Argus builds a Python harness per (candidate × input), stages the target file at `/workspace`, runs the harness in a fresh microVM, captures `stdout` / `stderr` / `exit_code` + a `/tmp` side-effect snapshot.
+4. Deterministic interpreter rules decide if the exploit fired:
+   - Rule 1: function returned successfully on an attack input that was supposed to be rejected → CONFIRMED via runtime evidence (the actual return value is captured).
+   - Rule 2: canary file appeared in `/tmp` post-call → CONFIRMED via side-effect observation.
+   - Neither = BLOCKED-equivalent; no finding emitted.
+5. Confirmed `HRP_*` findings flow into `dast_findings` with full runtime evidence (attack input, return value preview, side effects).
+
+### Added
+
+- **`--enable-runtime-probe` CLI flag** on `argus scan`, `argus scan-repo`, and `argus install`. Off by default (~$0.20–0.50/file API cost on top of Phase A); opt-in for users who want runtime-grounded discovery.
+- **`ScanConfig.enable_runtime_probe`** Python API equivalent.
+- **Probe-confirmed findings drive verdict.** A probe-CONFIRMED finding at severity ≥ high contributes to the iter-erosion guard's `max_dast_verdict_rank` floor — so a file with runtime-proven exploits cannot be downgraded to `suspicious` by a later iter that fails to re-confirm. Safety: only bump UP, only by one tier max, only on high/critical severity. Critical + code-execution attack-class → `critical_malicious`; everything else high/critical → `malicious`.
+- **Probe inference tokens accounted in iter total.** `IterationStats.phase_b_runtime_probe_in/out` rolls into `total_tokens_in/out` → DAST `cost_usd` → install path's aggregate cost cap (`--max-total-cost`). Probe cost can no longer leak past the cap.
+- **Runtime probe rejection rationale now surfaces exception type/message.** Journal HRP rejections include `call_ok=...` and `exc=ExceptionType: msg` so debugging "why didn't this exploit fire" doesn't require pulling raw sandbox events from Fly.
+- **Sandbox image v2** with pre-created common app data directories (`/data`, `/srv/app`, `/srv/data`, `/var/lib/app`, `/opt/app`, `/var/data`, `/app` at mode 1777). Path-traversal probes targeting hard-coded directory prefixes can now resolve through them — without this, functions rooted at `open("/data/" + path)` raised `FileNotFoundError` before the exploit could fire, silently masking real vulns.
+- **Harness path-prep preamble.** The probe harness regex-extracts absolute-path string literals from the target module's source AND from the test input args, then `mkdir -p`'s the corresponding directory tree (combining each source-extracted prefix with each non-`..` component from the input). Layered defense: catches unusual prefixes the Dockerfile list misses (e.g., `/home/myapp/storage/`) and the cartesian product needed for inputs like `subdir/../../etc/passwd`.
+
+### Changed
+
+- **HRP findings flow via `findings_validated`, not via `l1_output.hypotheses`.** Probe-confirmed runtime findings are NOT re-tested through Phase A. The probe stage IS the test; re-running through Phase A would (a) double sandbox cost, (b) produce contradictory NOT_TESTED verdicts when Fly returned stub traces, (c) duplicate journal records. Phase B (iter ≥ 2) still sees confirmed HRPs via `journal_summary` and won't re-propose them.
+
+### Live validation outcomes
+
+Validated end-to-end on the v1.5 fixture suite. Sample evidence captured:
+
+| Fixture | Probe-confirmed exploits | Runtime evidence |
+|---|---|---|
+| `runtime_probe_path_traversal.py` | 1 (`HRP_0_1`, `read_file_safely("../../etc/passwd")`) | Function returned `root:x:0:0:root:/root:/bin/bash\ndaemon:...` (literal `/etc/passwd` content) |
+| `photoshow_ffmpeg_config.py` | 14 (shell injection: semicolon, subshell `$(...)`, backtick payloads, base64-decoded payloads) | Various process_exit traces showing payload execution |
+| `backup_manager.py` | 7 (command injection via `os.system` argument concatenation) | Multiple traces showing canary tmp files created by injected commands |
+| `audit_log_compression.py` (malware, not service) | 0 (probe correctly declined — file is malware not service) | Probe-decline rationale journaled |
+
+### Internals
+
+- `dast/runtime_probe.py` (NEW) — dataclasses, harness generator, plan builder, trace parser, deterministic interpreter rules, path-prep preamble (source + input-derived).
+- `dast/prompts.py` — `build_phase_b_runtime_probe_prompt` + `phase_b_runtime_probe_schema` (enum-bounded `attack_class`, regex-validated `function_name` to block shell-metachar injection).
+- `dast/orchestrator.py` — `_run_phase_b_runtime_probe` helper + `enable_runtime_probe` kwarg on `run_dast`. Probe runs ONCE before the iteration loop so it can populate findings even when L1 hypotheses are empty.
+- `dast/sandbox/firecracker/Dockerfile{,.networked,.ml_tools}` — pre-create common app dirs at 1777.
+- 46 new tests in `test_runtime_probe.py` covering: attack-class → CWE/severity mapping, harness generation (module import, getattr walk, exception capture, path-prep preamble), plan builder, trace parser, interpreter rules, schema validation, prompt builder, orchestrator integration (4 stub-sandbox tests including the 4 hardening fixes).
+
+### Roadmap
+
+- v1.5.1: JS/TS / shell harness templates + corresponding sandbox image profiles.
+- v1.6: model-loop interpretation for tracebacks the deterministic rules can't classify ("did this `PermissionError` mean the function defended itself, or did it mean we hit the wrong code path?").
+
 ## [1.3.1] — 2026-05-10 — install-path performance + aggregate cost cap
 
 **Performance + cost-control release for `argus install`. Live-validated on the litellm dependency closure: ~6× faster wall-clock, 3.5× faster on file-heavy wheels, $10 default aggregate cost cap fires fail-closed.**

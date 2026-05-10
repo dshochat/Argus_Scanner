@@ -170,11 +170,10 @@ def make_dast_runner(
         scan_result: Any,
         *,
         enable_phase_c: bool = True,
+        enable_runtime_probe: bool = False,
     ) -> dict:
         text = content.decode("utf-8", errors="replace")
-        file_id = (
-            getattr(pp, "file_hash", None) if pp is not None else None
-        ) or filename
+        file_id = (getattr(pp, "file_hash", None) if pp is not None else None) or filename
 
         l1_output = _scan_result_to_l1_output(scan_result)
         # The basename (with extension) is what the sandbox stages at
@@ -191,8 +190,11 @@ def make_dast_runner(
         # opcodes that may not surface in static analysis at all.
         from .ml_detonation import (  # noqa: PLC0415
             detect_format as _detect_ml_format,
+        )
+        from .ml_detonation import (
             synthesize_ml_load_hypothesis,
         )
+
         ml_format = _detect_ml_format(file_name, content[:32])
         if ml_format is not None:
             ml_hyp = synthesize_ml_load_hypothesis(file_format=ml_format)
@@ -222,6 +224,12 @@ def make_dast_runner(
                 content_map[file_id] = content
 
         t0 = time.time()
+        # v1.5 Phase B+ runtime probing requires the file's original
+        # bytes (not just the synthesized text representation) so the
+        # sandbox can stage the actual Python module. Thread them
+        # through unconditionally — the orchestrator only acts on them
+        # when ``enable_runtime_probe`` is True.
+        file_record["original_bytes"] = file_record.get("original_bytes") or content
         result = await run_dast(
             file_record=file_record,
             l1_output=l1_output,
@@ -230,6 +238,7 @@ def make_dast_runner(
             journal_dir=journal_root,
             inference=inference,
             enable_phase_c=enable_phase_c,
+            enable_runtime_probe=enable_runtime_probe,
         )
         elapsed_ms = int((time.time() - t0) * 1000)
         return _dast_result_to_engine_dict(result, elapsed_ms)
@@ -314,15 +323,9 @@ def make_dast_runner_from_env(api_key: str | None = None) -> DastRunner | None:
 
     sandbox = MultiImageSandboxClient(
         inner_by_hint={
-            "minimal": FirecrackerSandboxClient(
-                fly_client=fly_client, image=image_minimal
-            ),
-            "networked": FirecrackerSandboxClient(
-                fly_client=fly_client, image=image_networked
-            ),
-            "ml_tools": FirecrackerSandboxClient(
-                fly_client=fly_client, image=image_ml_tools
-            ),
+            "minimal": FirecrackerSandboxClient(fly_client=fly_client, image=image_minimal),
+            "networked": FirecrackerSandboxClient(fly_client=fly_client, image=image_networked),
+            "ml_tools": FirecrackerSandboxClient(fly_client=fly_client, image=image_ml_tools),
         },
         fallback_hint="minimal",
     )

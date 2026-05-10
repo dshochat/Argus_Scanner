@@ -1,4 +1,5 @@
 """Unit tests for the GitHub Actions workflow inspector."""
+
 from __future__ import annotations
 
 import textwrap
@@ -8,7 +9,6 @@ from preprocessing.github_actions import (
     analyze_workflow,
     is_github_actions_workflow,
 )
-
 
 # ── Path matching ──────────────────────────────────────────────────────────
 
@@ -20,9 +20,7 @@ def test_path_match_canonical() -> None:
 
 def test_path_match_with_repo_prefix() -> None:
     assert is_github_actions_workflow("my-repo/.github/workflows/lint.yml")
-    assert is_github_actions_workflow(
-        Path("nested/checkout/.github/workflows/test.yml")
-    )
+    assert is_github_actions_workflow(Path("nested/checkout/.github/workflows/test.yml"))
 
 
 def test_path_match_rejects_non_workflow_yaml() -> None:
@@ -75,9 +73,7 @@ def test_analyze_pwn_request_pattern_full_signal_set() -> None:
     assert out.n_unpinned_third_party == 1
 
     # Dangerous interpolation: github.event.issue.title goes into a run block
-    assert any(
-        "github.event.issue.title" in d for d in out.dangerous_interpolations
-    )
+    assert any("github.event.issue.title" in d for d in out.dangerous_interpolations)
 
     # Exfil heuristic: curl + secrets in same run-block
     assert out.has_exfil_verbs_with_secrets

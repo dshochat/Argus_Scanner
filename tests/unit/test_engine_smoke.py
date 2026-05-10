@@ -329,8 +329,7 @@ async def test_dast_105_v2_grounded_downgrade_accepted():
     # v1.2: All findings refuted (BLOCKED/UNREACHED) -> full downgrade.
     assert result.final_verdict == "suspicious"
     assert any(
-        p.startswith("dast_severity_downgrade:malicious->suspicious") and "all_refuted" in p
-        for p in result.scan_path
+        p.startswith("dast_severity_downgrade:malicious->suspicious") and "all_refuted" in p for p in result.scan_path
     ), f"expected v1.2 severity_downgrade marker, got {result.scan_path}"
 
 
@@ -360,8 +359,7 @@ async def test_dast_105_v2_partial_grounded_severity_driven_downgrade():
     # capped at 1 tier max from L1.
     assert result.final_verdict == "suspicious"
     assert any(
-        p.startswith("dast_severity_downgrade:malicious->suspicious")
-        and "high_uncertain_remains" in p
+        p.startswith("dast_severity_downgrade:malicious->suspicious") and "high_uncertain_remains" in p
         for p in result.scan_path
     ), f"expected v1.2 high_uncertain marker, got {result.scan_path}"
 
@@ -413,9 +411,9 @@ async def test_dast_105_guard_accepts_dast_upgrade():
     )
     assert result.dast_attempted is True
     assert result.final_verdict == "critical_malicious"
-    assert any(
-        p.startswith("dast_upgrade:malicious->critical_malicious") for p in result.scan_path
-    ), f"expected dast_upgrade marker, got {result.scan_path}"
+    assert any(p.startswith("dast_upgrade:malicious->critical_malicious") for p in result.scan_path), (
+        f"expected dast_upgrade marker, got {result.scan_path}"
+    )
 
 
 @pytest.mark.asyncio
