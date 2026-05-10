@@ -10,67 +10,80 @@ It targets the gap between *"this looks suspicious"* (pattern-matching SAST) and
 
 Open source. BYOK. Apache 2.0.
 
-**v1.2 adds Phase C — fix-and-verify.** When DAST confirms an exploit, Argus generates a patched version of the file, replays the same exploit attempts against the patched code in the same sandbox, and reports per-finding `NEUTRALIZED` / `STILL_EXPLOITABLE` / `UNVERIFIABLE` with sandbox-grounded evidence. You don't get a remediation *suggestion*; you get a remediation that's been *tested*. Validated end-to-end on adversarial fixtures: **5 of 5 confirmed exploits neutralized** across two distinct backdoor patterns.
-
 You pay your providers directly — Anthropic + Google for the cascade, Fly.io for the optional DAST sandbox. Argus collects nothing.
 
 ---
 
-## Coverage today
+## How Argus works (the three pillars)
 
-Argus operates at three depths depending on what a file is. Items below the line are roadmap, not implemented.
+Argus has three pillars. The capability matrix below shows exactly what each pillar does for each file type.
 
-### Cascade analysis (static + LLM, runs on every recognized file)
+### Pillar 1 — Cascade harness (static + AI analysis)
 
-**Executable code:** Python (`.py`, `.pyw`, `.pyi`, `.pth`), JavaScript / TypeScript (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`), shell (`.sh`, `.bash`, `.zsh`).
+Every recognized file flows through a cost-tiered model cascade. Deterministic preprocessing first (free, no models): SHA-256, multi-stage deobfuscation (base64 / hex / eval-chain), dependency graphing, attack-vector flagging, AI-file-pattern detection. Files with no outbound intent get dropped before a single token is spent.
 
-**Jupyter notebooks** (`.ipynb`) — decomposed cell-by-cell. Code cells are treated as Python with cell banners preserved; markdown cells are surfaced as prompt-injection surface; shell magic (`!pip install …`) and IPython magic (`%load_ext …`) lines pass through verbatim so the cascade flags installs from suspicious indices, malicious extension loads, and base64'd C2 payloads in the same pass.
+Survivors route through a model cascade:
 
-**ML model artifacts** (`.pkl`, `.pickle`, `.pt`, `.bin`, `.safetensors`, `.h5`, `.hdf5`, `.keras`, `.onnx`) — disassembled WITHOUT execution via `pickletools`. Surfaces every `GLOBAL` / `STACK_GLOBAL` opcode whose target is a code-execution primitive (`os.system`, `subprocess.Popen`, `pty.spawn`, `builtins.eval`, …) plus the `REDUCE` / `BUILD` / `NEWOBJ` opcodes that turn a global into an invocation. PyTorch zip-of-pickles archives are walked across all members. Safetensors `__metadata__` blocks are extracted so attacker-controlled metadata is visible to the cascade.
+| Cascade stage | Model | Cost / file | Decides |
+|---|---|---|---|
+| Triage | **Gemini Flash-Lite** | ~$0.001 | `CLEAN` / `LOW` / `HIGH` routing |
+| Cheap analysis (LOW tier) | **Gemini Flash** | ~$0.02 | findings on low-priority files |
+| Default deep analysis (HIGH tier) | **Anthropic Claude Sonnet 4.6** | ~$0.07 | findings on high-priority files |
+| High-stakes / borderline escalation | **Anthropic Claude Opus 4.6** | ~$0.15 | ~20% of HIGH files |
 
-**GitHub Actions workflows** (`.github/workflows/*.yml`) — deterministic sweep for the supply-chain CI patterns: `pull_request_target` triggers, third-party actions referenced without SHA pinning (`uses: foo/bar@main`), `${{ github.event.* }}` interpolations into `run:` shells (the GHSL command-injection class), `permissions: write-all`, and `secrets.*` references near network verbs (curl / wget / fetch) inside the same `run:` block.
+The harness emits structured findings: CWE, line, severity, code, explanation, suggested fix, proof-of-concept, behavioral profile, attack chains, composite risk score. Aggregate cost is ~$4.65 per 100-file scan on a realistic workload mix; hard per-file + per-scan cost caps abort runs that exceed your declared budget.
 
-**Supply-chain manifests** (parsed for dependency extraction + lifecycle-hook detection): `package.json`, `package-lock.json`, `yarn.lock`, `requirements.txt`, `pyproject.toml`, `Pipfile`, `setup.py`, `Cargo.toml`, `Cargo.lock`, `go.mod`, `go.sum`, `Gemfile`, `Gemfile.lock`, `pom.xml`, `build.gradle`, `*.csproj`, `packages.config`.
+### Pillar 2 — DAST runtime detonation
 
-**AI-agent config sentinels** (prompt-injection surface — the file your coding agent will load tomorrow): `CLAUDE.md`, `AGENTS.md`, `SKILL.md`, `.cursorrules`, `.cursorrc`, `.clinerules`, `.github/copilot-instructions.md`, `system_prompt.{md,txt,yaml}`, `mcp.json`, `mcp_*.json`, `plugin.json`, `ai-plugin.json`, `openapi.{yaml,json}`, `agent-config.{yaml,json,toml}`, `tools.{json,yaml}`.
+When the harness flags suspicion at sufficient verdict tier, the file moves to a Firecracker microVM (`minimal-v1`, `networked-v1`, or `ml_tools-v1` image profile) for two phases:
 
-**`.pth` path-hijack detection** — any line starting with `import` in a `.pth` file is force-elevated to priority-5 regardless of model verdict. Catches a classic Python supply-chain pattern that 2048-token triage routinely misses.
+* **Phase A — exploit testing.** Plan an exploit per harness finding, run it in the sandbox, capture syscalls / egress / filesystem writes, classify each finding as `CONFIRMED` / `BLOCKED` / `UNREACHED` / `NOT_TESTED` based on what actually happened.
+* **Phase B — exploit discovery.** Given accumulated evidence, propose NEW hypotheses the harness missed. A deterministic validator gates the proposals; survivors carry forward into the next iteration's Phase A. Up to 3 iterations or until convergence.
 
-**Other languages tagged for cascade analysis** (language-detected; the model-driven cascade still applies, but no specialized per-language detectors yet): Java, Kotlin, Scala, Go, Rust, Ruby, PHP, C#, C / C++, PowerShell, Lua, Perl, R, Swift, Terraform, HCL; Markdown, HTML, XML, JSON, YAML, TOML; Dockerfile, Makefile.
+This is the layer that kills false positives — a "looks like SQL injection" pattern that the file's own escaping defends against gets `BLOCKED`, not flagged. And it surfaces what static analysis missed — Phase B has actually found new findings the harness didn't catch.
 
-### DAST runtime detonation
+### Pillar 3 — Remediation (fix-and-verify)
 
-Phase A verification + Phase B discovery + Phase C fix-and-verify run on Python, JavaScript / TypeScript, and shell. Sandbox image profiles: `minimal-v1`, `networked-v1`, `ml_tools-v1`.
+When Phase A confirms an exploit on **text source** (Python, JS / TS, shell), Argus generates a patched version, replays the same exploit attempts against the patched code in the same sandbox, and emits per-finding `NEUTRALIZED` / `STILL_EXPLOITABLE` / `UNVERIFIABLE` with sandbox-grounded evidence. You don't get a remediation *suggestion*; you get a remediation that's been *tested*.
 
-**ML-artifact load detonation (new):** for `.pkl` / `.pickle` / `.pt` / `.bin` / `.safetensors` / `.h5` / `.onnx`, Argus injects a deterministic load plan into iter 1 — `pickle.load()` / `torch.load(weights_only=False)` / `safe_open()` / `onnx.load()` runs against the original binary in the `ml_tools-v1` sandbox. Loading IS execution for these formats; if the artifact is malicious, the `__reduce__` payload fires and Argus captures the canary file, syscalls, and exit codes that prove it. **Validated end-to-end on a malicious `subprocess.Popen` pickle:** all 3 L1 findings (CWE-502, CWE-78, CWE-94) reached `CONFIRMED` with sandbox-captured runtime evidence — `$0.22` / 253s / 5 sandbox calls, real Fly Firecracker microVM.
+**Binary artifact policy.** For ML artifacts (`.pkl` / `.pt` / `.bin` / `.safetensors` / `.h5` / `.onnx`), Argus does NOT auto-patch the binary — the model can't emit valid bytecode-level patches and a corrupt patched pickle would mislead the replay. Instead, the remediation pillar emits structured guidance: regenerate the model from a clean training pipeline and serialize using `safetensors` (which is structurally incapable of carrying executable `__reduce__` payloads). Status is `UNVERIFIABLE` with the guidance in `fix_summary`.
 
-Other languages reach DAST only when invoked transitively (e.g., a shell script calling `python`). Non-executable formats (manifests, Markdown, AI-agent configs, HTML / XML) are cascade-only by definition. The cascade still surfaces malicious payloads, prompt-injection content, and lifecycle-hook backdoors.
+**Opt-out:** pass `--no-remediation` to skip this pillar entirely while keeping the harness + DAST active. Use for compliance scans, CI gates that don't allow source-modification suggestions, read-only audits, or to save ~$0.05/file in patch-generation tokens. The result still includes a structured `phase_c` block with `skipped_reason: "phase_c_disabled_by_config"` so downstream consumers can distinguish "remediation off" from "ran and found nothing to fix."
 
-### Phase C — fix-and-verify (v1.2)
+---
 
-When DAST confirms an exploit on **text source** (Python, JS / TS, shell), Phase C generates a patched version of the file, replays the same exploit attempts against the patched code in the same sandbox, and emits per-finding `NEUTRALIZED` / `STILL_EXPLOITABLE` / `UNVERIFIABLE` with sandbox-grounded evidence. You don't get a remediation *suggestion*; you get a remediation that's been *tested*.
+## Coverage matrix
 
-**Binary artifact policy.** For `.pkl` / `.pt` / `.bin` / `.safetensors` / `.h5` / `.onnx`, Argus does NOT auto-patch the binary — the model can't emit valid bytecode-level patches and a corrupt patched pickle would mislead the replay step. Instead, when an ML artifact is CONFIRMED malicious, Phase C emits structured remediation guidance: regenerate the model from a clean training pipeline and serialize using `safetensors` (which is structurally incapable of carrying executable `__reduce__` payloads). Phase C status for these cases is `UNVERIFIABLE` with the guidance in `fix_summary`.
+What each pillar does, per file type. ✅ = supported, ⚠️ = supported with policy nuance, ⏳ = roadmap, ❌ N/A = not applicable to this format.
 
-**Opt-out: `--no-remediation`.** Pass this flag to skip Phase C entirely while keeping Phase A verification + Phase B discovery active. Use for compliance scans, CI gates that don't allow source modification suggestions, read-only audits, or to save ~$0.05/file in patch-generation tokens. The result still includes a structured `phase_c` block with `skipped_reason: "phase_c_disabled_by_config"` and the count of findings that would have been remediated, so downstream consumers can distinguish "remediation off" from "Phase C ran and found nothing to fix."
+| File type | Harness analysis | DAST exploit testing | DAST exploit discovery | Remediation |
+|---|:-:|:-:|:-:|:-:|
+| Python (`.py`, `.pyw`, `.pyi`, `.pth`) | ✅ | ✅ | ✅ | ✅ patch + replay |
+| JavaScript / TypeScript (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`) | ✅ | ✅ | ✅ | ✅ patch + replay |
+| Shell (`.sh`, `.bash`, `.zsh`) | ✅ | ✅ | ✅ | ✅ patch + replay |
+| Jupyter notebooks (`.ipynb`) | ✅ cell-by-cell decomposition | ⏳ roadmap | ⏳ roadmap | ⏳ roadmap |
+| ML model artifacts (`.pkl`, `.pickle`, `.pt`, `.bin`, `.safetensors`, `.h5`, `.hdf5`, `.keras`, `.onnx`) | ✅ pickletools disassembly | ✅ load-detonation in sandbox | ❌ | ⚠️ guidance only (no auto-patch — see binary policy) |
+| GitHub Actions workflows (`.github/workflows/*.yml`) | ✅ deterministic CI-pattern sweep | ⏳ roadmap | ⏳ roadmap | ⏳ roadmap |
+| Supply-chain manifests (`package.json`, `requirements.txt`, `Cargo.lock`, `go.mod`, `Gemfile`, `Pipfile`, `setup.py`, `pyproject.toml`, `pom.xml`, `build.gradle`, `*.csproj`, etc.) | ✅ parsed for deps + lifecycle hooks | ❌ N/A (no runtime to detonate) | ❌ N/A | ❌ N/A |
+| AI-agent config sentinels (`CLAUDE.md`, `AGENTS.md`, `SKILL.md`, `.cursorrules`, `.clinerules`, `mcp.json`, `plugin.json`, `openapi.{yaml,json}`, `agent-config.{yaml,json,toml}`, etc.) | ✅ prompt-injection surface | ❌ N/A | ❌ N/A | ❌ N/A |
+| Other languages tagged for harness (Java, Kotlin, Scala, Go, Rust, Ruby, PHP, C#, C/C++, PowerShell, Lua, Perl, R, Swift, Terraform, HCL) | ✅ generic harness analysis | ⏳ roadmap | ⏳ roadmap | ⏳ roadmap |
+
+### Notes
+
+* **Harness analysis** = preprocessing + LLM cascade. Always runs on recognized files unless the cost cap aborts.
+* **DAST exploit testing (Phase A)** = sandbox-validates the harness's findings. Triggered by verdict tier (`malicious`, `critical_malicious` by default; configurable via `--dast-trigger-verdicts`).
+* **DAST exploit discovery (Phase B)** = sandbox finds new exploits the harness missed. Runs alongside Phase A.
+* **Remediation (fix-and-verify)** = generates patched source + replays exploits against the patch. Toggle off with `--no-remediation`.
+* **`.pth` path-hijack** is force-elevated to priority-5 in the harness preprocessing layer regardless of model verdict — a classic Python supply-chain pattern that triage routinely misses.
+* **ML-artifact load detonation** validated end-to-end: 3/3 L1 findings reached `CONFIRMED` with sandbox-captured runtime evidence on a malicious `subprocess.Popen` pickle (real Fly Firecracker microVM, $0.22, 253s, 5 sandbox calls).
 
 ### Roadmap (tracked in [ROADMAP.md](./ROADMAP.md))
 
-1. **Jupyter notebook DAST** — convert + execute the synthesized script in a sandbox image (cell-by-cell), watch for the same syscall/egress signals
-2. **GitHub Actions workflow DAST** — run workflows under an `act`-shaped harness with adversarial event JSON, observe what gets exfiltrated
+1. **Jupyter notebook DAST** — convert + execute the synthesized script in a sandbox image (cell-by-cell), watch the same syscall / egress signals as Python source
+2. **GitHub Actions workflow DAST** — run workflows under an `act`-shaped runner with adversarial event JSON, observe what gets exfiltrated
 3. **Java bytecode** (`.class`, `.jar`) — decompiler preprocessing + JDK sandbox profile
-4. **Go, Rust, .NET** — cascade + DAST coverage
+4. **Go, Rust, .NET** — full DAST + remediation coverage
 5. **k8s / Helm / Terraform** (niche-adjacent; deferred until demand)
-
-## The 4-Layer Moat
-
-Argus eliminates the two structural failures of modern code analysis: **alert fatigue** and **token cost**.
-
-* **Layer 1 — Deterministic Preprocessing (free, fast).** Hash dedup, multi-stage deobfuscation (base64, hex, eval-string unwrapping), dependency graphing, attack-vector flagging. Files with no outbound intent are dropped before a single token is spent.
-* **Layer 2 — Cost-Tiered AI Cascade.** Survivors route through a triage model. CLEAN returns. LOW gets Flash. HIGH gets Sonnet 4.6. ~20% of borderline files escalate to Opus 4.6 deep analysis or a 3-model Sonnet ensemble for confidence calibration.
-  * Net: **~$4.65 per 100-file scan** including DAST verification on the projected workload mix. Hard per-file cost caps abort runs that exceed your declared budget.
-* **Layer 3 — DAST Verification (the proof).** When the cascade flags suspicion on executable code, Argus detonates the file inside a Firecracker microVM (`minimal`, `networked`, or `ml_tools` profile). The orchestrator runs the file, captures syscalls, monitors egress, and tracks filesystem writes. It either confirms exploitation with hard evidence or refutes the static finding — killing the false positive before it hits the report.
-* **Layer 4 — Automated Fix & Verify (the patch). New in v1.2.** If a finding is confirmed, Argus generates a targeted patch and replays the *same* exploit against the patched source in the same sandbox. Per-finding post-patch verdict: **NEUTRALIZED**, **STILL_EXPLOITABLE**, or **UNVERIFIABLE**. You get a tested fix, not a ticket.
 
 ## Per-finding verdicts (where the FP kill happens)
 
