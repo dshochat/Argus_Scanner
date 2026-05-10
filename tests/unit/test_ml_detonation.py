@@ -1,5 +1,6 @@
 """Unit tests for dast/ml_detonation.py — the deterministic ML-artifact
 load plan template + format detection."""
+
 from __future__ import annotations
 
 import base64
@@ -12,7 +13,6 @@ from dast.ml_detonation import (
     detect_format,
     synthesize_ml_load_hypothesis,
 )
-
 
 # ── Format detection ──────────────────────────────────────────────────────
 
@@ -70,6 +70,7 @@ def test_detect_unknown() -> None:
 class _OSSystem:
     def __reduce__(self):
         import os  # noqa: PLC0415
+
         return (os.system, ("echo pwned",))
 
 
@@ -186,9 +187,7 @@ def test_synthesize_ml_load_hypothesis_shape() -> None:
 
 
 def test_synthesize_ml_load_hypothesis_custom_id() -> None:
-    h = synthesize_ml_load_hypothesis(
-        hypothesis_id="HML_CUSTOM", file_format="pytorch"
-    )
+    h = synthesize_ml_load_hypothesis(hypothesis_id="HML_CUSTOM", file_format="pytorch")
     assert h["id"] == "HML_CUSTOM"
     assert "pytorch" in h["explanation"]
 
@@ -199,7 +198,6 @@ def test_synthesize_ml_load_hypothesis_custom_id() -> None:
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -236,12 +234,14 @@ class _CapturingStubSandbox:
 
 def _phase_a_verdict_response_text() -> str:
     """Minimal Phase A verdict JSON the orchestrator's parser accepts."""
-    return json.dumps({
-        "verdict_label": "suspicious",
-        "log_summary": "stub no-op",
-        "validated_findings": [],
-        "confirmed_categories": [],
-    })
+    return json.dumps(
+        {
+            "verdict_label": "suspicious",
+            "log_summary": "stub no-op",
+            "validated_findings": [],
+            "confirmed_categories": [],
+        }
+    )
 
 
 def _phase_b_response_text() -> str:
@@ -333,8 +333,8 @@ async def test_phase_c_refuses_binary_patch_for_ml_artifacts(
     file_record carries ``ml_format``, Phase C returns structured
     remediation guidance (replace with safetensors) and ``UNVERIFIABLE``
     status — never a corrupt patched binary."""
-    from dast.orchestrator import _run_phase_c_fix_verify
     from dast.journal import Journal
+    from dast.orchestrator import _run_phase_c_fix_verify
 
     sandbox = _CapturingStubSandbox()
     journal = Journal(file_id="hash-evil", base_dir=Path(tmp_path))
@@ -342,9 +342,7 @@ async def test_phase_c_refuses_binary_patch_for_ml_artifacts(
     async def fake_inference(prompt, options, schema):
         # Phase C guard fires BEFORE any inference call. If the model
         # gets called we've leaked through the guard — fail loudly.
-        raise AssertionError(
-            "model should not be called when ml_format is set in file_record"
-        )
+        raise AssertionError("model should not be called when ml_format is set in file_record")
 
     file_record = {
         "file_id": "hash-evil",
@@ -356,10 +354,19 @@ async def test_phase_c_refuses_binary_patch_for_ml_artifacts(
     l1_output = {
         "verdict": {"verdict_label": "critical_malicious"},
         "hypotheses": [
-            {"id": "H001", "finding_ref": "H001", "cwe": "CWE-502",
-             "severity": "critical", "type": "insecure_deserialization",
-             "explanation": "", "code_snippet": "", "line": None,
-             "data_flow_trace": "", "proof_of_concept": "", "confidence": 1.0},
+            {
+                "id": "H001",
+                "finding_ref": "H001",
+                "cwe": "CWE-502",
+                "severity": "critical",
+                "type": "insecure_deserialization",
+                "explanation": "",
+                "code_snippet": "",
+                "line": None,
+                "data_flow_trace": "",
+                "proof_of_concept": "",
+                "confidence": 1.0,
+            },
         ],
     }
 
@@ -367,8 +374,14 @@ async def test_phase_c_refuses_binary_patch_for_ml_artifacts(
         file_record=file_record,
         findings_validated=["H001"],
         l1_output=l1_output,
-        iter1_plans=[{"hypothesis_id": "H001", "plan_status": "executable",
-                      "commands": ["python -c 'pass'"], "image_hint": "ml_tools"}],
+        iter1_plans=[
+            {
+                "hypothesis_id": "H001",
+                "plan_status": "executable",
+                "commands": ["python -c 'pass'"],
+                "image_hint": "ml_tools",
+            }
+        ],
         inference=fake_inference,
         sandbox=sandbox,
         journal=journal,
@@ -407,12 +420,18 @@ async def test_run_dast_skips_phase_c_when_disabled(
     async def fake_inference(prompt, options, schema):
         # Accept any call; emit a "no plans / no hyps" minimal response.
         return {
-            "text": json.dumps({
-                "plans": [], "verdict_label": "malicious",
-                "log_summary": "stub", "validated_findings": ["H001"],
-                "confirmed_categories": [], "new_hypotheses": [],
-            }),
-            "usage": {}, "finish_reason": "stop",
+            "text": json.dumps(
+                {
+                    "plans": [],
+                    "verdict_label": "malicious",
+                    "log_summary": "stub",
+                    "validated_findings": ["H001"],
+                    "confirmed_categories": [],
+                    "new_hypotheses": [],
+                }
+            ),
+            "usage": {},
+            "finish_reason": "stop",
         }
 
     sandbox = _CapturingStubSandbox()
@@ -425,12 +444,21 @@ async def test_run_dast_skips_phase_c_when_disabled(
     }
     l1_output = {
         "verdict": {"verdict_label": "malicious"},
-        "hypotheses": [{
-            "id": "H001", "finding_ref": "H001", "cwe": "CWE-78",
-            "severity": "critical", "type": "command_injection",
-            "explanation": "", "code_snippet": "", "line": 2,
-            "data_flow_trace": "", "proof_of_concept": "", "confidence": 0.9,
-        }],
+        "hypotheses": [
+            {
+                "id": "H001",
+                "finding_ref": "H001",
+                "cwe": "CWE-78",
+                "severity": "critical",
+                "type": "command_injection",
+                "explanation": "",
+                "code_snippet": "",
+                "line": 2,
+                "data_flow_trace": "",
+                "proof_of_concept": "",
+                "confidence": 0.9,
+            }
+        ],
     }
 
     result = await run_dast(
@@ -460,8 +488,8 @@ async def test_phase_c_runs_normally_for_text_source(
     """Sanity guard: a regular .py file with confirmed findings should
     proceed through the normal Phase C patch generator (we mock the
     model + sandbox replay)."""
-    from dast.orchestrator import _run_phase_c_fix_verify
     from dast.journal import Journal
+    from dast.orchestrator import _run_phase_c_fix_verify
 
     sandbox = _CapturingStubSandbox()
     journal = Journal(file_id="py-hash", base_dir=Path(tmp_path))
@@ -471,11 +499,13 @@ async def test_phase_c_runs_normally_for_text_source(
         inference_called["n"] += 1
         # Return a minimal patched source + summary
         return {
-            "text": json.dumps({
-                "patched_source": "import shlex\n# fixed\n",
-                "fix_summary": "input now goes through shlex.quote",
-                "per_finding_fixes": [],
-            }),
+            "text": json.dumps(
+                {
+                    "patched_source": "import shlex\n# fixed\n",
+                    "fix_summary": "input now goes through shlex.quote",
+                    "per_finding_fixes": [],
+                }
+            ),
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
             "finish_reason": "stop",
         }
@@ -490,10 +520,19 @@ async def test_phase_c_runs_normally_for_text_source(
     l1_output = {
         "verdict": {"verdict_label": "malicious"},
         "hypotheses": [
-            {"id": "H001", "finding_ref": "H001", "cwe": "CWE-78",
-             "severity": "critical", "type": "command_injection",
-             "explanation": "", "code_snippet": "", "line": 2,
-             "data_flow_trace": "", "proof_of_concept": "", "confidence": 0.9},
+            {
+                "id": "H001",
+                "finding_ref": "H001",
+                "cwe": "CWE-78",
+                "severity": "critical",
+                "type": "command_injection",
+                "explanation": "",
+                "code_snippet": "",
+                "line": 2,
+                "data_flow_trace": "",
+                "proof_of_concept": "",
+                "confidence": 0.9,
+            },
         ],
     }
 
@@ -501,9 +540,14 @@ async def test_phase_c_runs_normally_for_text_source(
         file_record=file_record,
         findings_validated=["H001"],
         l1_output=l1_output,
-        iter1_plans=[{"hypothesis_id": "H001", "plan_status": "executable",
-                      "commands": ["python /workspace/vuln.py"],
-                      "image_hint": "minimal"}],
+        iter1_plans=[
+            {
+                "hypothesis_id": "H001",
+                "plan_status": "executable",
+                "commands": ["python /workspace/vuln.py"],
+                "image_hint": "minimal",
+            }
+        ],
         inference=fake_inference,
         sandbox=sandbox,
         journal=journal,
@@ -525,10 +569,16 @@ async def test_orchestrator_skips_ml_plan_when_format_absent(
 
     async def fake_inference(prompt, options, schema):
         return {
-            "text": json.dumps({"plans": [], "verdict_label": "suspicious",
-                                "log_summary": "", "validated_findings": [],
-                                "confirmed_categories": [],
-                                "new_hypotheses": []}),
+            "text": json.dumps(
+                {
+                    "plans": [],
+                    "verdict_label": "suspicious",
+                    "log_summary": "",
+                    "validated_findings": [],
+                    "confirmed_categories": [],
+                    "new_hypotheses": [],
+                }
+            ),
             "usage": {},
             "finish_reason": "stop",
         }
@@ -543,13 +593,21 @@ async def test_orchestrator_skips_ml_plan_when_format_absent(
     }
     l1_output = {
         "verdict": {"verdict_label": "malicious"},
-        "hypotheses": [{
-            "id": "H001", "finding_ref": "H001",
-            "finding_type": "rce", "severity": "high",
-            "explanation": "", "code_snippet": "", "line": 2,
-            "data_flow_trace": "", "proof_of_concept": "",
-            "cwe": "CWE-78", "confidence": 0.9,
-        }],
+        "hypotheses": [
+            {
+                "id": "H001",
+                "finding_ref": "H001",
+                "finding_type": "rce",
+                "severity": "high",
+                "explanation": "",
+                "code_snippet": "",
+                "line": 2,
+                "data_flow_trace": "",
+                "proof_of_concept": "",
+                "cwe": "CWE-78",
+                "confidence": 0.9,
+            }
+        ],
     }
 
     await run_dast(

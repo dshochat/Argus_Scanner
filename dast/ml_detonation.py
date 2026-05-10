@@ -58,27 +58,31 @@ _LOADER_TEMPLATES: dict[str, str] = {
         "import sys, pickle; "
         "obj = pickle.load(open(sys.argv[1], 'rb')); "
         "print('PICKLE_LOAD_COMPLETED', type(obj).__name__)"
-    ) + " /workspace/{file_name}",
+    )
+    + " /workspace/{file_name}",
     "pytorch": _python_oneliner(
         "import sys, torch; "
         "obj = torch.load(sys.argv[1], map_location='cpu', weights_only=False); "
         "print('TORCH_LOAD_COMPLETED', type(obj).__name__)"
-    ) + " /workspace/{file_name}",
+    )
+    + " /workspace/{file_name}",
     "safetensors": _python_oneliner(
         "import sys; from safetensors import safe_open; "
         "f = safe_open(sys.argv[1], 'pt'); "
         "ks = list(f.keys()); meta = f.metadata() or {}; "
         "print('SAFETENSORS_OPENED tensors=' + str(len(ks)) + ' metadata_keys=' + str(list(meta.keys())))"
-    ) + " /workspace/{file_name}",
+    )
+    + " /workspace/{file_name}",
     "hdf5": _python_oneliner(
-        "import sys, h5py; "
-        "with h5py.File(sys.argv[1], 'r') as f: print('H5_OPENED keys=' + str(list(f.keys())[:10]))"
-    ) + " /workspace/{file_name}",
+        "import sys, h5py; with h5py.File(sys.argv[1], 'r') as f: print('H5_OPENED keys=' + str(list(f.keys())[:10]))"
+    )
+    + " /workspace/{file_name}",
     "onnx": _python_oneliner(
         "import sys, onnx; "
         "m = onnx.load(sys.argv[1]); "
         "print('ONNX_LOADED producer=' + str(m.producer_name) + ' opset=' + str([o.version for o in m.opset_import]))"
-    ) + " /workspace/{file_name}",
+    )
+    + " /workspace/{file_name}",
 }
 
 
@@ -214,8 +218,7 @@ def synthesize_ml_load_hypothesis(
         "line": None,
         "data_flow_trace": "load_call -> __reduce__ -> arbitrary callable",
         "proof_of_concept": (
-            "import pickle; pickle.load(open('artifact', 'rb'))  # OR "
-            "torch.load('artifact', weights_only=False)"
+            "import pickle; pickle.load(open('artifact', 'rb'))  # OR torch.load('artifact', weights_only=False)"
         ),
         "cwe": "CWE-502",
         "confidence": 1.0,

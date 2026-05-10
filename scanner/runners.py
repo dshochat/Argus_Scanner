@@ -79,11 +79,7 @@ def derive_uncertainty(parsed: dict) -> float:
     whether to escalate Sonnet to Opus.
     """
     vulns = parsed.get("vulnerabilities") or []
-    confidences = [
-        float(v.get("confidence", 0.5))
-        for v in vulns
-        if isinstance(v.get("confidence"), (int, float))
-    ]
+    confidences = [float(v.get("confidence", 0.5)) for v in vulns if isinstance(v.get("confidence"), (int, float))]
     if not confidences:
         # No findings or no confidence data → use boundary distance only;
         # clean verdicts (score=0) → 0.0 uncertainty.
@@ -209,10 +205,7 @@ def make_anthropic_runner_from_adapter(
 
         in_tokens = int(result.get("input_tokens", 0))
         out_tokens = int(result.get("output_tokens", 0))
-        cost = (
-            in_tokens / 1_000_000 * cost_per_m_input
-            + out_tokens / 1_000_000 * cost_per_m_output
-        )
+        cost = in_tokens / 1_000_000 * cost_per_m_input + out_tokens / 1_000_000 * cost_per_m_output
 
         # Surface JSON parse failures as a runner error. Engine logs
         # ``error`` distinctly from a clean scan; without this, a parse
@@ -231,8 +224,7 @@ def make_anthropic_runner_from_adapter(
             runner_error = sanitizer_error
         elif not json_valid:
             runner_error = (
-                f"json_parse_failed: model output not valid JSON "
-                f"(out_tokens={out_tokens}; possible truncation)"
+                f"json_parse_failed: model output not valid JSON (out_tokens={out_tokens}; possible truncation)"
             )
         else:
             runner_error = None
@@ -382,10 +374,7 @@ def make_triage_runner_from_adapter(
 
         in_tokens = int(result.get("input_tokens", 0))
         out_tokens = int(result.get("output_tokens", 0))
-        cost = (
-            in_tokens / 1_000_000 * cost_per_m_input
-            + out_tokens / 1_000_000 * cost_per_m_output
-        )
+        cost = in_tokens / 1_000_000 * cost_per_m_input + out_tokens / 1_000_000 * cost_per_m_output
 
         adapter_error = result.get("error")
         return {

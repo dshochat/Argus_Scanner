@@ -408,7 +408,6 @@ def _build_python_probe_harness(
         "            except (OSError, PermissionError):\n"
         "                pass\n"
         # ── End input path-prep ───────────────────────────────────────────
-
         f"import {module_name} as _target\n"
         "fn = _target\n"
         f"for part in '{safe_function}'.split('.'):\n"
@@ -611,22 +610,15 @@ def interpret_probe_trace(
     # markers in attack inputs (e.g., write to /tmp/argus_probe_*) that
     # the sandbox can observe. Tmp files appearing post-call = exploit.
     tmp_added: list[str] = (
-        side_effects.get("tmp_files_added")
-        if isinstance(side_effects.get("tmp_files_added"), list)
-        else []
+        side_effects.get("tmp_files_added") if isinstance(side_effects.get("tmp_files_added"), list) else []
     )
-    canary_hit = any(
-        isinstance(f, str) and ("argus_probe" in f.lower() or "pwned" in f.lower())
-        for f in tmp_added
-    )
+    canary_hit = any(isinstance(f, str) and ("argus_probe" in f.lower() or "pwned" in f.lower()) for f in tmp_added)
 
     # Build the finding when ANY rule fires.
     evidence_parts: list[str] = []
     if ok:
         preview = parsed.get("value_preview", "")
-        evidence_parts.append(
-            f"Function returned without raising (value preview: {str(preview)[:200]})"
-        )
+        evidence_parts.append(f"Function returned without raising (value preview: {str(preview)[:200]})")
     if canary_hit:
         evidence_parts.append(f"Sandbox observed canary file(s) created in /tmp: {tmp_added[:5]}")
     if not evidence_parts:
@@ -646,10 +638,7 @@ def interpret_probe_trace(
         attack_class=candidate.attack_class,
         severity=severity_for_attack_class(candidate.attack_class),
         cwe=cwe_for_attack_class(candidate.attack_class),
-        description=(
-            test_input.exploit_proof_if_observed
-            or f"{candidate.attack_class} in {candidate.function_name}"
-        ),
+        description=(test_input.exploit_proof_if_observed or f"{candidate.attack_class} in {candidate.function_name}"),
         runtime_evidence=runtime_evidence,
         test_input_args=test_input.args_json,
     )

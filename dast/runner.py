@@ -173,9 +173,7 @@ def make_dast_runner(
         enable_runtime_probe: bool = False,
     ) -> dict:
         text = content.decode("utf-8", errors="replace")
-        file_id = (
-            getattr(pp, "file_hash", None) if pp is not None else None
-        ) or filename
+        file_id = (getattr(pp, "file_hash", None) if pp is not None else None) or filename
 
         l1_output = _scan_result_to_l1_output(scan_result)
         # The basename (with extension) is what the sandbox stages at
@@ -192,8 +190,11 @@ def make_dast_runner(
         # opcodes that may not surface in static analysis at all.
         from .ml_detonation import (  # noqa: PLC0415
             detect_format as _detect_ml_format,
+        )
+        from .ml_detonation import (
             synthesize_ml_load_hypothesis,
         )
+
         ml_format = _detect_ml_format(file_name, content[:32])
         if ml_format is not None:
             ml_hyp = synthesize_ml_load_hypothesis(file_format=ml_format)
@@ -322,15 +323,9 @@ def make_dast_runner_from_env(api_key: str | None = None) -> DastRunner | None:
 
     sandbox = MultiImageSandboxClient(
         inner_by_hint={
-            "minimal": FirecrackerSandboxClient(
-                fly_client=fly_client, image=image_minimal
-            ),
-            "networked": FirecrackerSandboxClient(
-                fly_client=fly_client, image=image_networked
-            ),
-            "ml_tools": FirecrackerSandboxClient(
-                fly_client=fly_client, image=image_ml_tools
-            ),
+            "minimal": FirecrackerSandboxClient(fly_client=fly_client, image=image_minimal),
+            "networked": FirecrackerSandboxClient(fly_client=fly_client, image=image_networked),
+            "ml_tools": FirecrackerSandboxClient(fly_client=fly_client, image=image_ml_tools),
         },
         fallback_hint="minimal",
     )

@@ -38,71 +38,84 @@ from dataclasses import dataclass, field
 # the canonical "what malware reaches for" vocabulary. We surface every
 # match so the model cascade has explicit evidence.
 
-_SUSPICIOUS_MODULES: frozenset[str] = frozenset({
-    # Code execution
-    "os", "posix", "nt",
-    "subprocess", "commands",
-    "pty",
-    "platform",
-    # Network
-    "socket", "urllib", "urllib2", "urllib3", "requests",
-    "http.client", "httplib",
-    "ftplib",
-    # Code loading
-    "builtins", "__builtin__",
-    "importlib",
-    "imp",
-    # Filesystem
-    "shutil",
-    "tempfile",
-    # Eval primitives (named globals)
-    "compile",
-})
+_SUSPICIOUS_MODULES: frozenset[str] = frozenset(
+    {
+        # Code execution
+        "os",
+        "posix",
+        "nt",
+        "subprocess",
+        "commands",
+        "pty",
+        "platform",
+        # Network
+        "socket",
+        "urllib",
+        "urllib2",
+        "urllib3",
+        "requests",
+        "http.client",
+        "httplib",
+        "ftplib",
+        # Code loading
+        "builtins",
+        "__builtin__",
+        "importlib",
+        "imp",
+        # Filesystem
+        "shutil",
+        "tempfile",
+        # Eval primitives (named globals)
+        "compile",
+    }
+)
 
 #: Tighter list of (module, name) pairs that are unambiguous code-exec
 #: primitives. Hits here are P0 critical regardless of any context.
-_SUSPICIOUS_GLOBALS: frozenset[tuple[str, str]] = frozenset({
-    ("os", "system"),
-    ("os", "popen"),
-    ("os", "execv"),
-    ("os", "execve"),
-    ("os", "execvp"),
-    ("os", "execvpe"),
-    ("os", "exec"),
-    ("os", "spawnv"),
-    ("os", "spawnve"),
-    ("posix", "system"),
-    ("posix", "exec"),
-    ("nt", "system"),
-    ("subprocess", "Popen"),
-    ("subprocess", "call"),
-    ("subprocess", "check_call"),
-    ("subprocess", "check_output"),
-    ("subprocess", "run"),
-    ("subprocess", "getoutput"),
-    ("subprocess", "getstatusoutput"),
-    ("pty", "spawn"),
-    ("commands", "getoutput"),
-    ("builtins", "eval"),
-    ("builtins", "exec"),
-    ("builtins", "compile"),
-    ("builtins", "__import__"),
-    ("__builtin__", "eval"),
-    ("__builtin__", "exec"),
-    ("__builtin__", "compile"),
-    ("__builtin__", "__import__"),
-    ("importlib", "import_module"),
-    ("imp", "load_source"),
-    ("imp", "load_module"),
-    ("socket", "socket"),
-    ("urllib.request", "urlopen"),
-    ("urllib", "urlopen"),
-    ("requests", "get"),
-    ("requests", "post"),
-    ("requests", "request"),
-    ("httplib", "HTTPConnection"),
-    ("http.client", "HTTPConnection"),
-})
+_SUSPICIOUS_GLOBALS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("os", "system"),
+        ("os", "popen"),
+        ("os", "execv"),
+        ("os", "execve"),
+        ("os", "execvp"),
+        ("os", "execvpe"),
+        ("os", "exec"),
+        ("os", "spawnv"),
+        ("os", "spawnve"),
+        ("posix", "system"),
+        ("posix", "exec"),
+        ("nt", "system"),
+        ("subprocess", "Popen"),
+        ("subprocess", "call"),
+        ("subprocess", "check_call"),
+        ("subprocess", "check_output"),
+        ("subprocess", "run"),
+        ("subprocess", "getoutput"),
+        ("subprocess", "getstatusoutput"),
+        ("pty", "spawn"),
+        ("commands", "getoutput"),
+        ("builtins", "eval"),
+        ("builtins", "exec"),
+        ("builtins", "compile"),
+        ("builtins", "__import__"),
+        ("__builtin__", "eval"),
+        ("__builtin__", "exec"),
+        ("__builtin__", "compile"),
+        ("__builtin__", "__import__"),
+        ("importlib", "import_module"),
+        ("imp", "load_source"),
+        ("imp", "load_module"),
+        ("socket", "socket"),
+        ("urllib.request", "urlopen"),
+        ("urllib", "urlopen"),
+        ("requests", "get"),
+        ("requests", "post"),
+        ("requests", "request"),
+        ("httplib", "HTTPConnection"),
+        ("http.client", "HTTPConnection"),
+    }
+)
 
 
 @dataclass
@@ -147,9 +160,7 @@ class MLModelDecomposition:
 # ── Pickle disassembly ──────────────────────────────────────────────────────
 
 
-def _disassemble_pickle(data: bytes) -> tuple[
-    list[str], list[str], bool, int
-]:
+def _disassemble_pickle(data: bytes) -> tuple[list[str], list[str], bool, int]:
     """Walk a pickle stream's opcodes WITHOUT executing it.
 
     Returns ``(suspicious_globals, code_exec_primitives, has_reduce_op,
@@ -192,9 +203,7 @@ def _disassemble_pickle(data: bytes) -> tuple[
                             susp.add(f"{last_module}.{last_name}")
                         if (last_module, last_name) in _SUSPICIOUS_GLOBALS:
                             rce.add(f"{last_module}.{last_name}")
-            elif name in {
-                "REDUCE", "BUILD", "NEWOBJ", "NEWOBJ_EX", "INST", "OBJ"
-            }:
+            elif name in {"REDUCE", "BUILD", "NEWOBJ", "NEWOBJ_EX", "INST", "OBJ"}:
                 has_reduce = True
             elif name in {"SHORT_BINUNICODE", "BINUNICODE", "UNICODE"} and isinstance(arg, str):
                 # Track the rolling window for STACK_GLOBAL resolution.
@@ -245,7 +254,7 @@ def _decompose_pytorch_zip(content: bytes) -> MLModelDecomposition:
     pickle and aggregate findings."""
     try:
         zf = zipfile.ZipFile(io.BytesIO(content))
-    except (zipfile.BadZipFile, OSError) as exc:
+    except (zipfile.BadZipFile, OSError):
         # Not a zip — assume raw pickle (older PyTorch format)
         return _decompose_raw_pickle(content)
 
@@ -310,32 +319,42 @@ def _decompose_safetensors(content: bytes) -> MLModelDecomposition:
     suspicious URLs."""
     if len(content) < 8:
         return MLModelDecomposition(
-            is_valid=False, format="safetensors", synthesized_source="",
+            is_valid=False,
+            format="safetensors",
+            synthesized_source="",
             parse_error="too_short_for_header",
         )
     try:
         header_len = int.from_bytes(content[:8], "little", signed=False)
     except Exception as exc:  # noqa: BLE001
         return MLModelDecomposition(
-            is_valid=False, format="safetensors", synthesized_source="",
+            is_valid=False,
+            format="safetensors",
+            synthesized_source="",
             parse_error=f"header_len_decode: {exc!r}",
         )
     if header_len == 0 or header_len > len(content) - 8 or header_len > 100_000_000:
         return MLModelDecomposition(
-            is_valid=False, format="safetensors", synthesized_source="",
+            is_valid=False,
+            format="safetensors",
+            synthesized_source="",
             parse_error=f"implausible_header_len: {header_len}",
         )
     try:
-        header_bytes = content[8:8 + header_len]
+        header_bytes = content[8 : 8 + header_len]
         header = json.loads(header_bytes)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         return MLModelDecomposition(
-            is_valid=False, format="safetensors", synthesized_source="",
+            is_valid=False,
+            format="safetensors",
+            synthesized_source="",
             parse_error=f"json: {exc!r}",
         )
     if not isinstance(header, dict):
         return MLModelDecomposition(
-            is_valid=False, format="safetensors", synthesized_source="",
+            is_valid=False,
+            format="safetensors",
+            synthesized_source="",
             parse_error="header_not_object",
         )
     user_metadata = header.get("__metadata__")
@@ -343,9 +362,7 @@ def _decompose_safetensors(content: bytes) -> MLModelDecomposition:
         meta_str = json.dumps(user_metadata, indent=2, default=str)[:2000]
     else:
         meta_str = "(no __metadata__ block)"
-    n_tensors = sum(
-        1 for k in header.keys() if isinstance(k, str) and k != "__metadata__"
-    )
+    n_tensors = sum(1 for k in header.keys() if isinstance(k, str) and k != "__metadata__")
     parts = [
         "# === ML MODEL FILE: safetensors ===",
         f"# n_tensor_entries: {n_tensors}",

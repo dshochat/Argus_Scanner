@@ -232,14 +232,14 @@ def test_path_prep_regex_extracts_expected_paths_from_fixture() -> None:
     # the harness's, this test fails — keeping them in lockstep.
     pat = _re.compile(r"""['"]((?:/[A-Za-z_][\w./-]*))['"]""")
     src = (
-        'from __future__ import annotations\n'
-        'def read_file_safely(path: str) -> str:\n'
+        "from __future__ import annotations\n"
+        "def read_file_safely(path: str) -> str:\n"
         '    if path.startswith("../"):\n'
-        '        path = path[3:]\n'
+        "        path = path[3:]\n"
         '    return open("/data/" + path).read()\n'
-        'def write_log_entry(msg: str) -> None:\n'
+        "def write_log_entry(msg: str) -> None:\n"
         '    with open("/tmp/app.log", "a") as f:\n'
-        '        f.write(msg)\n'
+        "        f.write(msg)\n"
     )
     matches = set(pat.findall(src))
     # Must capture the absolute prefix used by the vulnerable function
@@ -774,9 +774,7 @@ async def test_runtime_probe_skipped_when_flag_disabled(tmp_path) -> None:
         inference_calls.append((prompt[:50], schema.get("required", [])))
         # Detect whether this is the probe schema (would be wrong here)
         if schema.get("required") == ["candidates", "non_probable_reason"]:
-            raise AssertionError(
-                "runtime probe inference should not be called when enable_runtime_probe is False"
-            )
+            raise AssertionError("runtime probe inference should not be called when enable_runtime_probe is False")
         return {"text": _phase_a_verdict_response(), "usage": {}, "finish_reason": "stop"}
 
     file_record = {
@@ -923,9 +921,9 @@ async def test_runtime_probe_fires_and_finds_exploit_via_canary(tmp_path) -> Non
     # sandbox cost and (b) produce contradictory NOT_TESTED verdicts when
     # Fly returns stub traces. Probe findings surface only via
     # findings_validated (and from there → engine's dast_findings).
-    assert not any(
-        h.get("id", "").startswith("HRP_") for h in (l1_output.get("hypotheses") or [])
-    ), "Fix #2: HRP findings should NOT pollute l1_output.hypotheses"
+    assert not any(h.get("id", "").startswith("HRP_") for h in (l1_output.get("hypotheses") or [])), (
+        "Fix #2: HRP findings should NOT pollute l1_output.hypotheses"
+    )
 
     # Fix #3 (surfacing) contract: confirmed HRPs reach findings_validated
     # so engine.py picks them up as result.dast_findings.
@@ -936,13 +934,9 @@ async def test_runtime_probe_fires_and_finds_exploit_via_canary(tmp_path) -> Non
     # And the journal has a phase_b_hypothesis record with verdict=confirmed
     journal_records = result.journal_records
     confirmed_probes = [
-        r
-        for r in journal_records
-        if r.get("claim_id", "").startswith("HRP_") and r.get("verdict") == "confirmed"
+        r for r in journal_records if r.get("claim_id", "").startswith("HRP_") and r.get("verdict") == "confirmed"
     ]
-    assert len(confirmed_probes) >= 1, (
-        f"expected at least one confirmed runtime probe; got {journal_records}"
-    )
+    assert len(confirmed_probes) >= 1, f"expected at least one confirmed runtime probe; got {journal_records}"
 
     # Fix #1 contract: probe-confirmed path_traversal at severity=high
     # should bump the DAST max-verdict floor to "malicious".
@@ -1016,9 +1010,7 @@ async def test_runtime_probe_blocked_when_sandbox_shows_no_exploit(tmp_path) -> 
 
     # Probe ran but no exploit was confirmed
     rejected_probes = [
-        r
-        for r in result.journal_records
-        if r.get("claim_id", "").startswith("HRP_") and r.get("verdict") == "rejected"
+        r for r in result.journal_records if r.get("claim_id", "").startswith("HRP_") and r.get("verdict") == "rejected"
     ]
     assert len(rejected_probes) >= 1
     # No new HRP hypothesis added to l1_output (no exploit to forward)
@@ -1057,8 +1049,7 @@ async def test_runtime_probe_critical_code_injection_bumps_to_critical_malicious
                             "test_inputs": [
                                 {
                                     "args_json": (
-                                        '["__import__(\\"os\\")'
-                                        '.system(\\"touch /tmp/argus_probe_pwned\\")"]'
+                                        '["__import__(\\"os\\").system(\\"touch /tmp/argus_probe_pwned\\")"]'
                                     ),
                                     "kwargs_json": "{}",
                                     "expected_observable": "canary file appears",
@@ -1190,8 +1181,7 @@ async def test_runtime_probe_does_not_re_test_hrp_via_phase_a(tmp_path) -> None:
         traces_by_hypothesis={
             "HRP_0_0": {
                 "stdout": (
-                    'RESULT_JSON:{"ok": true, "value_preview": "exfil"}\n'
-                    'SIDE_EFFECTS:{"tmp_files_added": []}\n'
+                    'RESULT_JSON:{"ok": true, "value_preview": "exfil"}\nSIDE_EFFECTS:{"tmp_files_added": []}\n'
                 ),
                 "exit_code": 0,
                 "elapsed_ms": 50,
@@ -1281,8 +1271,7 @@ async def test_runtime_probe_does_not_re_test_hrp_via_phase_a(tmp_path) -> None:
     # commands shape: any HRP_ plan WITHOUT the _argus_probe_ marker is
     # a Phase A re-test.
     assert hrp_phase_a_resubmits == [], (
-        f"Fix #2: Phase A re-tested HRP findings (cost doubled): "
-        f"{[p.plan_id for p in hrp_phase_a_resubmits]}"
+        f"Fix #2: Phase A re-tested HRP findings (cost doubled): {[p.plan_id for p in hrp_phase_a_resubmits]}"
     )
 
 

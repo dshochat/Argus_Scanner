@@ -79,9 +79,7 @@ _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 # ``permissions:`` block presence + the dangerous shorthand forms
 _PERMISSIONS_BLOCK_RE = re.compile(r"^\s*permissions:\s*", re.MULTILINE)
-_PERMISSIONS_WRITE_ALL_RE = re.compile(
-    r"^\s*permissions:\s*write-all\b", re.MULTILINE
-)
+_PERMISSIONS_WRITE_ALL_RE = re.compile(r"^\s*permissions:\s*write-all\b", re.MULTILINE)
 
 # ``${{ ... }}`` expressions, focused on the injection-prone sources
 _DANGEROUS_INTERP_SOURCES = (
@@ -155,11 +153,26 @@ def _extract_triggers(text: str) -> list[str]:
     (``on:\\n  push:\\n  pull_request:``)."""
     triggers: set[str] = set()
     for keyword in (
-        "push", "pull_request", "pull_request_target", "workflow_run",
-        "workflow_dispatch", "schedule", "release", "issue_comment",
-        "issues", "discussion", "discussion_comment", "fork",
-        "repository_dispatch", "deployment", "deployment_status",
-        "page_build", "watch", "create", "delete", "label",
+        "push",
+        "pull_request",
+        "pull_request_target",
+        "workflow_run",
+        "workflow_dispatch",
+        "schedule",
+        "release",
+        "issue_comment",
+        "issues",
+        "discussion",
+        "discussion_comment",
+        "fork",
+        "repository_dispatch",
+        "deployment",
+        "deployment_status",
+        "page_build",
+        "watch",
+        "create",
+        "delete",
+        "label",
     ):
         if re.search(rf"\b{re.escape(keyword)}\b", text):
             triggers.add(keyword)
@@ -232,7 +245,8 @@ def analyze_workflow(text: str) -> WorkflowAnalysis:
     """
     if not text.strip():
         return WorkflowAnalysis(
-            is_valid=False, synthesized_source="",
+            is_valid=False,
+            synthesized_source="",
             parse_error="empty_text",
         )
 
@@ -248,11 +262,13 @@ def analyze_workflow(text: str) -> WorkflowAnalysis:
         third = _is_third_party(action)
         sha_pinned = bool(_SHA_RE.match(ref))
         if third:
-            actions.append({
-                "action": action,
-                "ref": ref,
-                "sha_pinned": str(sha_pinned).lower(),
-            })
+            actions.append(
+                {
+                    "action": action,
+                    "ref": ref,
+                    "sha_pinned": str(sha_pinned).lower(),
+                }
+            )
             if not sha_pinned:
                 n_unpinned += 1
 
