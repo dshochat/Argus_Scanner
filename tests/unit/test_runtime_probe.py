@@ -861,16 +861,20 @@ def test_interpret_no_parsed_result_returns_none() -> None:
 
 
 def test_interpret_both_rules_fire_emits_single_finding() -> None:
-    """If function returned ok AND canary appeared, we emit ONE finding
-    with both evidence parts (not two findings — same probe = same
-    vulnerability)."""
+    """If function returned ok AND the return value matches an attack-class
+    signature AND canary appeared, both evidence parts land in ONE finding
+    (not two — same probe = same vulnerability).
+
+    Phase 0 hardening: Rule 1 now requires evidence-match, not just
+    ok=True. The value_preview here contains ``uid=0`` which matches the
+    command_injection signature library, so Rule 1 fires."""
     candidate = _mk_candidate(
         attack_class="command_injection",
         test_inputs=[
             RuntimeProbeInput(
-                args_json='["touch /tmp/argus_probe_pwned"]',
+                args_json='["; id"]',
                 kwargs_json="{}",
-                expected_observable="canary file appears AND function returns successfully",
+                expected_observable="shell exec output containing uid= shows the command ran",
                 exploit_proof_if_observed="command injection — both signals fire",
             )
         ],
@@ -882,7 +886,8 @@ def test_interpret_both_rules_fire_emits_single_finding() -> None:
         input_args_json=test_in.args_json,
         exit_code=0,
         stdout=(
-            'RESULT_JSON:{"ok": true, "type": "int", "value_preview": "0"}\n'
+            'RESULT_JSON:{"ok": true, "type": "str", '
+            '"value_preview": "uid=0(root) gid=0(root) groups=0(root)"}\n'
             'SIDE_EFFECTS:{"tmp_files_added": ["argus_probe_pwned"]}\n'
         ),
         stderr="",
@@ -890,9 +895,214 @@ def test_interpret_both_rules_fire_emits_single_finding() -> None:
     )
     finding = interpret_probe_trace(trace, candidate, test_in, candidate_idx=0, input_idx=0)
     assert finding is not None
-    # Both evidence parts in the runtime_evidence string
-    assert "Function returned without raising" in finding.runtime_evidence
+    # Both evidence parts in the runtime_evidence string. Rule 1's
+    # narration now includes the signature-match rationale (Phase 0).
+    assert "Function returned without raising AND evidence matches" in finding.runtime_evidence
+    assert "uid=" in finding.runtime_evidence
     assert "argus_probe_pwned" in finding.runtime_evidence
+
+
+def test_interpret_rule1_blocks_when_evidence_does_not_match_attack_class() -> None:
+    """Phase 0 FP defense: function returned ok BUT the value_preview is
+    an ambiguous default (``"0"``, ``""``, ``null``) that doesn't match
+    the declared attack class's signature library. Rule 1 must NOT fire.
+
+    Without this, the probe would emit a finding any time a function
+    accepts attacker-shaped input and returns SOMETHING — even if that
+    something is a benign default that doesn't demonstrate the exploit.
+    The classic false positive that Phase 0 closes."""
+    candidate = _mk_candidate(
+        attack_class="command_injection",
+        test_inputs=[
+            RuntimeProbeInput(
+                args_json='["; id"]',
+                kwargs_json="{}",
+                # Expected observable mentions uid=, gid= — but the return
+                # value below doesn't contain either. Rule 1 should reject.
+                expected_observable="shell exec output containing uid= or gid= shows the command ran",
+                exploit_proof_if_observed="command injection",
+            )
+        ],
+    )
+    test_in = candidate.test_inputs[0]
+
+    trace = parse_probe_trace(
+        candidate_function=candidate.function_name,
+        input_args_json=test_in.args_json,
+        exit_code=0,
+        # Function returned ok with a benign default (e.g., an integer "0"
+        # or empty string). No command_injection signature matches.
+        # Phase 0 hardening: this is BLOCKED, not CONFIRMED.
+        stdout='RESULT_JSON:{"ok": true, "type": "int", "value_preview": "0"}\n',
+        stderr="",
+        elapsed_ms=15,
+    )
+    finding = interpret_probe_trace(trace, candidate, test_in, candidate_idx=0, input_idx=0)
+    assert finding is None, (
+        f"Rule 1 should NOT fire on ambiguous return — got finding: {finding}"
+    )
+
+
+def test_interpret_rule1_fires_on_path_traversal_with_etc_passwd_content() -> None:
+    """Phase 0 positive case: function returned ok AND value_preview
+    contains ``root:x:0:0:`` (canonical /etc/passwd content marker from
+    the path_traversal signature library). Rule 1 must fire."""
+    candidate = _mk_candidate(
+        attack_class="path_traversal",
+        test_inputs=[
+            RuntimeProbeInput(
+                args_json='["../../etc/passwd"]',
+                kwargs_json="{}",
+                expected_observable="returns /etc/passwd content",
+                exploit_proof_if_observed="path traversal — reads files outside intended dir",
+            )
+        ],
+    )
+    test_in = candidate.test_inputs[0]
+
+    trace = parse_probe_trace(
+        candidate_function=candidate.function_name,
+        input_args_json=test_in.args_json,
+        exit_code=0,
+        stdout=(
+            'RESULT_JSON:{"ok": true, "type": "str", '
+            '"value_preview": "root:x:0:0:root:/root:/bin/bash\\\\ndaemon:x:1:1:daemon"}\n'
+        ),
+        stderr="",
+        elapsed_ms=20,
+    )
+    finding = interpret_probe_trace(trace, candidate, test_in, candidate_idx=0, input_idx=0)
+    assert finding is not None
+    assert "root:x:0:0:" in finding.runtime_evidence
+    assert "class-signature match" in finding.runtime_evidence
+
+
+def test_interpret_rule1_fires_via_expected_observable_keywords() -> None:
+    """Phase 0 secondary oracle: even when the attack-class signature
+    library has no match, the model's ``expected_observable`` text is
+    keyword-extracted and used as a custom oracle. If the runtime
+    evidence contains any 5+-char alphanumeric token from
+    expected_observable, Rule 1 fires.
+
+    This lets the model declare custom indicators for unusual exploits
+    (e.g., a specific function-return-value shape we couldn't enumerate
+    in the static signature library)."""
+    candidate = _mk_candidate(
+        attack_class="ssrf",
+        test_inputs=[
+            RuntimeProbeInput(
+                args_json='["http://169.254.169.254/latest/meta-data/"]',
+                kwargs_json="{}",
+                # 169.254.169.254 is in the ssrf signature library too,
+                # so test with a SPECIFIC token that's NOT in the lib.
+                expected_observable="returns my_special_canary_marker_xyz in response",
+                exploit_proof_if_observed="ssrf — internal endpoint reachable",
+            )
+        ],
+    )
+    test_in = candidate.test_inputs[0]
+
+    trace = parse_probe_trace(
+        candidate_function=candidate.function_name,
+        input_args_json=test_in.args_json,
+        exit_code=0,
+        # Return value contains a substring from expected_observable but
+        # NOT from the ssrf signature library directly.
+        stdout=(
+            'RESULT_JSON:{"ok": true, "type": "str", '
+            '"value_preview": "response: my_special_canary_marker_xyz body"}\n'
+        ),
+        stderr="",
+        elapsed_ms=30,
+    )
+    finding = interpret_probe_trace(trace, candidate, test_in, candidate_idx=0, input_idx=0)
+    assert finding is not None
+    assert "expected-observable keyword match" in finding.runtime_evidence
+
+
+def test_interpret_rule1_blocks_when_value_preview_empty() -> None:
+    """Phase 0 edge case: function returned ok but value_preview is
+    empty string. No evidence to match. Rule 1 must NOT fire even with
+    rich expected_observable text."""
+    candidate = _mk_candidate(
+        attack_class="path_traversal",
+        test_inputs=[
+            RuntimeProbeInput(
+                args_json='["../../etc/passwd"]',
+                kwargs_json="{}",
+                expected_observable="returns /etc/passwd content with root:x:0:0:",
+            )
+        ],
+    )
+    test_in = candidate.test_inputs[0]
+
+    trace = parse_probe_trace(
+        candidate_function=candidate.function_name,
+        input_args_json=test_in.args_json,
+        exit_code=0,
+        stdout='RESULT_JSON:{"ok": true, "value_preview": ""}\n',
+        stderr="",
+        elapsed_ms=10,
+    )
+    finding = interpret_probe_trace(trace, candidate, test_in, candidate_idx=0, input_idx=0)
+    assert finding is None
+
+
+def test_interpret_canary_rule_still_fires_independently_of_evidence_match() -> None:
+    """Phase 0 invariant: Rule 2 (canary tmp file) is independent of
+    Rule 1's evidence-match. A canary marker in /tmp is itself the
+    runtime proof — no value_preview match needed. This was the
+    pre-Phase-0 behavior for Rule 2 and is preserved."""
+    candidate = _mk_candidate(
+        attack_class="code_injection",
+        test_inputs=[
+            RuntimeProbeInput(
+                args_json='["__import__(\\"os\\").system(\\"touch /tmp/argus_probe_pwned\\")"]',
+                kwargs_json="{}",
+                expected_observable="canary file appears",
+            )
+        ],
+    )
+    test_in = candidate.test_inputs[0]
+
+    trace = parse_probe_trace(
+        candidate_function=candidate.function_name,
+        input_args_json=test_in.args_json,
+        exit_code=0,
+        stdout=(
+            'RESULT_JSON:{"ok": false, "exception_type": "TypeError", "exception_msg": "..."}\n'
+            'SIDE_EFFECTS:{"tmp_files_added": ["argus_probe_pwned"]}\n'
+        ),
+        stderr="",
+        elapsed_ms=20,
+    )
+    # Function RAISED (ok=False), so Rule 1 doesn't apply — but the canary
+    # fired (the eval'd payload ran far enough to touch /tmp before the
+    # type error). Rule 2 confirms regardless.
+    finding = interpret_probe_trace(trace, candidate, test_in, candidate_idx=0, input_idx=0)
+    assert finding is not None
+    assert "argus_probe_pwned" in finding.runtime_evidence
+    # No Rule 1 message in evidence — only the canary
+    assert "evidence matches" not in finding.runtime_evidence
+
+
+def test_evidence_signature_library_has_entries_for_top_attack_classes() -> None:
+    """Sanity check: the signature library must have non-empty entries
+    for the high-signal attack classes (path_traversal, command_injection,
+    ssrf, sql_injection). These are the most common vuln types — if any
+    of them has an empty signature list, Rule 1 falls back to the
+    expected_observable oracle alone (less robust)."""
+    from dast.runtime_probe import _ATTACK_CLASS_EVIDENCE_SIGNATURES
+
+    for attack_class in (
+        "path_traversal",
+        "command_injection",
+        "ssrf",
+        "sql_injection",
+        "xxe",
+    ):
+        sigs = _ATTACK_CLASS_EVIDENCE_SIGNATURES.get(attack_class, [])
+        assert sigs, f"{attack_class} has no evidence signatures — Phase 0 hardening incomplete"
 
 
 # ── Schema validation ──────────────────────────────────────────────────

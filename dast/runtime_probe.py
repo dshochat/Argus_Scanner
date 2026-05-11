@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1007,6 +1008,234 @@ def parse_probe_trace(
     return trace
 
 
+# ── Phase 0: attack-class evidence signatures (FP defense) ───────────────
+#
+# Rule 1 ("function returned ok on attack input") used to fire on any
+# parsed_result.ok == True. That's too broad — a function that returns
+# empty string / null / an error code on attack input also produces
+# ok=True. Real-world fixture validation surfaced this: a probe could
+# emit a finding without the return value actually demonstrating the
+# claimed exploit (e.g., path_traversal "confirmed" with value_preview
+# being a benign string that happens to not be /etc/passwd content).
+#
+# Fix: each attack class declares a list of POSITIVE-MATCH SIGNATURES
+# that the runtime evidence (value_preview + stderr_preview) MUST
+# contain for Rule 1 to fire. The model's `expected_observable` field
+# is additionally extracted into a per-input oracle: any expected-
+# observable-keyword found in the runtime evidence is a confirming
+# match. If neither hits, the probe is BLOCKED — runtime evidence
+# didn't concretely demonstrate the exploit.
+#
+# Substring match, not regex. Case-insensitive. Cheap, deterministic,
+# evidence-grounded. Same shape as Rule 2's canary-marker matching
+# already in place for /tmp file emergence.
+
+#: Per-attack-class signature library. Each entry is a list of
+#: case-insensitive substrings the runtime evidence MUST contain for
+#: Rule 1 to confirm an exploit of that class. Multiple substrings =
+#: OR (any one match is enough). Empty list means Rule 1 is gated
+#: ENTIRELY on the per-input ``expected_observable`` oracle for that
+#: attack class.
+#:
+#: Signatures err toward distinctive runtime artifacts — file-system
+#: layout markers, command-output identifiers, version banners — that
+#: don't appear in benign return values.
+_ATTACK_CLASS_EVIDENCE_SIGNATURES: dict[str, list[str]] = {
+    "path_traversal": [
+        # Sensitive-file content markers — passwd/shadow line shapes
+        "root:x:0:0:",
+        "root:x:0:",
+        "daemon:x:",
+        # SSH key markers
+        "BEGIN RSA PRIVATE KEY",
+        "BEGIN OPENSSH PRIVATE KEY",
+        "BEGIN DSA PRIVATE KEY",
+        "BEGIN EC PRIVATE KEY",
+        # Known sensitive-path content
+        "[client]",  # /etc/mysql/my.cnf style
+        "[mysqld]",
+        # /etc/hosts line shape
+        "localhost",  # in conjunction with returning content
+        # /proc artifacts
+        "Linux version ",
+        "MemTotal:",
+        # Sensitive AWS/cloud secrets
+        "AKIA",
+        "aws_access_key_id",
+    ],
+    "command_injection": [
+        # uid output from `id`
+        "uid=",
+        "gid=",
+        "groups=",
+        # `whoami` returns root/runner; not distinctive on its own — pair
+        # with shell-pipe markers via canary instead. Listed for
+        # completeness when the model targets whoami specifically.
+        "uname",
+        # `pwd` output marker — distinctive when subshell fires
+        "/workspace",
+        # Common shell-exec stdout
+        "Linux ",
+        # `env` exfil
+        "PATH=/",
+        "HOME=/",
+        # `ls /` style markers
+        "bin\nboot\ndev\n",
+    ],
+    "code_injection": [
+        # eval / exec firing typically produces canary tmp files (Rule 2)
+        # or returns a value embedded with marker strings. Keep narrow.
+        "__builtins__",
+        "<module '",
+        "/proc/self",
+    ],
+    "deserialization": [
+        # pickle.__reduce__ / yaml.unsafe_load typically fire via canary
+        # (Rule 2). Distinctive return markers when payload echos back:
+        "Reduce executed",
+        "<class 'os.system'>",
+        "command executed via",
+    ],
+    "ssrf": [
+        # Internal-only address echoes
+        "169.254.169.254",  # AWS IMDS
+        "metadata.google.internal",
+        "metadata.google",
+        "metadata.azure.com",
+        "127.0.0.1",  # in the returned content
+        "localhost",
+        # IMDS response shape
+        "iam/security-credentials",
+        "AccessKeyId",
+    ],
+    "sql_injection": [
+        # Distinctive db-introspection output
+        "version()",
+        "@@version",
+        "sqlite_master",
+        "information_schema",
+        "PostgreSQL",
+        "MariaDB",
+        "MySQL",
+        # Union-injection telltale: error containing SQL keywords
+        "SQL syntax",
+        "syntax error",
+        "ORA-",  # Oracle
+    ],
+    "data_exfiltration": [
+        # HTTP/network artifacts in return value indicating outbound
+        "HTTP/1",
+        "200 OK",
+        "Set-Cookie:",
+        "Authorization:",
+        # Base64 of common secret prefixes (rough heuristic)
+        "ZWNyZXQ",  # base64 of "ecret"
+    ],
+    "xxe": [
+        # File-content disclosure via XML external entity
+        "root:x:0:",
+        "<?xml",
+        "<!DOCTYPE",
+        "SYSTEM \"file:",
+    ],
+    "xss": [
+        "<script",
+        "alert(",
+        "onerror=",
+        "javascript:",
+    ],
+    "crypto_weakness": [
+        # MD5/SHA1 collisions, predictable PRNG — these often surface as
+        # specific known-bad output strings. Keep narrow until we see
+        # concrete cases.
+        "d41d8cd98f00b204e9800998ecf8427e",  # MD5 of empty string
+        "da39a3ee5e6b4b0d3255bfef95601890afd80709",  # SHA1 of empty string
+    ],
+    "open_redirect": [
+        "Location: http",
+        "Location: //",
+    ],
+    "prompt_injection": [
+        # Hard to gate purely on substrings — typically caught via canary
+        "ignore previous",
+        "ignore all",
+        "system prompt:",
+    ],
+    "race_condition": [
+        # Timing-based; defer to model-loop interpretation for v1.5.
+    ],
+}
+
+
+def _evidence_signature_match(
+    *,
+    attack_class: str,
+    value_preview: str,
+    stderr_preview: str,
+    expected_observable: str,
+) -> tuple[bool, str]:
+    """Check whether the runtime evidence concretely demonstrates an
+    exploit of the declared attack class.
+
+    Two oracles, OR-combined:
+
+    1. **Class signature**: the evidence contains any of the
+       attack-class-specific positive-match substrings (e.g., ``root:x:0:0:``
+       for path_traversal — distinctive sensitive-file content).
+    2. **Expected-observable keyword**: extracted from the model's
+       ``expected_observable`` text, any 5+ char alphanumeric token appears
+       in the evidence (e.g., model said "returns /etc/passwd content" →
+       extract ``etc/passwd`` and ``passwd`` → check if value_preview
+       contains either).
+
+    Returns ``(matched, rationale)`` — the rationale is journaled into
+    the finding's runtime_evidence so we can audit which oracle confirmed.
+
+    Case-insensitive substring match. If both haystacks are empty,
+    return False to avoid false-positive on a no-content return.
+    """
+    haystack = (value_preview + " " + stderr_preview).lower()
+    if not haystack.strip():
+        return False, "empty runtime evidence"
+
+    # Oracle 1: class signature
+    class_sigs = _ATTACK_CLASS_EVIDENCE_SIGNATURES.get(attack_class, [])
+    for sig in class_sigs:
+        if sig.lower() in haystack:
+            return True, f"class-signature match: '{sig}'"
+
+    # Oracle 2: expected_observable keyword extraction. Pull 5+-char
+    # alphanumeric tokens from the model's expected_observable text,
+    # strip noise words, and see if any appear in the haystack.
+    _NOISE_WORDS = {
+        "function",
+        "returns",
+        "returned",
+        "contains",
+        "value",
+        "string",
+        "should",
+        "would",
+        "exploit",
+        "attack",
+        "input",
+        "output",
+        "passes",
+        "fails",
+    }
+    tokens: list[str] = []
+    for raw_token in re.findall(r"[A-Za-z0-9_/.\-]{5,}", expected_observable):
+        t = raw_token.strip("/.-_")
+        if not t or t.lower() in _NOISE_WORDS:
+            continue
+        tokens.append(t)
+    for t in tokens:
+        if t.lower() in haystack:
+            return True, f"expected-observable keyword match: '{t}'"
+
+    return False, "no evidence-signature match"
+
+
 def interpret_probe_trace(
     trace: RuntimeProbeTrace,
     candidate: RuntimeProbeCandidate,
@@ -1017,23 +1246,29 @@ def interpret_probe_trace(
 ) -> RuntimeProbeFinding | None:
     """Decide whether the trace constitutes a runtime-confirmed exploit.
 
-    This is the deterministic-half of the interpretation; the model-half
-    (handled by the orchestrator-level prompt) is what generates the
-    natural-language rationale. We emit a finding when ANY of:
+    Two complementary rules:
 
-    1. ``parsed_result.ok == True`` AND the function's documented role
-       was to REJECT the malicious input (e.g., path-traversal input
-       expected to raise; function returned successfully → exploit).
-    2. ``side_effects.tmp_files_added`` contains files the test input
-       was expected to write (the canary pattern — model includes a
-       known marker string in the input, sandbox shows it materialize).
-    3. ``stderr`` contains a stack trace AND the function is documented
-       to handle the input safely (unexpected exception = bug; model
-       interprets severity).
+    **Rule 1 (FP-hardened, Phase 0):** ``parsed_result.ok == True`` AND
+    the runtime evidence (value_preview + stderr_preview) matches at
+    least one of:
 
-    For v1.5 MVP we surface a finding whenever rule (1) or (2) fires.
-    Rule (3) requires the model-loop interpretation that the orchestrator
-    handles via ``build_phase_b_probe_verdict_prompt``.
+      * The attack-class signature library
+        (:data:`_ATTACK_CLASS_EVIDENCE_SIGNATURES`) — distinctive runtime
+        artifacts that don't appear in benign return values (e.g.,
+        ``root:x:0:0:`` for path_traversal, ``uid=`` for
+        command_injection, ``200 OK`` for ssrf).
+      * Keywords extracted from the model's ``expected_observable`` text
+        — substrings 5+ chars that appear verbatim in the evidence.
+
+    Without the evidence match, Rule 1 does NOT fire — even if the
+    function returned ok. This kills the class of FPs where a function
+    legitimately returned an empty string / null / error code on attack
+    input and the probe used to report it as an exploit anyway.
+
+    **Rule 2 (unchanged):** ``side_effects.tmp_files_added`` contains
+    files matching the canary marker pattern (``argus_probe`` / ``pwned``
+    substrings). This rule was already evidence-gated by the marker
+    requirement, no FP exposure.
 
     Returns ``None`` when no rule fires (probe ran but observed no
     exploit signal — that's the BLOCKED-equivalent for runtime probes).
@@ -1045,10 +1280,23 @@ def interpret_probe_trace(
     parsed = trace.parsed_result
     side_effects = trace.side_effects or {}
 
-    # Rule 1: function returned successfully on an attack input that was
-    # supposed to be rejected. The model emits a candidate ONLY when it
-    # believes the function SHOULD reject the input; success = exploit.
+    # Rule 1: function returned successfully on an attack input AND the
+    # runtime evidence concretely matches the declared attack class.
+    # Without the evidence match, ok=True alone is not enough — the
+    # function might be returning a no-op default that doesn't represent
+    # an exploit.
     ok = bool(parsed.get("ok"))
+    value_preview = str(parsed.get("value_preview", "") or "")
+    stderr_preview = str(parsed.get("stderr_preview", "") or "")
+    rule1_match = False
+    rule1_rationale = ""
+    if ok:
+        rule1_match, rule1_rationale = _evidence_signature_match(
+            attack_class=candidate.attack_class,
+            value_preview=value_preview,
+            stderr_preview=stderr_preview,
+            expected_observable=test_input.expected_observable,
+        )
 
     # Rule 2: canary side effects. The model is encouraged to include
     # markers in attack inputs (e.g., write to /tmp/argus_probe_*) that
@@ -1065,15 +1313,16 @@ def interpret_probe_trace(
 
     # Build the finding when ANY rule fires.
     evidence_parts: list[str] = []
-    if ok:
-        preview = parsed.get("value_preview", "")
+    if rule1_match:
         evidence_parts.append(
-            f"Function returned without raising (value preview: {str(preview)[:200]})"
+            f"Function returned without raising AND evidence matches: {rule1_rationale}. "
+            f"Value preview: {value_preview[:200]}"
         )
     if canary_hit:
         evidence_parts.append(f"Sandbox observed canary file(s) created in /tmp: {tmp_added[:5]}")
     if not evidence_parts:
-        # Probe ran cleanly — exception raised AND no side-effect canary.
+        # Probe ran cleanly — either exception raised, OR ok=True but the
+        # runtime evidence didn't match any expected oracle (FP defense).
         # That's BLOCKED/UNREACHED-equivalent: no exploit observed.
         return None
 
