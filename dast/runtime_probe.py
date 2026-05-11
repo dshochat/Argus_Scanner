@@ -54,12 +54,67 @@ sandbox runs them; model interprets results.
 
 from __future__ import annotations
 
+import ast
 import base64
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+def normalize_args_json(s: str) -> str:
+    """Coerce a model-emitted args spec into valid JSON.
+
+    Phase 1a live validation surfaced a model-bug: Sonnet sometimes emits
+    ``args_json`` as a Python-syntax string (single-quoted strings inside
+    a list literal) rather than valid JSON. Example:
+
+        emitted:  "['payload with \\'quotes\\'']"
+        valid:    "[\\"payload with \\\\'quotes\\\\'\\"]"
+
+    The harness's ``JSON.parse`` (or ``json.loads``) rejects Python syntax,
+    which:
+
+    * crashes the JS harness inside the sandbox (Mode 1 safety net catches
+      it but the probe is wasted), and
+    * makes the mutator return empty (it ``json.loads`` first, gets an
+      error, returns []) — so mutation expansion silently doesn't fire.
+
+    Auto-repair flow:
+
+    1. Try ``json.loads(s)``. If it parses to a list, re-serialize and
+       return — guarantees canonical JSON shape for downstream consumers.
+    2. On failure, try ``ast.literal_eval(s)`` — this safely parses
+       Python list/dict/string literals (no code execution). If the
+       result is a list, re-serialize as JSON and return.
+    3. On all failures, return ``"[]"`` (safe fallback — the probe will
+       run with no args, the harness will likely error cleanly).
+
+    This is intentionally permissive — the alternative (rejecting
+    malformed input) wastes the model's candidate generation budget.
+    """
+    if not isinstance(s, str) or not s.strip():
+        return "[]"
+    # Path 1: already valid JSON
+    try:
+        parsed = json.loads(s)
+        if isinstance(parsed, list):
+            return json.dumps(parsed)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Path 2: Python-syntax repair via ast.literal_eval (safe — no eval)
+    try:
+        parsed = ast.literal_eval(s)
+        if isinstance(parsed, list):
+            return json.dumps(parsed)
+    except (ValueError, SyntaxError, MemoryError, TypeError):
+        pass
+    # Path 3: safe fallback. The probe will run with no args; the harness
+    # will surface a meaningful error (most likely a TypeError from the
+    # target function rejecting zero-arg calls), better than a SyntaxError.
+    return "[]"
+
 
 # ── Tunables ──────────────────────────────────────────────────────────────
 
@@ -409,7 +464,6 @@ def _build_python_probe_harness(
         "            except (OSError, PermissionError):\n"
         "                pass\n"
         # ── End input path-prep ───────────────────────────────────────────
-
         f"import {module_name} as _target\n"
         "fn = _target\n"
         f"for part in '{safe_function}'.split('.'):\n"
@@ -1136,7 +1190,7 @@ _ATTACK_CLASS_EVIDENCE_SIGNATURES: dict[str, list[str]] = {
         "root:x:0:",
         "<?xml",
         "<!DOCTYPE",
-        "SYSTEM \"file:",
+        'SYSTEM "file:',
     ],
     "xss": [
         "<script",
@@ -1302,14 +1356,9 @@ def interpret_probe_trace(
     # markers in attack inputs (e.g., write to /tmp/argus_probe_*) that
     # the sandbox can observe. Tmp files appearing post-call = exploit.
     tmp_added: list[str] = (
-        side_effects.get("tmp_files_added")
-        if isinstance(side_effects.get("tmp_files_added"), list)
-        else []
+        side_effects.get("tmp_files_added") if isinstance(side_effects.get("tmp_files_added"), list) else []
     )
-    canary_hit = any(
-        isinstance(f, str) and ("argus_probe" in f.lower() or "pwned" in f.lower())
-        for f in tmp_added
-    )
+    canary_hit = any(isinstance(f, str) and ("argus_probe" in f.lower() or "pwned" in f.lower()) for f in tmp_added)
 
     # Build the finding when ANY rule fires.
     evidence_parts: list[str] = []
@@ -1338,10 +1387,7 @@ def interpret_probe_trace(
         attack_class=candidate.attack_class,
         severity=severity_for_attack_class(candidate.attack_class),
         cwe=cwe_for_attack_class(candidate.attack_class),
-        description=(
-            test_input.exploit_proof_if_observed
-            or f"{candidate.attack_class} in {candidate.function_name}"
-        ),
+        description=(test_input.exploit_proof_if_observed or f"{candidate.attack_class} in {candidate.function_name}"),
         runtime_evidence=runtime_evidence,
         test_input_args=test_input.args_json,
     )
@@ -1360,6 +1406,7 @@ __all__ = [
     "cwe_for_attack_class",
     "detect_probe_language",
     "interpret_probe_trace",
+    "normalize_args_json",
     "parse_probe_trace",
     "severity_for_attack_class",
 ]

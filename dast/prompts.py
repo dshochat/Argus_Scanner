@@ -1842,10 +1842,7 @@ def phase_c_fix_schema() -> dict[str, Any]:
         "properties": {
             "patched_source": {
                 "type": "string",
-                "description": (
-                    "Complete patched file content. Must be the FULL "
-                    "source of the file (not a diff)."
-                ),
+                "description": ("Complete patched file content. Must be the FULL source of the file (not a diff)."),
             },
             "fix_summary": {
                 "type": "string",
@@ -1853,9 +1850,7 @@ def phase_c_fix_schema() -> dict[str, Any]:
             },
             "per_finding_fixes": {
                 "type": "array",
-                "description": (
-                    "One entry per confirmed finding; describe the specific change applied."
-                ),
+                "description": ("One entry per confirmed finding; describe the specific change applied."),
                 "items": {
                     "type": "object",
                     "additionalProperties": False,

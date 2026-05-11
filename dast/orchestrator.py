@@ -160,9 +160,7 @@ def _has_refutation_of_prior_confirmed(
         if not (isinstance(ev_ids, list) and ev_ids):
             continue
         hyp = hyp_index.get(cv.get("hypothesis_id", "")) or {}
-        fref = hyp.get("finding_ref") or (
-            (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
-        )
+        fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
         if fref and fref in prev_confirmed:
             return True
     return False
@@ -178,6 +176,7 @@ async def run_dast(
     inference: InferenceFn,
     enable_phase_c: bool = True,
     enable_runtime_probe: bool = False,
+    enable_runtime_probe_mutation: bool = False,
 ) -> DastResult:
     """Run the DAST loop on one file.
 
@@ -261,6 +260,7 @@ async def run_dast(
                 sandbox=sandbox,
                 iter_num=1,
                 stats=probe_pre_init_stats,
+                enable_mutation=enable_runtime_probe_mutation,
             )
             # Fix #2: HRPs are NOT appended to l1_output.hypotheses (would
             # cause Phase A re-test + contradiction). They flow only via
@@ -301,9 +301,7 @@ async def run_dast(
             # If the probe established a floor higher than the current
             # last_verdict, lift last_verdict to the floor so the
             # downstream verdict logic sees the probe-grounded evidence.
-            current_rank = _VERDICT_RANK.get(
-                str(last_verdict.get("verdict_label", "suspicious")), -1
-            )
+            current_rank = _VERDICT_RANK.get(str(last_verdict.get("verdict_label", "suspicious")), -1)
             if max_dast_verdict_rank > current_rank and max_dast_verdict_label:
                 last_verdict["verdict_label"] = max_dast_verdict_label
                 last_verdict["log_summary"] = (
@@ -490,9 +488,7 @@ async def run_dast(
         st.phase_a_verdict_out = (verdict_resp.get("usage") or {}).get("completion_tokens", 0) or 0
         st.finish_reasons["verdict"] = verdict_resp.get("finish_reason") or "?"
         verdict_obj = _parse_json_or_empty(verdict_resp.get("text", ""))
-        claim_verdicts = (
-            (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
-        )
+        claim_verdicts = (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
         cur = (verdict_obj.get("current_verdict") or {}) if isinstance(verdict_obj, dict) else {}
 
         prev_confirmed = set(prior_summary.confirmed_findings)
@@ -510,9 +506,7 @@ async def run_dast(
             hyp = hyp_index.get(hid) or {}
             # L1 hypotheses use ``finding_ref``; Phase B hypotheses use
             # ``upstream_chain.confirmed_finding_ref``. Try both.
-            fref = hyp.get("finding_ref") or (
-                (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
-            )
+            fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
             if fref:
                 evidence_refs.append(fref)
             evidence_refs.extend(ev_ids if isinstance(ev_ids, list) else [])
@@ -549,9 +543,7 @@ async def run_dast(
                 max_dast_verdict_rank >= 0
                 and new_rank < max_dast_verdict_rank
                 and max_dast_verdict_label is not None
-                and not _has_refutation_of_prior_confirmed(
-                    claim_verdicts, hyp_index, prev_confirmed
-                )
+                and not _has_refutation_of_prior_confirmed(claim_verdicts, hyp_index, prev_confirmed)
             ):
                 clamp_msg = (
                     f"[iter_erosion_guard] iter {it} model emitted "
@@ -604,9 +596,7 @@ async def run_dast(
         st.phase_b_out = (explore_resp.get("usage") or {}).get("completion_tokens", 0) or 0
         st.finish_reasons["explore"] = explore_resp.get("finish_reason") or "?"
         explore_obj = _parse_json_or_empty(explore_resp.get("text", ""))
-        new_hyps = (
-            (explore_obj.get("new_hypotheses") or []) if isinstance(explore_obj, dict) else []
-        )
+        new_hyps = (explore_obj.get("new_hypotheses") or []) if isinstance(explore_obj, dict) else []
         st.hypotheses_proposed = len(new_hyps)
 
         # Validator gate
@@ -655,12 +645,7 @@ async def run_dast(
             # path's aggregate cost cap.
             + st.phase_b_runtime_probe_in
         )
-        iter_out = (
-            st.phase_a_plan_out
-            + st.phase_a_verdict_out
-            + st.phase_b_out
-            + st.phase_b_runtime_probe_out
-        )
+        iter_out = st.phase_a_plan_out + st.phase_a_verdict_out + st.phase_b_out + st.phase_b_runtime_probe_out
         total_in += iter_in
         total_out += iter_out
         st.elapsed_s = round(time.time() - it_started, 2)
@@ -783,6 +768,7 @@ async def _run_phase_b_runtime_probe(
     sandbox: SandboxClient,
     iter_num: int,
     stats: IterationStats,
+    enable_mutation: bool = False,
 ) -> list[dict]:
     """Phase B+ — runtime-guided exploit discovery (v1.5).
 
@@ -803,12 +789,36 @@ async def _run_phase_b_runtime_probe(
     from dast.runtime_probe import (  # noqa: PLC0415
         MAX_CANDIDATES,
         MAX_INPUTS_PER_CANDIDATE,
+        MAX_PROBE_RUNS_PER_FILE,
         RuntimeProbeCandidate,
         RuntimeProbeInput,
         build_runtime_probe_plan,
         interpret_probe_trace,
+        normalize_args_json,
         parse_probe_trace,
     )
+
+    def _normalize_kwargs_json(s: str) -> str:
+        """Same auto-repair as ``normalize_args_json`` but for kwargs
+        (must decode to a dict, not a list). Inlined here so we don't
+        leak a second public helper for a single caller."""
+        if not isinstance(s, str) or not s.strip():
+            return "{}"
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, dict):
+                return json.dumps(parsed)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        try:
+            import ast as _ast  # noqa: PLC0415
+
+            parsed = _ast.literal_eval(s)
+            if isinstance(parsed, dict):
+                return json.dumps(parsed)
+        except (ValueError, SyntaxError, MemoryError, TypeError):
+            pass
+        return "{}"
 
     source_text = file_record.get("source_text", "") or ""
     original_bytes = file_record.get("original_bytes")
@@ -824,9 +834,7 @@ async def _run_phase_b_runtime_probe(
     probe_prompt = dast_prompts.build_phase_b_runtime_probe_prompt(
         file_text=source_text,
         l1_output=l1_output,
-        journal_summary=journal_summary.to_dict()
-        if hasattr(journal_summary, "to_dict")
-        else journal_summary,
+        journal_summary=journal_summary.to_dict() if hasattr(journal_summary, "to_dict") else journal_summary,
     )
     probe_resp = await inference(
         probe_prompt,
@@ -839,9 +847,7 @@ async def _run_phase_b_runtime_probe(
     # Without this, probe tokens leak out of cost accounting and the
     # aggregate cap can be silently exceeded.
     stats.phase_b_runtime_probe_in = (probe_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
-    stats.phase_b_runtime_probe_out = (probe_resp.get("usage") or {}).get(
-        "completion_tokens", 0
-    ) or 0
+    stats.phase_b_runtime_probe_out = (probe_resp.get("usage") or {}).get("completion_tokens", 0) or 0
     probe_obj = _parse_json_or_empty(probe_resp.get("text", ""))
     if not isinstance(probe_obj, dict):
         return []
@@ -872,10 +878,17 @@ async def _run_phase_b_runtime_probe(
         for i in (inputs_raw if isinstance(inputs_raw, list) else [])[:MAX_INPUTS_PER_CANDIDATE]:
             if not isinstance(i, dict):
                 continue
+            # Phase 1a hardening: auto-repair model-emitted args_json /
+            # kwargs_json that arrives as Python-syntax (single-quoted
+            # strings) instead of valid JSON. Without this, the mutator
+            # silently returns empty (json.loads fails) AND the harness
+            # crashes inside the sandbox with SyntaxError. Auto-repair
+            # via ast.literal_eval recovers the model's intent without
+            # wasting a probe slot.
             inputs.append(
                 RuntimeProbeInput(
-                    args_json=str(i.get("args_json") or "[]"),
-                    kwargs_json=str(i.get("kwargs_json") or "{}"),
+                    args_json=normalize_args_json(str(i.get("args_json") or "[]")),
+                    kwargs_json=_normalize_kwargs_json(str(i.get("kwargs_json") or "{}")),
                     expected_observable=str(i.get("expected_observable") or ""),
                     exploit_proof_if_observed=str(i.get("exploit_proof_if_observed") or ""),
                 )
@@ -890,132 +903,180 @@ async def _run_phase_b_runtime_probe(
         )
 
     # ── Step 2: per-probe sandbox submission ─────────────────────────────
+    # Phase 1a — mutation expansion. For each model-generated test_input,
+    # optionally fan out to N mutated variants drawn from known-bypass
+    # families (URL-encode, quad-dot path traversal, semicolon command
+    # chaining, etc.). The original input is always probed first; mutations
+    # are appended afterward. Each mutation gets a distinct hypothesis ID
+    # (HRP_<c>_<i>_m<m>) and a journal-tagged mutation_strategy so we can
+    # attribute confirmations to specific bypass families.
+    from dast.probe_mutator import mutate_input  # noqa: PLC0415
+
     findings_from_probes: list[dict[str, Any]] = []
     n_probes_run = 0
+    # Stops the outer loop early if a HARD cap is exceeded; protects
+    # against exotic candidates with many string args producing
+    # cartesian-product blow-up.
+    _HARD_PROBE_CAP = MAX_PROBE_RUNS_PER_FILE * 6  # 9 × 6 = 54
+
     for c_idx, cand in enumerate(candidates):
         if not cand.function_name or not cand.test_inputs:
             continue
         for i_idx, test_in in enumerate(cand.test_inputs):
-            plan_dict = build_runtime_probe_plan(
-                file_name=file_name,
-                file_bytes=original_bytes,
-                candidate=cand,
-                test_input=test_in,
-                candidate_idx=c_idx,
-                input_idx=i_idx,
-            )
-            if plan_dict is None:
-                continue
-            hid = plan_dict["hypothesis_id"]
-            plan = SandboxPlan(
-                plan_id=f"i{iter_num}-{hid}",
-                file_id=file_id,
-                hypothesis_id=hid,
-                commands=plan_dict["commands"],
-                expected_oracle=plan_dict["oracle"],
-                payload=plan_dict["payload"],
-                timeout_sec=plan_dict["timeout_sec"],
-                image_hint=plan_dict["image_hint"],
-                file_name=file_name,
-                synthesis_context={
-                    "runtime_probe": True,
-                    "candidate_idx": c_idx,
-                    "input_idx": i_idx,
-                    "attack_class": cand.attack_class,
-                },
-            )
-            n_probes_run += 1
-            try:
-                trace: SandboxTrace = await sandbox.submit(plan)
-            except Exception as exc:  # noqa: BLE001
-                journal.append(
-                    JournalRecord(
-                        iter=iter_num,
-                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                        claim_id=hid,
-                        verdict="rejected",
-                        rationale=f"sandbox submit failed: {type(exc).__name__}: {str(exc)[:200]}",
-                        evidence_refs=[],
-                    )
+            # Build the fan-out list: (input, mutation_idx, strategy_label).
+            # mutation_idx = 0 → original model input
+            # mutation_idx >= 1 → mutated variant
+            fanout: list[tuple[Any, int, str]] = [(test_in, 0, "original")]
+            if enable_mutation:
+                mutations = mutate_input(
+                    args_json=test_in.args_json,
+                    attack_class=cand.attack_class,
                 )
-                continue
+                for m_idx, (mutated_args_json, strategy) in enumerate(mutations, start=1):
+                    # Wrap mutated args in a fresh RuntimeProbeInput keeping
+                    # the model's expected_observable + exploit_proof so the
+                    # interpreter rules + journal narration still attribute
+                    # the mutated probe to the same intent.
+                    mutated_input = RuntimeProbeInput(
+                        args_json=mutated_args_json,
+                        kwargs_json=test_in.kwargs_json,
+                        expected_observable=test_in.expected_observable,
+                        exploit_proof_if_observed=test_in.exploit_proof_if_observed,
+                    )
+                    fanout.append((mutated_input, m_idx, strategy))
 
-            # ── Step 3: trace interpretation ─────────────────────────────
-            parsed_trace = parse_probe_trace(
-                candidate_function=cand.function_name,
-                input_args_json=test_in.args_json,
-                exit_code=trace.exit_code,
-                stdout=trace.stdout_excerpt,
-                stderr=trace.stderr_excerpt,
-                elapsed_ms=trace.elapsed_ms,
-            )
-            finding = interpret_probe_trace(
-                parsed_trace,
-                cand,
-                test_in,
-                candidate_idx=c_idx,
-                input_idx=i_idx,
-            )
-            if finding is None:
-                # Probe ran cleanly — exception raised AND no canary
-                # observed. BLOCKED-equivalent for runtime probes.
-                # v1.5: surface the exception type/message so debugging
-                # the "why didn't this exploit fire" question doesn't
-                # require pulling the raw sandbox event from Fly.
-                _pr = parsed_trace.parsed_result or {}
-                _exc_type = _pr.get("exception_type", "")
-                _exc_msg = (_pr.get("exception_msg") or "")[:160]
-                _ok = bool(_pr.get("ok"))
+            for probe_input, m_idx, mutation_strategy in fanout:
+                if n_probes_run >= _HARD_PROBE_CAP:
+                    break
+                plan_dict = build_runtime_probe_plan(
+                    file_name=file_name,
+                    file_bytes=original_bytes,
+                    candidate=cand,
+                    test_input=probe_input,
+                    candidate_idx=c_idx,
+                    input_idx=i_idx,
+                )
+                if plan_dict is None:
+                    continue
+                # Distinct hypothesis ID per mutation. Originals stay
+                # HRP_<c>_<i> (backwards-compatible with v1.5.0 journal
+                # grep patterns); mutations get HRP_<c>_<i>_m<m>.
+                base_hid = plan_dict["hypothesis_id"]
+                hid = base_hid if m_idx == 0 else f"{base_hid}_m{m_idx}"
+                plan = SandboxPlan(
+                    plan_id=f"i{iter_num}-{hid}",
+                    file_id=file_id,
+                    hypothesis_id=hid,
+                    commands=plan_dict["commands"],
+                    expected_oracle=plan_dict["oracle"],
+                    payload=plan_dict["payload"],
+                    timeout_sec=plan_dict["timeout_sec"],
+                    image_hint=plan_dict["image_hint"],
+                    file_name=file_name,
+                    synthesis_context={
+                        "runtime_probe": True,
+                        "candidate_idx": c_idx,
+                        "input_idx": i_idx,
+                        "mutation_idx": m_idx,
+                        "mutation_strategy": mutation_strategy,
+                        "attack_class": cand.attack_class,
+                    },
+                )
+                n_probes_run += 1
+                try:
+                    trace: SandboxTrace = await sandbox.submit(plan)
+                except Exception as exc:  # noqa: BLE001
+                    journal.append(
+                        JournalRecord(
+                            iter=iter_num,
+                            phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                            claim_id=hid,
+                            verdict="rejected",
+                            rationale=(
+                                f"sandbox submit failed (mutation={mutation_strategy}): "
+                                f"{type(exc).__name__}: {str(exc)[:200]}"
+                            ),
+                            evidence_refs=[],
+                        )
+                    )
+                    continue
+
+                # ── Step 3: trace interpretation ─────────────────────────
+                parsed_trace = parse_probe_trace(
+                    candidate_function=cand.function_name,
+                    input_args_json=probe_input.args_json,
+                    exit_code=trace.exit_code,
+                    stdout=trace.stdout_excerpt,
+                    stderr=trace.stderr_excerpt,
+                    elapsed_ms=trace.elapsed_ms,
+                )
+                finding = interpret_probe_trace(
+                    parsed_trace,
+                    cand,
+                    probe_input,
+                    candidate_idx=c_idx,
+                    input_idx=i_idx,
+                )
+                if finding is None:
+                    _pr = parsed_trace.parsed_result or {}
+                    _exc_type = _pr.get("exception_type", "")
+                    _exc_msg = (_pr.get("exception_msg") or "")[:160]
+                    _ok = bool(_pr.get("ok"))
+                    journal.append(
+                        JournalRecord(
+                            iter=iter_num,
+                            phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                            claim_id=hid,
+                            verdict="rejected",
+                            rationale=(
+                                f"runtime probe ran; no exploit observed. "
+                                f"Function={cand.function_name}, class={cand.attack_class}, "
+                                f"mutation={mutation_strategy}, "
+                                f"input={probe_input.args_json[:100]}, "
+                                f"exit_code={parsed_trace.exit_code}, "
+                                f"call_ok={_ok}, "
+                                f"exc={_exc_type}: {_exc_msg}"
+                            ),
+                            evidence_refs=[trace.events[0].event_id] if trace.events else [],
+                        )
+                    )
+                    continue
+
+                # CONFIRMED via runtime evidence.
+                evidence_ref = trace.events[0].event_id if trace.events else ""
                 journal.append(
                     JournalRecord(
                         iter=iter_num,
                         phase=JournalPhase.PHASE_B_HYPOTHESIS,
                         claim_id=hid,
-                        verdict="rejected",
+                        verdict="confirmed",
                         rationale=(
-                            f"runtime probe ran; no exploit observed. "
-                            f"Function={cand.function_name}, class={cand.attack_class}, "
-                            f"input={test_in.args_json[:100]}, "
-                            f"exit_code={parsed_trace.exit_code}, "
-                            f"call_ok={_ok}, "
-                            f"exc={_exc_type}: {_exc_msg}"
+                            f"runtime probe CONFIRMED {finding.attack_class} in "
+                            f"{cand.function_name} (mutation={mutation_strategy}): "
+                            f"{finding.runtime_evidence[:240]}"
                         ),
-                        evidence_refs=[trace.events[0].event_id] if trace.events else [],
+                        evidence_refs=[evidence_ref] if evidence_ref else [],
                     )
                 )
-                continue
-
-            # CONFIRMED via runtime evidence.
-            evidence_ref = trace.events[0].event_id if trace.events else ""
-            journal.append(
-                JournalRecord(
-                    iter=iter_num,
-                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                    claim_id=hid,
-                    verdict="confirmed",
-                    rationale=(
-                        f"runtime probe CONFIRMED {finding.attack_class} in "
-                        f"{cand.function_name}: {finding.runtime_evidence[:280]}"
-                    ),
-                    evidence_refs=[evidence_ref] if evidence_ref else [],
+                findings_from_probes.append(
+                    {
+                        "id": hid,
+                        "finding_ref": hid,
+                        "finding_type": finding.attack_class,
+                        "severity": finding.severity,
+                        "cwe": finding.cwe,
+                        "line": None,
+                        "code_snippet": cand.function_name,
+                        "explanation": finding.description,
+                        "data_flow_trace": (
+                            f"runtime probe via Phase B+ (mutation={mutation_strategy}): {finding.runtime_evidence}"
+                        ),
+                        "proof_of_concept": (f"{cand.function_name}(*{finding.test_input_args})"),
+                        "confidence": 1.0,
+                        "runtime_evidence": finding.runtime_evidence,
+                        "mutation_strategy": mutation_strategy,
+                    }
                 )
-            )
-            findings_from_probes.append(
-                {
-                    "id": hid,
-                    "finding_ref": hid,
-                    "finding_type": finding.attack_class,
-                    "severity": finding.severity,
-                    "cwe": finding.cwe,
-                    "line": None,
-                    "code_snippet": cand.function_name,
-                    "explanation": finding.description,
-                    "data_flow_trace": f"runtime probe via Phase B+: {finding.runtime_evidence}",
-                    "proof_of_concept": (f"{cand.function_name}(*{finding.test_input_args})"),
-                    "confidence": 1.0,
-                    "runtime_evidence": finding.runtime_evidence,
-                }
-            )
 
     stats.sandbox_calls += n_probes_run
 
@@ -1133,8 +1194,7 @@ async def _run_phase_c_fix_verify(
                     "finding_id": h.get("id") or h.get("finding_ref"),
                     "post_patch_status": "UNVERIFIABLE",
                     "rationale": (
-                        "Binary ML artifact — Argus declined to auto-patch. "
-                        "See fix_summary for remediation guidance."
+                        "Binary ML artifact — Argus declined to auto-patch. See fix_summary for remediation guidance."
                     ),
                 }
                 for h in confirmed
@@ -1266,14 +1326,8 @@ async def _run_phase_c_fix_verify(
     verdict_obj = _parse_json_or_empty(verdict_resp.get("text", ""))
     cur = (verdict_obj.get("current_verdict") or {}) if isinstance(verdict_obj, dict) else {}
     post_patch_verdict = cur.get("verdict_label", "unknown")
-    new_claim_verdicts = (
-        (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
-    )
-    new_v_by_hid = {
-        cv.get("hypothesis_id"): cv.get("verdict")
-        for cv in new_claim_verdicts
-        if isinstance(cv, dict)
-    }
+    new_claim_verdicts = (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
+    new_v_by_hid = {cv.get("hypothesis_id"): cv.get("verdict") for cv in new_claim_verdicts if isinstance(cv, dict)}
 
     verdict_in = (verdict_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
     verdict_out = (verdict_resp.get("usage") or {}).get("completion_tokens", 0) or 0
@@ -1301,9 +1355,7 @@ async def _run_phase_c_fix_verify(
         )
 
     n_neutralized = sum(1 for pf in per_finding if pf["post_patch_status"] == "NEUTRALIZED")
-    n_still_exploitable = sum(
-        1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE"
-    )
+    n_still_exploitable = sum(1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE")
 
     return {
         "attempted": True,

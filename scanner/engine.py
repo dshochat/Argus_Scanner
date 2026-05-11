@@ -114,6 +114,15 @@ class ScanConfig:
     # ``argus scan --enable-runtime-probe`` or
     # ``argus install --enable-runtime-probe``.
     enable_runtime_probe: bool = False
+    # Phase 1a — deterministic mutation expansion of runtime-probe inputs.
+    # When ``enable_runtime_probe`` is True AND this is True, each
+    # model-generated attack input fans out to N mutated variants
+    # drawn from known-bypass families (URL-encode, double-encode,
+    # ....// path-traversal, `; id` command-injection, `' OR 1=1--`
+    # SQLi, etc.). Catches exploits the model's first input shape
+    # didn't hit. Adds ~5x sandbox-run cost on top of the base probe.
+    # Off by default; opt-in via ``--enable-runtime-probe-mutation``.
+    enable_runtime_probe_mutation: bool = False
     # DAST-204 v0.0 (v1.1): proactive vulnerability discovery via the
     # hardcoded payload library in dast/discovery.py. Runs alongside
     # the standard DAST orchestrator (which only validates L1's
@@ -521,6 +530,7 @@ async def scan_file(
                 result,
                 enable_phase_c=cfg.enable_phase_c,
                 enable_runtime_probe=cfg.enable_runtime_probe,
+                enable_runtime_probe_mutation=cfg.enable_runtime_probe_mutation,
             )
             result.dast_attempted = True
             result.dast_findings = (dast_out or {}).get("validated_findings", [])

@@ -152,6 +152,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "in API cost on top of Phase A. Requires DAST configured (Fly).",
     )
     scan.add_argument(
+        "--enable-runtime-probe-mutation",
+        action="store_true",
+        help="enable deterministic mutation expansion of runtime-probe "
+        "inputs. For each model-generated attack input, fans out to "
+        "known-bypass variants (URL-encode, double-encode, ....// path-"
+        "traversal, '; id' command-injection, ' OR 1=1-- SQLi, etc.). "
+        "Catches exploits the model's first input shape didn't hit. "
+        "Adds ~5x sandbox cost on top of --enable-runtime-probe. "
+        "Implies --enable-runtime-probe.",
+    )
+    scan.add_argument(
         "--max-cost",
         type=float,
         default=None,
@@ -332,6 +343,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "every file in the run that triggers DAST. Adds ~$0.25 per file.",
     )
     repo.add_argument(
+        "--enable-runtime-probe",
+        action="store_true",
+        help="enable Phase B+ runtime exploit probing on every DAST-"
+        "eligible Python / JS / shell file. Sonnet generates concrete "
+        "attack inputs; the sandbox executes each; findings come from "
+        "runtime evidence. Adds ~$0.20-0.50/file on top of Phase A.",
+    )
+    repo.add_argument(
+        "--enable-runtime-probe-mutation",
+        action="store_true",
+        help="enable deterministic mutation expansion of runtime-probe "
+        "inputs (Phase 1a). Fans out each model-generated input to "
+        "known-bypass variants. Adds ~5x sandbox cost on top of "
+        "--enable-runtime-probe. Implies --enable-runtime-probe.",
+    )
+    repo.add_argument(
         "--dast-trigger-verdicts",
         type=str,
         default=None,
@@ -468,6 +495,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "DAST configured (Fly) and --no-dast NOT set.",
     )
     install.add_argument(
+        "--enable-runtime-probe-mutation",
+        action="store_true",
+        help="enable deterministic mutation expansion of runtime-probe "
+        "inputs. Fans out each model-generated attack input to known-"
+        "bypass variants (URL-encode, ....// path-traversal, '; id' "
+        "command-injection, etc.). Adds ~5x sandbox cost on top of "
+        "--enable-runtime-probe. Implies --enable-runtime-probe.",
+    )
+    install.add_argument(
         "--max-cost",
         type=float,
         default=None,
@@ -552,6 +588,12 @@ async def _run_scan(args: argparse.Namespace) -> int:
         config_kwargs["enable_phase_c"] = False
     if getattr(args, "enable_runtime_probe", False):
         config_kwargs["enable_runtime_probe"] = True
+    if getattr(args, "enable_runtime_probe_mutation", False):
+        # Mutation implies probing — turn both on so users can pass
+        # only --enable-runtime-probe-mutation without needing the
+        # parent flag too.
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_runtime_probe_mutation"] = True
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -874,6 +916,12 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         config_kwargs["enable_phase_c"] = False
     if getattr(args, "enable_runtime_probe", False):
         config_kwargs["enable_runtime_probe"] = True
+    if getattr(args, "enable_runtime_probe_mutation", False):
+        # Mutation implies probing — turn both on so users can pass
+        # only --enable-runtime-probe-mutation without needing the
+        # parent flag too.
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_runtime_probe_mutation"] = True
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -1263,6 +1311,12 @@ async def _run_install(args: argparse.Namespace) -> int:
         config_kwargs["max_cost_per_file_usd"] = args.max_cost
     if getattr(args, "enable_runtime_probe", False):
         config_kwargs["enable_runtime_probe"] = True
+    if getattr(args, "enable_runtime_probe_mutation", False):
+        # Mutation implies probing — turn both on so users can pass
+        # only --enable-runtime-probe-mutation without needing the
+        # parent flag too.
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_runtime_probe_mutation"] = True
     scan_cfg = ScanConfig(**config_kwargs)
 
     cache_dir = args.cache_dir or CACHE_DIR_DEFAULT
