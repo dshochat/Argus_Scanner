@@ -408,6 +408,7 @@ def _build_python_probe_harness(
         "            except (OSError, PermissionError):\n"
         "                pass\n"
         # ── End input path-prep ───────────────────────────────────────────
+
         f"import {module_name} as _target\n"
         "fn = _target\n"
         f"for part in '{safe_function}'.split('.'):\n"
@@ -443,6 +444,406 @@ def _build_python_probe_harness(
     )
 
 
+# ── JavaScript harness generation ────────────────────────────────────────
+
+
+def _javascript_module_path_for_file(file_name: str) -> str:
+    """The absolute path Node should ``import()`` to load the staged
+    module. Sandbox guarantees the file lives at ``/workspace/<basename>``.
+
+    Unlike Python (where we strip the extension and rely on the import
+    machinery), Node's dynamic ``import()`` takes a path — extension
+    included — and figures out the loader from there. Trailing chars
+    that would break a path import are not legal in Node module specifiers
+    anyway, so we just pass the basename verbatim.
+    """
+    return f"/workspace/{Path(file_name).name}"
+
+
+def _build_javascript_probe_harness(
+    *,
+    module_path: str,
+    function_name: str,
+    args_json: str,
+    kwargs_json: str,
+) -> str:
+    """Generate the Node.js harness that runs ONE probe inside the sandbox.
+
+    Layout (mirrors the Python harness for symmetry):
+    1. Snapshot baseline (/tmp listing).
+    2. Path-prep preamble — extract absolute-path string literals from
+       source and from input args, ``fs.mkdirSync(..., {recursive: true})``
+       each.
+    3. Dynamic ``import()`` the target module.
+    4. Resolve the function with a dotted-path walk supporting both
+       CommonJS (``module.exports``) and ES-module (``export default``)
+       layouts.
+    5. Call with decoded args / kwargs. Async functions are awaited.
+    6. Print ``RESULT_JSON:{...}`` + ``SIDE_EFFECTS:{...}`` markers — the
+       deterministic interpreter rules then run on these the same way
+       they do for Python.
+
+    Wrapped in an async IIFE so top-level ``await`` works on Node 18+.
+    """
+    # Embed args/kwargs as JSON-in-JS-string-literal — JSON.parse handles
+    # the unwrap. Use JSON.stringify to safely encode the args_json /
+    # kwargs_json strings into JS string literals.
+    args_json_lit = json.dumps(args_json)
+    kwargs_json_lit = json.dumps(kwargs_json)
+    function_name_lit = json.dumps(function_name)
+    module_path_lit = json.dumps(module_path)
+    deny_lit = json.dumps(list(_PROBE_PREP_DENY_PREFIXES))
+    return (
+        # ── Catastrophic-failure safety net ─────────────────────────────────
+        # Real-fixture runs surfaced a class of failure where Node exited
+        # code 1 without emitting any RESULT_JSON marker — the harness
+        # crashed before its try/catch around the import block could fire
+        # (e.g., JSON.parse on a malformed payload, or an unhandled
+        # rejection from an async path-prep call). The interpreter then
+        # got parsed_result=None and journaled "no exploit observed" with
+        # an empty exception_type — a silent failure that looks identical
+        # to "probe ran cleanly, no exploit found".
+        #
+        # Fix: install process-level handlers FIRST so any exception or
+        # unhandled rejection is converted into a RESULT_JSON marker
+        # before Node exits. Idempotency-safe: the markers are emitted by
+        # the normal-path code below when execution reaches it.
+        "let _markerEmitted = false;\n"
+        "function _emitFatal(label, err) {\n"
+        "  if (_markerEmitted) return;\n"
+        "  _markerEmitted = true;\n"
+        "  const msg = err && (err.message || err.toString) "
+        "? String(err.message || err).slice(0, 300) : String(err).slice(0, 300);\n"
+        "  const stack = err && err.stack ? String(err.stack).slice(-1500) : '';\n"
+        "  const ctor = err && err.constructor && err.constructor.name "
+        "? err.constructor.name : 'Error';\n"
+        "  try {\n"
+        "    console.log('RESULT_JSON:' + JSON.stringify({\n"
+        "      ok: false,\n"
+        "      exception_type: ctor,\n"
+        "      exception_msg: '[' + label + '] ' + msg,\n"
+        "      tb_tail: stack,\n"
+        "    }));\n"
+        "    console.log('SIDE_EFFECTS:' + JSON.stringify({ tmp_files_added: [] }));\n"
+        "  } catch (e) {}\n"
+        "}\n"
+        "process.on('uncaughtException', (e) => _emitFatal('uncaughtException', e));\n"
+        "process.on('unhandledRejection', (e) => _emitFatal('unhandledRejection', e));\n"
+        "(async () => {\n"
+        # Wrap the entire body in try/catch so SYNC throws at the IIFE
+        # top level (JSON.parse failures, ReferenceErrors before the
+        # import block, etc.) still get reported as RESULT_JSON. The
+        # individual try/catch blocks below remain — they emit more
+        # specific exception_type labels for the common cases.
+        "  try {\n"
+        "  const fs = require('fs');\n"
+        "  const path = require('path');\n"
+        "  let baselineTmp = new Set();\n"
+        "  try {\n"
+        "    baselineTmp = new Set(fs.readdirSync('/tmp'));\n"
+        "  } catch (e) {}\n"
+        "  const args = JSON.parse(" + args_json_lit + ");\n"
+        "  const kwargs = JSON.parse(" + kwargs_json_lit + ");\n"
+        "  const fnName = " + function_name_lit + ";\n"
+        # ── Path-prep preamble ──────────────────────────────────────────
+        "  const DENY = " + deny_lit + ";\n"
+        "  const absDirPrefixes = new Set();\n"
+        "  try {\n"
+        "    const src = fs.readFileSync(" + module_path_lit + ", 'utf8');\n"
+        "    const re = /['\"](\\/[A-Za-z_][\\w./-]*)['\"]/g;\n"
+        "    const matches = new Set();\n"
+        "    let m;\n"
+        "    while ((m = re.exec(src)) !== null) matches.add(m[1]);\n"
+        "    for (const p of matches) {\n"
+        "      if (DENY.some(d => p === d || p.startsWith(d + '/'))) continue;\n"
+        "      try {\n"
+        "        const bn = path.basename(p.replace(/\\/$/, ''));\n"
+        "        const looksLikeFile = bn.includes('.') && !p.endsWith('/');\n"
+        "        const toMk = looksLikeFile ? path.dirname(p) : p.replace(/\\/$/, '');\n"
+        "        if (toMk && toMk !== '/') {\n"
+        "          fs.mkdirSync(toMk, { recursive: true });\n"
+        "          absDirPrefixes.add(toMk);\n"
+        "        }\n"
+        "      } catch (e) {}\n"
+        "    }\n"
+        "  } catch (e) {}\n"
+        # ── Input-derived path-prep ─────────────────────────────────────
+        "  const SKIP = new Set(['..', '.', '']);\n"
+        "  const allInputs = [...args, ...Object.values(kwargs)];\n"
+        "  for (const a of allInputs) {\n"
+        "    if (typeof a !== 'string' || !a.includes('/')) continue;\n"
+        "    const comps = a.split('/').filter(c => !SKIP.has(c));\n"
+        "    if (comps.length === 0) continue;\n"
+        "    for (let depth = 1; depth < comps.length; depth++) {\n"
+        "      const rel = comps.slice(0, depth).join('/');\n"
+        "      for (const srcDir of absDirPrefixes) {\n"
+        "        try {\n"
+        "          const full = srcDir.replace(/\\/$/, '') + '/' + rel;\n"
+        "          if (DENY.some(d => full === d || full.startsWith(d + '/'))) continue;\n"
+        "          fs.mkdirSync(full, { recursive: true });\n"
+        "        } catch (e) {}\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        # ── Module resolution ───────────────────────────────────────────
+        # Dynamic import() supports both CJS and ESM. For CJS modules
+        # the named exports appear directly on the module namespace;
+        # for ESM-default-export they appear on .default.
+        "  let mod;\n"
+        "  try {\n"
+        "    mod = await import(" + module_path_lit + ");\n"
+        "  } catch (e) {\n"
+        "    _markerEmitted = true;\n"
+        "    console.log('RESULT_JSON:' + JSON.stringify({\n"
+        "      ok: false,\n"
+        "      exception_type: 'ImportError',\n"
+        "      exception_msg: String(e.message || e).slice(0, 300),\n"
+        "    }));\n"
+        "    console.log('SIDE_EFFECTS:' + JSON.stringify({ tmp_files_added: [] }));\n"
+        "    return;\n"
+        "  }\n"
+        # Dotted-path resolver — try direct attr walk, then .default.
+        "  function resolveFn(modObj, dotted) {\n"
+        "    const parts = dotted.split('.');\n"
+        "    let cur = modObj;\n"
+        "    for (const p of parts) {\n"
+        "      if (cur != null && typeof cur === 'object' && p in cur) {\n"
+        "        cur = cur[p];\n"
+        "      } else {\n"
+        "        return undefined;\n"
+        "      }\n"
+        "    }\n"
+        "    return cur;\n"
+        "  }\n"
+        "  let fn = resolveFn(mod, fnName);\n"
+        "  if (typeof fn !== 'function' && mod.default != null) {\n"
+        "    fn = resolveFn(mod.default, fnName);\n"
+        "  }\n"
+        "  if (typeof fn !== 'function') {\n"
+        "    _markerEmitted = true;\n"
+        "    console.log('RESULT_JSON:' + JSON.stringify({\n"
+        "      ok: false,\n"
+        "      exception_type: 'AttributeError',\n"
+        "      exception_msg: 'function not found: ' + fnName,\n"
+        "    }));\n"
+        "    console.log('SIDE_EFFECTS:' + JSON.stringify({ tmp_files_added: [] }));\n"
+        "    return;\n"
+        "  }\n"
+        # ── Invocation + result capture ─────────────────────────────────
+        # Pass kwargs as a trailing object arg if non-empty — common JS
+        # convention. If the function doesn't accept that signature it
+        # just ignores the extra arg.
+        "  const kwKeys = Object.keys(kwargs);\n"
+        "  const callArgs = kwKeys.length > 0 ? [...args, kwargs] : args;\n"
+        "  try {\n"
+        "    let result = fn(...callArgs);\n"
+        "    if (result && typeof result.then === 'function') {\n"
+        "      result = await result;\n"
+        "    }\n"
+        "    let preview;\n"
+        "    try {\n"
+        "      preview = (typeof result === 'string' ? result : JSON.stringify(result));\n"
+        "      preview = String(preview).slice(0, 600);\n"
+        "    } catch (e) {\n"
+        "      preview = String(result).slice(0, 600);\n"
+        "    }\n"
+        "    _markerEmitted = true;\n"
+        "    console.log('RESULT_JSON:' + JSON.stringify({\n"
+        "      ok: true,\n"
+        "      type: typeof result,\n"
+        "      value_preview: preview,\n"
+        "    }));\n"
+        "  } catch (e) {\n"
+        "    const stack = e && e.stack ? String(e.stack).slice(-1500) : '';\n"
+        "    _markerEmitted = true;\n"
+        "    console.log('RESULT_JSON:' + JSON.stringify({\n"
+        "      ok: false,\n"
+        "      exception_type: e && e.constructor ? e.constructor.name : 'Error',\n"
+        "      exception_msg: String((e && e.message) || e).slice(0, 300),\n"
+        "      tb_tail: stack,\n"
+        "    }));\n"
+        "  }\n"
+        # ── Side-effect snapshot ───────────────────────────────────────
+        "  let added = [];\n"
+        "  try {\n"
+        "    added = fs.readdirSync('/tmp').filter(f => !baselineTmp.has(f)).sort();\n"
+        "  } catch (e) {}\n"
+        "  console.log('SIDE_EFFECTS:' + JSON.stringify({\n"
+        "    tmp_files_added: added.slice(0, 20),\n"
+        "  }));\n"
+        # Close the outer try that wraps the entire IIFE body. Sync
+        # throws (e.g., JSON.parse on a malformed payload, ReferenceError
+        # in path-prep, TypeError in input enumeration) bubble here and
+        # get reported as a fatal marker. _markerEmitted guards against
+        # double-emission if a partial-success path already reported.
+        "  } catch (e) {\n"
+        "    _emitFatal('iifeBody', e);\n"
+        "  }\n"
+        "})();\n"
+    )
+
+
+# ── Shell harness generation ─────────────────────────────────────────────
+
+
+def _build_shell_probe_harness(
+    *,
+    script_path: str,
+    args_json: str,
+    kwargs_json: str,
+) -> str:
+    """Generate the Python harness that drives ONE shell-script probe.
+
+    Shell scripts are entry-points, not function libraries — the
+    ``function_name`` field is conceptually "the script itself" for
+    shell. We invoke ``bash <script_path> <args...>`` with:
+
+    * ``args_json`` decoded as POSITIONAL ARGS ($1, $2, ...)
+    * ``kwargs_json`` decoded as ENVIRONMENT VARS (exported before exec)
+
+    The harness is written in Python (not bash) because pure-bash JSON
+    parsing is treacherous and Python is already in every sandbox image.
+    Same RESULT_JSON / SIDE_EFFECTS markers as Python + JS so the
+    deterministic interpreter rules apply uniformly.
+
+    Path-prep preamble runs the same way as Python — regex-extract
+    absolute-path string literals from the shell source and from input
+    args, ``mkdir -p`` each. The shell deny list is identical to
+    Python's (no ``/etc``, ``/usr``, etc.).
+    """
+    args_repr = repr(args_json)
+    kwargs_repr = repr(kwargs_json)
+    deny_repr = repr(_PROBE_PREP_DENY_PREFIXES)
+    script_path_repr = repr(script_path)
+    return (
+        "import sys, os, json, traceback, re, subprocess\n"
+        "baseline_tmp = set()\n"
+        "try:\n"
+        "    baseline_tmp = set(os.listdir('/tmp'))\n"
+        "except Exception:\n"
+        "    pass\n"
+        f"args = json.loads({args_repr})\n"
+        f"kwargs = json.loads({kwargs_repr})\n"
+        f"_DENY = {deny_repr}\n"
+        f"_script_path = {script_path_repr}\n"
+        "_paths_to_prep = set()\n"
+        "try:\n"
+        "    _src = open(_script_path).read()\n"
+        "    _paths_to_prep = set(re.findall("
+        "r'''[\"\\']((?:/[A-Za-z_][\\w./-]*))[\"\\']''', _src))\n"
+        "except Exception:\n"
+        "    pass\n"
+        "_abs_dir_prefixes = set()\n"
+        "for _p in _paths_to_prep:\n"
+        "    if any(_p == d or _p.startswith(d + '/') for d in _DENY):\n"
+        "        continue\n"
+        "    try:\n"
+        "        _bn = os.path.basename(_p.rstrip('/'))\n"
+        "        _looks_like_file = '.' in _bn and not _p.endswith('/')\n"
+        "        _to_mk = os.path.dirname(_p) if _looks_like_file else _p.rstrip('/')\n"
+        "        if _to_mk and _to_mk != '/':\n"
+        "            os.makedirs(_to_mk, exist_ok=True)\n"
+        "            _abs_dir_prefixes.add(_to_mk)\n"
+        "    except (OSError, PermissionError):\n"
+        "        pass\n"
+        "_skip = {'..', '.', ''}\n"
+        "for _arg in args + list(kwargs.values()):\n"
+        "    if not (isinstance(_arg, str) and '/' in _arg):\n"
+        "        continue\n"
+        "    _comps = [c for c in _arg.split('/') if c not in _skip]\n"
+        "    if not _comps:\n"
+        "        continue\n"
+        "    for _depth in range(1, len(_comps)):\n"
+        "        _rel = '/'.join(_comps[:_depth])\n"
+        "        for _src_dir in _abs_dir_prefixes:\n"
+        "            try:\n"
+        "                _full = _src_dir.rstrip('/') + '/' + _rel\n"
+        "                if any(_full == d or _full.startswith(d + '/') for d in _DENY):\n"
+        "                    continue\n"
+        "                os.makedirs(_full, exist_ok=True)\n"
+        "            except (OSError, PermissionError):\n"
+        "                pass\n"
+        # Build env from kwargs (string-coerced), prepend the existing env.
+        "env = os.environ.copy()\n"
+        "for k, v in kwargs.items():\n"
+        "    env[str(k)] = str(v)\n"
+        # Invoke bash <script> <args...>. Shell scripts return their own
+        # exit code; we map that to ok = (returncode == 0). Vulnerable
+        # behavior on attack input usually = exit 0 (the script ran the
+        # attack to completion) rather than the defensive exit != 0.
+        f"_argv = ['bash', _script_path] + [str(a) for a in args]\n"
+        "try:\n"
+        "    _proc = subprocess.run(\n"
+        "        _argv,\n"
+        "        env=env,\n"
+        "        capture_output=True,\n"
+        "        text=True,\n"
+        "        timeout=20,\n"
+        "    )\n"
+        "    print('RESULT_JSON:' + json.dumps({\n"
+        "        'ok': _proc.returncode == 0,\n"
+        "        'exit_code': _proc.returncode,\n"
+        "        'type': 'shell_exit',\n"
+        "        'value_preview': (_proc.stdout or '')[:600],\n"
+        "        'stderr_preview': (_proc.stderr or '')[:300],\n"
+        "    }))\n"
+        "except subprocess.TimeoutExpired:\n"
+        "    print('RESULT_JSON:' + json.dumps({\n"
+        "        'ok': False,\n"
+        "        'exception_type': 'TimeoutExpired',\n"
+        "        'exception_msg': 'shell script exceeded timeout',\n"
+        "    }))\n"
+        "except BaseException as e:\n"
+        "    print('RESULT_JSON:' + json.dumps({\n"
+        "        'ok': False,\n"
+        "        'exception_type': type(e).__name__,\n"
+        "        'exception_msg': str(e)[:300],\n"
+        "        'tb_tail': traceback.format_exc()[-1500:],\n"
+        "    }))\n"
+        "added_tmp = []\n"
+        "try:\n"
+        "    added_tmp = sorted(set(os.listdir('/tmp')) - baseline_tmp)\n"
+        "except Exception:\n"
+        "    pass\n"
+        "print('SIDE_EFFECTS:' + json.dumps({\n"
+        "    'tmp_files_added': added_tmp[:20],\n"
+        "}))\n"
+    )
+
+
+# ── Language detection + plan dispatch ───────────────────────────────────
+
+
+#: Map of probe-supported languages to file extensions. The plan builder
+#: dispatches harness generation by walking this table.
+_SUPPORTED_EXTS_BY_LANG: dict[str, tuple[str, ...]] = {
+    "python": (".py",),
+    "javascript": (".js", ".mjs", ".cjs"),
+    "shell": (".sh", ".bash"),
+}
+
+
+def detect_probe_language(file_name: str) -> str | None:
+    """Return the probe language for ``file_name`` based on its extension,
+    or ``None`` if the file isn't probe-supported.
+
+    Returns one of: ``"python"``, ``"javascript"``, ``"shell"``, or
+    ``None``. Used by both the plan builder (to dispatch harness
+    generation) and the orchestrator's probe-stage entry gate (to skip
+    files we can't probe).
+
+    TypeScript / JSX is intentionally NOT included — Node 18 doesn't
+    strip TS type annotations natively, and probing a .ts file through
+    the JS harness would fail at parse time. Add ts-node to the
+    sandbox image and split the harness to enable.
+    """
+    fn_lower = file_name.lower()
+    for lang, exts in _SUPPORTED_EXTS_BY_LANG.items():
+        if any(fn_lower.endswith(e) for e in exts):
+            return lang
+    return None
+
+
 # ── Plan builder ──────────────────────────────────────────────────────────
 
 
@@ -458,41 +859,84 @@ def build_runtime_probe_plan(
 ) -> dict[str, Any] | None:
     """Build a Phase-A-shaped plan dict that runs one probe.
 
-    Returns ``None`` when the file isn't Python — v1.5 MVP scope.
+    Returns ``None`` when the file's extension isn't in
+    :data:`_SUPPORTED_EXTS_BY_LANG` (probe is a no-op for that file).
     The plan's ``hypothesis_id`` follows the pattern
     ``HRP_<candidate_idx>_<input_idx>`` (HRP = "harness runtime probe")
     for stable identifiers across iterations.
+
+    Dispatches harness construction by file extension:
+
+    * ``.py`` → Python harness (import + getattr walk + call)
+    * ``.js`` / ``.mjs`` / ``.cjs`` → Node harness (dynamic import +
+      CJS/ESM-tolerant function resolver + async-await invocation)
+    * ``.sh`` / ``.bash`` → Python-orchestrated shell harness
+      (subprocess.run with args as positional and kwargs as env vars;
+      script-level probing, not function-level, since shell scripts
+      are usually entry points)
+
+    All three harnesses emit the same ``RESULT_JSON:`` / ``SIDE_EFFECTS:``
+    markers and route through :func:`interpret_probe_trace` identically.
     """
-    if not file_name.lower().endswith(".py"):
+    lang = detect_probe_language(file_name)
+    if lang is None:
         return None
 
-    module_name = _python_module_name_for_file(file_name)
-    harness = _build_python_probe_harness(
-        module_name=module_name,
-        function_name=candidate.function_name,
-        args_json=test_input.args_json,
-        kwargs_json=test_input.kwargs_json,
-    )
+    file_base = Path(file_name).name
+    if lang == "python":
+        module_name = _python_module_name_for_file(file_name)
+        harness = _build_python_probe_harness(
+            module_name=module_name,
+            function_name=candidate.function_name,
+            args_json=test_input.args_json,
+            kwargs_json=test_input.kwargs_json,
+        )
+        runner = "python3"
+        harness_ext = "py"
+    elif lang == "javascript":
+        module_path = _javascript_module_path_for_file(file_name)
+        harness = _build_javascript_probe_harness(
+            module_path=module_path,
+            function_name=candidate.function_name,
+            args_json=test_input.args_json,
+            kwargs_json=test_input.kwargs_json,
+        )
+        runner = "node"
+        # Use .cjs so dynamic import() of either CJS or ESM works
+        # without "type":"module" gymnastics in /workspace.
+        harness_ext = "cjs"
+    elif lang == "shell":
+        script_path = f"/workspace/{file_base}"
+        harness = _build_shell_probe_harness(
+            script_path=script_path,
+            args_json=test_input.args_json,
+            kwargs_json=test_input.kwargs_json,
+        )
+        runner = "python3"
+        harness_ext = "py"
+    else:  # pragma: no cover — detect_probe_language guarantees coverage
+        return None
 
     # Encode the original file as base64 so the sandbox stages it at
-    # /workspace/<file_name>. SAme pattern ml_detonation.py uses for
+    # /workspace/<file_name>. Same pattern ml_detonation.py uses for
     # binary artifacts; reuses the staging infra.
     payload_b64 = base64.b64encode(file_bytes).decode("ascii")
 
     # Wrap harness in a python -c invocation. The sandbox runner will
-    # shell-quote this safely; we just deliver the python source.
-    # Using ``-`` (stdin) instead of -c keeps quoting trivial: pipe the
-    # harness via heredoc-style. But SandboxPlan.commands is a list of
-    # shell strings, so the cleanest path is to write the harness to a
-    # temp file in /workspace first, then invoke it. Two-command plan.
-    harness_path = f"/workspace/_argus_probe_{candidate_idx}_{input_idx}.py"
+    # shell-quote this safely; we just deliver the harness source.
+    # SandboxPlan.commands is a list of shell strings, so the cleanest
+    # path is to write the harness to a temp file in /workspace first,
+    # then invoke it. Two-command plan. The bootstrap is always python3
+    # (always present in every sandbox image) — only the harness runner
+    # varies by language.
+    harness_path = f"/workspace/_argus_probe_{candidate_idx}_{input_idx}.{harness_ext}"
     write_cmd = (
         f'python3 -c "import base64,sys; '
         f"open({harness_path!r},'wb').write("
         f'base64.b64decode(sys.argv[1]))" '
         f"{base64.b64encode(harness.encode('utf-8')).decode('ascii')}"
     )
-    run_cmd = f"python3 {harness_path}"
+    run_cmd = f"{runner} {harness_path}"
 
     return {
         "hypothesis_id": f"HRP_{candidate_idx}_{input_idx}",
@@ -504,7 +948,7 @@ def build_runtime_probe_plan(
         "timeout_sec": DEFAULT_PROBE_TIMEOUT_SEC,
         "image_hint": image_hint,
         "rationale": (
-            f"Runtime probe: testing {candidate.function_name} with attack "
+            f"Runtime probe ({lang}): testing {candidate.function_name} with attack "
             f"input for {candidate.attack_class}. Expected if vulnerable: "
             f"{test_input.expected_observable[:150]}"
         ),
@@ -610,15 +1054,22 @@ def interpret_probe_trace(
     # markers in attack inputs (e.g., write to /tmp/argus_probe_*) that
     # the sandbox can observe. Tmp files appearing post-call = exploit.
     tmp_added: list[str] = (
-        side_effects.get("tmp_files_added") if isinstance(side_effects.get("tmp_files_added"), list) else []
+        side_effects.get("tmp_files_added")
+        if isinstance(side_effects.get("tmp_files_added"), list)
+        else []
     )
-    canary_hit = any(isinstance(f, str) and ("argus_probe" in f.lower() or "pwned" in f.lower()) for f in tmp_added)
+    canary_hit = any(
+        isinstance(f, str) and ("argus_probe" in f.lower() or "pwned" in f.lower())
+        for f in tmp_added
+    )
 
     # Build the finding when ANY rule fires.
     evidence_parts: list[str] = []
     if ok:
         preview = parsed.get("value_preview", "")
-        evidence_parts.append(f"Function returned without raising (value preview: {str(preview)[:200]})")
+        evidence_parts.append(
+            f"Function returned without raising (value preview: {str(preview)[:200]})"
+        )
     if canary_hit:
         evidence_parts.append(f"Sandbox observed canary file(s) created in /tmp: {tmp_added[:5]}")
     if not evidence_parts:
@@ -638,7 +1089,10 @@ def interpret_probe_trace(
         attack_class=candidate.attack_class,
         severity=severity_for_attack_class(candidate.attack_class),
         cwe=cwe_for_attack_class(candidate.attack_class),
-        description=(test_input.exploit_proof_if_observed or f"{candidate.attack_class} in {candidate.function_name}"),
+        description=(
+            test_input.exploit_proof_if_observed
+            or f"{candidate.attack_class} in {candidate.function_name}"
+        ),
         runtime_evidence=runtime_evidence,
         test_input_args=test_input.args_json,
     )
@@ -655,6 +1109,7 @@ __all__ = [
     "RuntimeProbeTrace",
     "build_runtime_probe_plan",
     "cwe_for_attack_class",
+    "detect_probe_language",
     "interpret_probe_trace",
     "parse_probe_trace",
     "severity_for_attack_class",

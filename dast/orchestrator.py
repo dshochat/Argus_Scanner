@@ -160,7 +160,9 @@ def _has_refutation_of_prior_confirmed(
         if not (isinstance(ev_ids, list) and ev_ids):
             continue
         hyp = hyp_index.get(cv.get("hypothesis_id", "")) or {}
-        fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
+        fref = hyp.get("finding_ref") or (
+            (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
+        )
         if fref and fref in prev_confirmed:
             return True
     return False
@@ -236,9 +238,15 @@ async def run_dast(
     # loop will pick up — not a throwaway. The loop below detects this
     # pre-init via ``iterations`` non-empty + iter==1 and reuses.
     probe_pre_init_stats: IterationStats | None = None
+    # Probe-supported language gate: Python / JavaScript (.js, .mjs, .cjs)
+    # / shell (.sh, .bash). detect_probe_language is the single source of
+    # truth; plan builder dispatches by the same function.
+    from dast.runtime_probe import detect_probe_language  # noqa: PLC0415
+
+    _probe_lang = detect_probe_language(file_name) if enable_runtime_probe else None
     if (
         enable_runtime_probe
-        and file_name.lower().endswith(".py")
+        and _probe_lang is not None
         and isinstance(file_record.get("original_bytes"), (bytes, bytearray))
     ):
         probe_pre_init_stats = IterationStats(iter=1)
@@ -293,7 +301,9 @@ async def run_dast(
             # If the probe established a floor higher than the current
             # last_verdict, lift last_verdict to the floor so the
             # downstream verdict logic sees the probe-grounded evidence.
-            current_rank = _VERDICT_RANK.get(str(last_verdict.get("verdict_label", "suspicious")), -1)
+            current_rank = _VERDICT_RANK.get(
+                str(last_verdict.get("verdict_label", "suspicious")), -1
+            )
             if max_dast_verdict_rank > current_rank and max_dast_verdict_label:
                 last_verdict["verdict_label"] = max_dast_verdict_label
                 last_verdict["log_summary"] = (
@@ -480,7 +490,9 @@ async def run_dast(
         st.phase_a_verdict_out = (verdict_resp.get("usage") or {}).get("completion_tokens", 0) or 0
         st.finish_reasons["verdict"] = verdict_resp.get("finish_reason") or "?"
         verdict_obj = _parse_json_or_empty(verdict_resp.get("text", ""))
-        claim_verdicts = (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
+        claim_verdicts = (
+            (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
+        )
         cur = (verdict_obj.get("current_verdict") or {}) if isinstance(verdict_obj, dict) else {}
 
         prev_confirmed = set(prior_summary.confirmed_findings)
@@ -498,7 +510,9 @@ async def run_dast(
             hyp = hyp_index.get(hid) or {}
             # L1 hypotheses use ``finding_ref``; Phase B hypotheses use
             # ``upstream_chain.confirmed_finding_ref``. Try both.
-            fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
+            fref = hyp.get("finding_ref") or (
+                (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
+            )
             if fref:
                 evidence_refs.append(fref)
             evidence_refs.extend(ev_ids if isinstance(ev_ids, list) else [])
@@ -535,7 +549,9 @@ async def run_dast(
                 max_dast_verdict_rank >= 0
                 and new_rank < max_dast_verdict_rank
                 and max_dast_verdict_label is not None
-                and not _has_refutation_of_prior_confirmed(claim_verdicts, hyp_index, prev_confirmed)
+                and not _has_refutation_of_prior_confirmed(
+                    claim_verdicts, hyp_index, prev_confirmed
+                )
             ):
                 clamp_msg = (
                     f"[iter_erosion_guard] iter {it} model emitted "
@@ -588,7 +604,9 @@ async def run_dast(
         st.phase_b_out = (explore_resp.get("usage") or {}).get("completion_tokens", 0) or 0
         st.finish_reasons["explore"] = explore_resp.get("finish_reason") or "?"
         explore_obj = _parse_json_or_empty(explore_resp.get("text", ""))
-        new_hyps = (explore_obj.get("new_hypotheses") or []) if isinstance(explore_obj, dict) else []
+        new_hyps = (
+            (explore_obj.get("new_hypotheses") or []) if isinstance(explore_obj, dict) else []
+        )
         st.hypotheses_proposed = len(new_hyps)
 
         # Validator gate
@@ -637,7 +655,12 @@ async def run_dast(
             # path's aggregate cost cap.
             + st.phase_b_runtime_probe_in
         )
-        iter_out = st.phase_a_plan_out + st.phase_a_verdict_out + st.phase_b_out + st.phase_b_runtime_probe_out
+        iter_out = (
+            st.phase_a_plan_out
+            + st.phase_a_verdict_out
+            + st.phase_b_out
+            + st.phase_b_runtime_probe_out
+        )
         total_in += iter_in
         total_out += iter_out
         st.elapsed_s = round(time.time() - it_started, 2)
@@ -801,7 +824,9 @@ async def _run_phase_b_runtime_probe(
     probe_prompt = dast_prompts.build_phase_b_runtime_probe_prompt(
         file_text=source_text,
         l1_output=l1_output,
-        journal_summary=journal_summary.to_dict() if hasattr(journal_summary, "to_dict") else journal_summary,
+        journal_summary=journal_summary.to_dict()
+        if hasattr(journal_summary, "to_dict")
+        else journal_summary,
     )
     probe_resp = await inference(
         probe_prompt,
@@ -814,7 +839,9 @@ async def _run_phase_b_runtime_probe(
     # Without this, probe tokens leak out of cost accounting and the
     # aggregate cap can be silently exceeded.
     stats.phase_b_runtime_probe_in = (probe_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
-    stats.phase_b_runtime_probe_out = (probe_resp.get("usage") or {}).get("completion_tokens", 0) or 0
+    stats.phase_b_runtime_probe_out = (probe_resp.get("usage") or {}).get(
+        "completion_tokens", 0
+    ) or 0
     probe_obj = _parse_json_or_empty(probe_resp.get("text", ""))
     if not isinstance(probe_obj, dict):
         return []
@@ -1106,7 +1133,8 @@ async def _run_phase_c_fix_verify(
                     "finding_id": h.get("id") or h.get("finding_ref"),
                     "post_patch_status": "UNVERIFIABLE",
                     "rationale": (
-                        "Binary ML artifact — Argus declined to auto-patch. See fix_summary for remediation guidance."
+                        "Binary ML artifact — Argus declined to auto-patch. "
+                        "See fix_summary for remediation guidance."
                     ),
                 }
                 for h in confirmed
@@ -1238,8 +1266,14 @@ async def _run_phase_c_fix_verify(
     verdict_obj = _parse_json_or_empty(verdict_resp.get("text", ""))
     cur = (verdict_obj.get("current_verdict") or {}) if isinstance(verdict_obj, dict) else {}
     post_patch_verdict = cur.get("verdict_label", "unknown")
-    new_claim_verdicts = (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
-    new_v_by_hid = {cv.get("hypothesis_id"): cv.get("verdict") for cv in new_claim_verdicts if isinstance(cv, dict)}
+    new_claim_verdicts = (
+        (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
+    )
+    new_v_by_hid = {
+        cv.get("hypothesis_id"): cv.get("verdict")
+        for cv in new_claim_verdicts
+        if isinstance(cv, dict)
+    }
 
     verdict_in = (verdict_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
     verdict_out = (verdict_resp.get("usage") or {}).get("completion_tokens", 0) or 0
@@ -1267,7 +1301,9 @@ async def _run_phase_c_fix_verify(
         )
 
     n_neutralized = sum(1 for pf in per_finding if pf["post_patch_status"] == "NEUTRALIZED")
-    n_still_exploitable = sum(1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE")
+    n_still_exploitable = sum(
+        1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE"
+    )
 
     return {
         "attempted": True,

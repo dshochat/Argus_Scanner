@@ -232,14 +232,14 @@ def test_path_prep_regex_extracts_expected_paths_from_fixture() -> None:
     # the harness's, this test fails — keeping them in lockstep.
     pat = _re.compile(r"""['"]((?:/[A-Za-z_][\w./-]*))['"]""")
     src = (
-        "from __future__ import annotations\n"
-        "def read_file_safely(path: str) -> str:\n"
+        'from __future__ import annotations\n'
+        'def read_file_safely(path: str) -> str:\n'
         '    if path.startswith("../"):\n'
-        "        path = path[3:]\n"
+        '        path = path[3:]\n'
         '    return open("/data/" + path).read()\n'
-        "def write_log_entry(msg: str) -> None:\n"
+        'def write_log_entry(msg: str) -> None:\n'
         '    with open("/tmp/app.log", "a") as f:\n'
-        "        f.write(msg)\n"
+        '        f.write(msg)\n'
     )
     matches = set(pat.findall(src))
     # Must capture the absolute prefix used by the vulnerable function
@@ -296,6 +296,301 @@ def test_path_prep_basename_with_dot_means_file_means_mkdir_parent() -> None:
     assert _derive_mkdir_target("/data") == "/data"
 
 
+# ── Multi-language harness builders (JS / shell) ──────────────────────
+
+
+def test_detect_probe_language_python() -> None:
+    """Python source files dispatch to the python harness."""
+    from dast.runtime_probe import detect_probe_language
+
+    assert detect_probe_language("foo.py") == "python"
+    assert detect_probe_language("path/to/bar.PY") == "python"
+
+
+def test_detect_probe_language_javascript() -> None:
+    """JS/CJS/MJS dispatch to the JavaScript harness."""
+    from dast.runtime_probe import detect_probe_language
+
+    assert detect_probe_language("foo.js") == "javascript"
+    assert detect_probe_language("foo.mjs") == "javascript"
+    assert detect_probe_language("foo.cjs") == "javascript"
+
+
+def test_detect_probe_language_shell() -> None:
+    """Shell scripts dispatch to the shell harness."""
+    from dast.runtime_probe import detect_probe_language
+
+    assert detect_probe_language("script.sh") == "shell"
+    assert detect_probe_language("Install.bash") == "shell"
+
+
+def test_detect_probe_language_unsupported_returns_none() -> None:
+    """File types we can't probe today return None so the orchestrator
+    + plan builder can short-circuit cleanly. TypeScript / JSX explicitly
+    return None — Node 18 doesn't strip type annotations, and probing a
+    .ts file via the JS harness would fail at parse time."""
+    from dast.runtime_probe import detect_probe_language
+
+    assert detect_probe_language("foo.ts") is None
+    assert detect_probe_language("foo.tsx") is None
+    assert detect_probe_language("foo.jsx") is None
+    assert detect_probe_language("foo.java") is None
+    assert detect_probe_language("foo.yaml") is None
+    assert detect_probe_language("model.pkl") is None
+    assert detect_probe_language("foo") is None  # no extension
+
+
+def test_javascript_harness_builds_and_contains_landmarks() -> None:
+    """JS harness is a self-contained Node script with these landmarks:
+    async IIFE wrapper, dynamic import() of the staged module, dotted-
+    path resolver tolerant of CJS + ESM-default-export, RESULT_JSON +
+    SIDE_EFFECTS markers, async-aware invocation (await of any returned
+    Promise), exception handler.
+    """
+    from dast.runtime_probe import _build_javascript_probe_harness
+
+    h = _build_javascript_probe_harness(
+        module_path="/workspace/vuln.js",
+        function_name="readFile",
+        args_json='["../etc/passwd"]',
+        kwargs_json="{}",
+    )
+    # Async IIFE — needed for top-level await of import() + result.then()
+    assert "(async () => {" in h
+    # Dynamic import works for both CJS and ESM (the modern Node way)
+    assert 'await import("/workspace/vuln.js")' in h
+    # Dotted-path resolver
+    assert "function resolveFn(modObj, dotted)" in h
+    # ESM default-export fallback
+    assert "if (typeof fn !== 'function' && mod.default != null)" in h
+    # Async invocation handles promise-returning functions
+    assert "if (result && typeof result.then === 'function')" in h
+    assert "result = await result;" in h
+    # Result + side-effect markers (same shape Python emits)
+    assert "console.log('RESULT_JSON:" in h
+    assert "console.log('SIDE_EFFECTS:" in h
+    # Exception handler captures type + msg + stack tail
+    assert "exception_type:" in h
+    assert "tb_tail:" in h
+
+
+def test_javascript_harness_path_prep_preamble() -> None:
+    """JS harness has the same path-prep semantics as Python:
+    extract absolute-path string literals from source + input args,
+    fs.mkdirSync({recursive: true}) each, skip system dirs."""
+    from dast.runtime_probe import _PROBE_PREP_DENY_PREFIXES, _build_javascript_probe_harness
+
+    h = _build_javascript_probe_harness(
+        module_path="/workspace/vuln.js",
+        function_name="read",
+        args_json='["subdir/../../etc/passwd"]',
+        kwargs_json="{}",
+    )
+    # Same regex pattern (escaped for JS) for source extraction
+    assert "/['\"](\\/[A-Za-z_]" in h
+    # Recursive mkdir is the JS equivalent of os.makedirs(exist_ok=True)
+    assert "fs.mkdirSync(toMk, { recursive: true });" in h
+    # Input-derived path-prep — same cartesian product as Python
+    assert "const SKIP = new Set(['..', '.', '']);" in h
+    assert "for (const srcDir of absDirPrefixes) {" in h
+    # Deny list embedded
+    for deny in _PROBE_PREP_DENY_PREFIXES:
+        assert deny in h, f"deny prefix {deny!r} missing from JS harness"
+
+
+def test_javascript_harness_has_catastrophic_failure_safety_net() -> None:
+    """Real-fixture validation surfaced Mode 1: Node exits code 1 without
+    emitting any RESULT_JSON marker when an exception fires before the
+    import block's try/catch (e.g., JSON.parse on a malformed payload,
+    unhandled rejection in an async path-prep call). The interpreter
+    then gets parsed_result=None and journals "no exploit observed" with
+    empty exception_type — silent failure indistinguishable from a clean
+    BLOCKED probe.
+
+    Mitigation: top-level try/catch around the entire IIFE body +
+    process-level handlers for ``uncaughtException`` /
+    ``unhandledRejection``. Both paths funnel into ``_emitFatal`` which
+    emits a RESULT_JSON marker before Node exits, so the interpreter
+    always sees actionable evidence (exception_type filled, label
+    indicating where the fatal fired)."""
+    from dast.runtime_probe import _build_javascript_probe_harness
+
+    h = _build_javascript_probe_harness(
+        module_path="/workspace/foo.js",
+        function_name="bar",
+        args_json="[]",
+        kwargs_json="{}",
+    )
+    # Process-level handlers — these fire when an exception escapes any
+    # try/catch including the new outer one. Must be registered before
+    # the IIFE so they're active during sync evaluation.
+    assert "process.on('uncaughtException'" in h
+    assert "process.on('unhandledRejection'" in h
+    # Fatal-marker emitter — converts arbitrary error shapes into a
+    # parseable RESULT_JSON so the interpreter never gets parsed_result=None.
+    assert "function _emitFatal(label, err)" in h
+    # Idempotency guard — multiple emission attempts (e.g., a try/catch
+    # in the body already emitted, then an unhandledRejection fires
+    # during the side-effect snapshot) collapse to a single marker.
+    assert "let _markerEmitted = false;" in h
+    assert "if (_markerEmitted) return;" in h
+    # Outer try wraps the entire IIFE body — sync throws above the
+    # import block (JSON.parse on bad args, ReferenceError in path-prep)
+    # get caught here.
+    assert "_emitFatal('iifeBody', e);" in h
+
+
+def test_javascript_harness_kwargs_become_trailing_object_arg() -> None:
+    """JS doesn't have native kwargs; the JS harness passes them as a
+    trailing object argument (common JS convention). Functions that
+    don't take that signature just ignore the extra arg."""
+    from dast.runtime_probe import _build_javascript_probe_harness
+
+    h = _build_javascript_probe_harness(
+        module_path="/workspace/vuln.js",
+        function_name="read",
+        args_json="[]",
+        kwargs_json="{}",
+    )
+    assert "const kwKeys = Object.keys(kwargs);" in h
+    assert "const callArgs = kwKeys.length > 0 ? [...args, kwargs] : args;" in h
+    assert "fn(...callArgs)" in h
+
+
+def test_shell_harness_builds_and_runs_python_subprocess() -> None:
+    """Shell harness is Python that drives bash via subprocess.run.
+    Args become positional ($1, $2, ...), kwargs become env vars.
+    Same RESULT_JSON / SIDE_EFFECTS markers as Python + JS so the
+    deterministic interpreter rules apply uniformly."""
+    import ast
+
+    from dast.runtime_probe import _build_shell_probe_harness
+
+    h = _build_shell_probe_harness(
+        script_path="/workspace/install.sh",
+        args_json='["; rm -rf /tmp"]',
+        kwargs_json='{"DEBUG": "1"}',
+    )
+    # Harness itself is valid Python
+    ast.parse(h)
+    # Subprocess invocation of bash with the script + decoded args
+    assert "subprocess.run(" in h
+    assert "['bash', _script_path]" in h
+    # Kwargs flow into env (string-coerced)
+    assert "env[str(k)] = str(v)" in h
+    # ok flag derived from exit code (0 = ran to completion = potential exploit)
+    assert "'ok': _proc.returncode == 0" in h
+    # Same trace markers
+    assert "RESULT_JSON:" in h
+    assert "SIDE_EFFECTS:" in h
+    # Timeout safety
+    assert "subprocess.TimeoutExpired" in h
+
+
+def test_shell_harness_path_prep_preamble_same_as_python() -> None:
+    """Shell harness reuses Python's path-prep preamble (it's written in
+    Python after all). Same regex, same deny list, same mkdir-p."""
+    from dast.runtime_probe import _build_shell_probe_harness
+
+    h = _build_shell_probe_harness(
+        script_path="/workspace/install.sh",
+        args_json="[]",
+        kwargs_json="{}",
+    )
+    assert "_paths_to_prep = set(re.findall(" in h
+    assert "os.makedirs(_to_mk, exist_ok=True)" in h
+    assert "_abs_dir_prefixes.add(_to_mk)" in h
+
+
+def test_plan_builder_dispatches_python() -> None:
+    """``.py`` files build a python3 harness."""
+    cand = _mk_candidate(test_inputs=[RuntimeProbeInput(args_json="[]")])
+    plan = build_runtime_probe_plan(
+        file_name="vuln.py",
+        file_bytes=b"def foo(): pass",
+        candidate=cand,
+        test_input=cand.test_inputs[0],
+        candidate_idx=0,
+        input_idx=0,
+    )
+    assert plan is not None
+    # Final invocation runs python3 against the staged harness
+    assert plan["commands"][1].startswith("python3 /workspace/")
+    assert plan["commands"][1].endswith(".py")
+
+
+def test_plan_builder_dispatches_javascript() -> None:
+    """``.js`` / ``.mjs`` / ``.cjs`` build a node harness, saved as ``.cjs``
+    so dynamic import() works for both CJS and ESM without needing a
+    package.json:"type":"module" in /workspace."""
+    for ext in (".js", ".mjs", ".cjs"):
+        cand = _mk_candidate(test_inputs=[RuntimeProbeInput(args_json="[]")])
+        plan = build_runtime_probe_plan(
+            file_name=f"vuln{ext}",
+            file_bytes=b"module.exports.foo = () => 1;",
+            candidate=cand,
+            test_input=cand.test_inputs[0],
+            candidate_idx=0,
+            input_idx=0,
+        )
+        assert plan is not None, f"plan for {ext} should be non-None"
+        assert plan["commands"][1].startswith("node /workspace/")
+        assert plan["commands"][1].endswith(".cjs")
+
+
+def test_plan_builder_dispatches_shell() -> None:
+    """``.sh`` / ``.bash`` build a Python-orchestrated shell harness
+    (Python wraps subprocess.run, args as positional, kwargs as env)."""
+    for ext in (".sh", ".bash"):
+        cand = _mk_candidate(test_inputs=[RuntimeProbeInput(args_json="[]")])
+        plan = build_runtime_probe_plan(
+            file_name=f"install{ext}",
+            file_bytes=b"#!/bin/bash\necho hi",
+            candidate=cand,
+            test_input=cand.test_inputs[0],
+            candidate_idx=0,
+            input_idx=0,
+        )
+        assert plan is not None, f"plan for {ext} should be non-None"
+        # Shell harness IS Python — runs python3
+        assert plan["commands"][1].startswith("python3 /workspace/")
+        assert plan["commands"][1].endswith(".py")
+
+
+def test_plan_builder_unsupported_extensions_return_none() -> None:
+    """TS / JSX / Java / YAML / extensionless files — probe stage skips
+    them cleanly. Plan builder returns None; orchestrator's entry-gate
+    short-circuits on None."""
+    for fn in ("vuln.ts", "vuln.tsx", "vuln.jsx", "Foo.java", "config.yaml", "model.pkl", "noext"):
+        cand = _mk_candidate(test_inputs=[RuntimeProbeInput(args_json="[]")])
+        plan = build_runtime_probe_plan(
+            file_name=fn,
+            file_bytes=b"x",
+            candidate=cand,
+            test_input=cand.test_inputs[0],
+            candidate_idx=0,
+            input_idx=0,
+        )
+        assert plan is None, f"{fn} should return None, got {plan}"
+
+
+def test_plan_rationale_includes_language_tag() -> None:
+    """The plan's rationale field should surface which language the
+    harness uses — helpful for journal forensics when a probe fires
+    on JS or shell and you want to know which interpreter was used."""
+    for fn, lang_tag in (("foo.py", "python"), ("foo.js", "javascript"), ("foo.sh", "shell")):
+        cand = _mk_candidate(test_inputs=[RuntimeProbeInput(args_json="[]")])
+        plan = build_runtime_probe_plan(
+            file_name=fn,
+            file_bytes=b"x",
+            candidate=cand,
+            test_input=cand.test_inputs[0],
+            candidate_idx=0,
+            input_idx=0,
+        )
+        assert plan is not None and lang_tag in plan["rationale"]
+
+
 # ── Plan builder ──────────────────────────────────────────────────────
 
 
@@ -337,12 +632,14 @@ def test_build_plan_basic_shape() -> None:
     assert base64.b64decode(plan["payload"]) == b"def read_file(p):\n    return open(p).read()\n"
 
 
-def test_build_plan_returns_none_for_non_python_file() -> None:
-    """v1.5 MVP scope — Python only. Non-Python files should produce
-    None so the orchestrator skips them gracefully."""
+def test_build_plan_returns_none_for_unsupported_file() -> None:
+    """File types outside ``_SUPPORTED_EXTS_BY_LANG`` (TS, JSX, Java,
+    YAML, binary artifacts, extensionless files) should produce None
+    so the orchestrator skips them gracefully. JS / shell / Python are
+    handled by dedicated ``test_plan_builder_dispatches_*`` tests."""
     plan = build_runtime_probe_plan(
-        file_name="foo.js",
-        file_bytes=b"function f(p) {}",
+        file_name="foo.ts",
+        file_bytes=b"function f(p: string): void {}",
         candidate=_mk_candidate(),
         test_input=_mk_candidate().test_inputs[0],
         candidate_idx=0,
@@ -774,7 +1071,9 @@ async def test_runtime_probe_skipped_when_flag_disabled(tmp_path) -> None:
         inference_calls.append((prompt[:50], schema.get("required", [])))
         # Detect whether this is the probe schema (would be wrong here)
         if schema.get("required") == ["candidates", "non_probable_reason"]:
-            raise AssertionError("runtime probe inference should not be called when enable_runtime_probe is False")
+            raise AssertionError(
+                "runtime probe inference should not be called when enable_runtime_probe is False"
+            )
         return {"text": _phase_a_verdict_response(), "usage": {}, "finish_reason": "stop"}
 
     file_record = {
@@ -921,9 +1220,9 @@ async def test_runtime_probe_fires_and_finds_exploit_via_canary(tmp_path) -> Non
     # sandbox cost and (b) produce contradictory NOT_TESTED verdicts when
     # Fly returns stub traces. Probe findings surface only via
     # findings_validated (and from there → engine's dast_findings).
-    assert not any(h.get("id", "").startswith("HRP_") for h in (l1_output.get("hypotheses") or [])), (
-        "Fix #2: HRP findings should NOT pollute l1_output.hypotheses"
-    )
+    assert not any(
+        h.get("id", "").startswith("HRP_") for h in (l1_output.get("hypotheses") or [])
+    ), "Fix #2: HRP findings should NOT pollute l1_output.hypotheses"
 
     # Fix #3 (surfacing) contract: confirmed HRPs reach findings_validated
     # so engine.py picks them up as result.dast_findings.
@@ -934,9 +1233,13 @@ async def test_runtime_probe_fires_and_finds_exploit_via_canary(tmp_path) -> Non
     # And the journal has a phase_b_hypothesis record with verdict=confirmed
     journal_records = result.journal_records
     confirmed_probes = [
-        r for r in journal_records if r.get("claim_id", "").startswith("HRP_") and r.get("verdict") == "confirmed"
+        r
+        for r in journal_records
+        if r.get("claim_id", "").startswith("HRP_") and r.get("verdict") == "confirmed"
     ]
-    assert len(confirmed_probes) >= 1, f"expected at least one confirmed runtime probe; got {journal_records}"
+    assert len(confirmed_probes) >= 1, (
+        f"expected at least one confirmed runtime probe; got {journal_records}"
+    )
 
     # Fix #1 contract: probe-confirmed path_traversal at severity=high
     # should bump the DAST max-verdict floor to "malicious".
@@ -1010,7 +1313,9 @@ async def test_runtime_probe_blocked_when_sandbox_shows_no_exploit(tmp_path) -> 
 
     # Probe ran but no exploit was confirmed
     rejected_probes = [
-        r for r in result.journal_records if r.get("claim_id", "").startswith("HRP_") and r.get("verdict") == "rejected"
+        r
+        for r in result.journal_records
+        if r.get("claim_id", "").startswith("HRP_") and r.get("verdict") == "rejected"
     ]
     assert len(rejected_probes) >= 1
     # No new HRP hypothesis added to l1_output (no exploit to forward)
@@ -1049,7 +1354,8 @@ async def test_runtime_probe_critical_code_injection_bumps_to_critical_malicious
                             "test_inputs": [
                                 {
                                     "args_json": (
-                                        '["__import__(\\"os\\").system(\\"touch /tmp/argus_probe_pwned\\")"]'
+                                        '["__import__(\\"os\\")'
+                                        '.system(\\"touch /tmp/argus_probe_pwned\\")"]'
                                     ),
                                     "kwargs_json": "{}",
                                     "expected_observable": "canary file appears",
@@ -1181,7 +1487,8 @@ async def test_runtime_probe_does_not_re_test_hrp_via_phase_a(tmp_path) -> None:
         traces_by_hypothesis={
             "HRP_0_0": {
                 "stdout": (
-                    'RESULT_JSON:{"ok": true, "value_preview": "exfil"}\nSIDE_EFFECTS:{"tmp_files_added": []}\n'
+                    'RESULT_JSON:{"ok": true, "value_preview": "exfil"}\n'
+                    'SIDE_EFFECTS:{"tmp_files_added": []}\n'
                 ),
                 "exit_code": 0,
                 "elapsed_ms": 50,
@@ -1271,7 +1578,8 @@ async def test_runtime_probe_does_not_re_test_hrp_via_phase_a(tmp_path) -> None:
     # commands shape: any HRP_ plan WITHOUT the _argus_probe_ marker is
     # a Phase A re-test.
     assert hrp_phase_a_resubmits == [], (
-        f"Fix #2: Phase A re-tested HRP findings (cost doubled): {[p.plan_id for p in hrp_phase_a_resubmits]}"
+        f"Fix #2: Phase A re-tested HRP findings (cost doubled): "
+        f"{[p.plan_id for p in hrp_phase_a_resubmits]}"
     )
 
 

@@ -1593,10 +1593,23 @@ def build_phase_b_prompt(
 
 
 _PHASE_B_RUNTIME_PROBE_BODY = """\
-You are an adversarial penetration tester. You are given a Python source
-file and Phase A's evidence about what the file does at runtime. Your job
-is to identify functions worth attacking with concrete inputs at runtime
-in a sandboxed microVM, and to generate those concrete inputs.
+You are an adversarial penetration tester. You are given a source file
+(Python, JavaScript, or shell) and Phase A's evidence about what the
+file does at runtime. Your job is to identify functions or scripts worth
+attacking with concrete inputs at runtime in a sandboxed microVM, and
+to generate those concrete inputs.
+
+The harness invokes your candidates the way the language expects:
+
+  * Python (`.py`)        — `import target; getattr(target, "fn")(*args, **kwargs)`
+  * JavaScript (`.js`,
+    `.mjs`, `.cjs`)       — `await import("/workspace/<file>"); fn(...args, kwargs)`
+                            (kwargs flow as a trailing object arg, JS convention)
+  * Shell (`.sh`, `.bash`) — `bash <script> $args` with kwargs as environment
+                            variables. Shell candidates are script-level —
+                            the `function_name` field for shell should just
+                            be the script's basename (e.g. `install.sh`),
+                            not a bash function.
 
 You are NOT writing more static analysis. You are GENERATING runtime
 test cases. The sandbox will actually execute your inputs and report
@@ -1606,9 +1619,10 @@ proves the file is vulnerable.
 DESIGN PRINCIPLES:
 
 1. Pick functions that are reachable from outside (top-level module
-   functions, public methods of classes). Skip private helpers
-   (`_name`), test fixtures, and __init__ unless they take
-   user-controlled input.
+   functions, public methods of classes, exported JS functions, or
+   the shell script entry point itself). Skip private helpers
+   (`_name`), test fixtures, and constructor/init paths unless they
+   take user-controlled input.
 
 2. For each function, identify the ATTACK CLASS it's most likely
    vulnerable to based on its signature + body:
@@ -1657,9 +1671,13 @@ CONSTRAINTS (the schema enforces these — listed here for transparency):
 
 - AT MOST {MAX_CANDIDATES} candidate functions.
 - AT MOST {MAX_INPUTS_PER_CANDIDATE} test inputs per candidate.
-- ONLY top-level functions or `Class.method` paths. No closures, no
-  inner functions, no test helpers.
+- ONLY top-level functions or `Class.method` paths (Python / JS), or
+  the script basename for shell. No closures, no inner functions,
+  no test helpers.
 - `function_name` must match the regex `^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?$`.
+  For shell, set this to the script basename without extension
+  (e.g. `install` for `install.sh`); the harness ignores it for shell
+  but the regex still has to match.
 - `attack_class` must be one of the documented enum values.
 
 ==== INPUTS ====
@@ -1824,7 +1842,10 @@ def phase_c_fix_schema() -> dict[str, Any]:
         "properties": {
             "patched_source": {
                 "type": "string",
-                "description": ("Complete patched file content. Must be the FULL source of the file (not a diff)."),
+                "description": (
+                    "Complete patched file content. Must be the FULL "
+                    "source of the file (not a diff)."
+                ),
             },
             "fix_summary": {
                 "type": "string",
@@ -1832,7 +1853,9 @@ def phase_c_fix_schema() -> dict[str, Any]:
             },
             "per_finding_fixes": {
                 "type": "array",
-                "description": ("One entry per confirmed finding; describe the specific change applied."),
+                "description": (
+                    "One entry per confirmed finding; describe the specific change applied."
+                ),
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
