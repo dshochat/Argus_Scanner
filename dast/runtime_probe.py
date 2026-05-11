@@ -142,10 +142,23 @@ MAX_PROBE_RUNS_PER_FILE: int = MAX_CANDIDATES * MAX_INPUTS_PER_CANDIDATE
 #: actually fires.
 MAX_REFINEMENT_ATTEMPTS: int = 2
 
-#: Default per-probe timeout in the sandbox. 30s is enough for a Python
-#: import + a single function call + side-effect snapshot, even on
-#: filesystem-heavy probes.
-DEFAULT_PROBE_TIMEOUT_SEC: int = 30
+#: Default per-probe timeout in the sandbox.
+#:
+#: Tuning history:
+#:   * 30 (initial): enough for Python import + single function call +
+#:     side-effect snapshot in the common case.
+#:   * 60 (current): bumped after sandbox_runner.js diagnostic showed
+#:     JS probes against sandboxjs's Sandbox.eval() taking >30s on
+#:     prototype-pollution payloads (sandboxjs's input parser is CPU-
+#:     heavy on adversarial input). At 30s the harness was being killed
+#:     by the entrypoint's per-command timer before it could emit any
+#:     RESULT_JSON marker — silent failure mode that looked like
+#:     "machine never ran" but was actually "machine ran, computed for
+#:     >30s, got killed mid-eval". 60s leaves room for slow eval cases
+#:     without bloating per-probe cost (most probes still complete in
+#:     2-10s; only the pathological adversarial-payload cases use the
+#:     full budget).
+DEFAULT_PROBE_TIMEOUT_SEC: int = 60
 
 
 # ── Data types ────────────────────────────────────────────────────────────
@@ -594,6 +607,18 @@ def _build_javascript_probe_harness(
         "}\n"
         "process.on('uncaughtException', (e) => _emitFatal('uncaughtException', e));\n"
         "process.on('unhandledRejection', (e) => _emitFatal('unhandledRejection', e));\n"
+        # Harness-level inner timeout (45s, well under the entrypoint's
+        # per-command timer). If the harness is still alive at this
+        # point, the target function call has been hanging — emit a
+        # RESULT_JSON marker with exception_type=HarnessTimeout so the
+        # orchestrator gets actionable evidence ("call exceeded budget")
+        # rather than a silent stdout_len=0 failure. Note this ONLY
+        # fires for ASYNC-blocking hangs; synchronous CPU-bound hangs
+        # (where the event loop never returns to schedule callbacks)
+        # bypass setTimeout and require the outer probe timeout to be
+        # large enough for the work to actually complete.
+        "setTimeout(() => _emitFatal('innerHarnessTimeout', "
+        "new Error('function call exceeded 45s inner budget')), 45000).unref();\n"
         "(async () => {\n"
         # Wrap the entire body in try/catch so SYNC throws at the IIFE
         # top level (JSON.parse failures, ReferenceErrors before the

@@ -1,7 +1,7 @@
 """Sandbox client — Protocol + stub + Firecracker (Fly.io) implementations.
 
-Production target is Firecracker (primary) / gVisor (fallback) — see
-the DAST setup docs. The stub keeps the prototype's architecture-
+Production target is Firecracker (primary) / gVisor (fallback) per
+``dast/CLAUDE.md``. The stub keeps the prototype's architecture-
 validation runs decoupled from sandbox infrastructure. The Firecracker
 client (Path C — Fly.io managed Firecracker substrate) is the real-
 sandbox path for verdict-accuracy validation against the same corpus.
@@ -299,7 +299,9 @@ def build_scenario_from_l1_and_oracle(
     for f in l1_findings:
         cwe = (f.get("cwe") or "").strip().upper()
         ftype = (f.get("type") or "").strip()
-        if cwe and cwe in oracle_cwe_set or ftype and ftype in oracle_type_set:
+        if cwe and cwe in oracle_cwe_set:
+            confirmed_l1_finding_ids.add(f.get("id", ""))
+        elif ftype and ftype in oracle_type_set:
             confirmed_l1_finding_ids.add(f.get("id", ""))
 
     # Oracle disagreement gates (see stub_design.md):
@@ -658,7 +660,7 @@ class FirecrackerSandboxClient:
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=20.0)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             proc.kill()
             raise FlyMachinesError("flyctl releases timed out") from None
         if proc.returncode != 0:
@@ -846,7 +848,7 @@ class FirecrackerSandboxClient:
             )
             try:
                 stdout_b, _stderr_b = await asyncio.wait_for(proc.communicate(), timeout=45.0)
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 proc.kill()
                 delay *= 1.3
                 continue
@@ -984,7 +986,7 @@ class MultiImageSandboxClient:
         )
     """
 
-    inner_by_hint: dict[str, SandboxClient]
+    inner_by_hint: dict[str, "SandboxClient"]
     fallback_hint: str = "minimal"
 
     def __post_init__(self) -> None:

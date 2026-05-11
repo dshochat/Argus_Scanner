@@ -969,7 +969,7 @@ async def _run_phase_b_runtime_probe(
     # ── Sub-step 2a: build all SandboxPlans (fast, in-process) ─────────
     # Each entry tracks the metadata we need at interpret-time so we can
     # produce ordered journal records after the parallel gather completes.
-    pending_probes: list[tuple[int, int, int, str, "RuntimeProbeCandidate", RuntimeProbeInput, str, SandboxPlan]] = []
+    pending_probes: list[tuple[int, int, int, str, Any, RuntimeProbeInput, str, SandboxPlan]] = []
 
     for c_idx, cand in enumerate(candidates):
         if not cand.function_name or not cand.test_inputs:
