@@ -56,6 +56,84 @@ RUN useradd -m -u 1000 -s /bin/bash runner && \
 RUN mkdir -p /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app && \
     chmod 1777 /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app
 
+# Phase 1.x env-fix — pre-install common third-party packages so probe
+# harnesses can `require()` / `import` them without runtime registry
+# access. The sandbox's DNS hijack blocks all outbound network at runtime
+# for exfil detection; build-time has network, so we install during image
+# construction.
+#
+# Curated list covers (a) top supply-chain-relevant npm/pip packages by
+# import frequency, and (b) intentionally-vulnerable libraries used by
+# regression fixtures (e.g., sandboxjs for sandbox_runner.js —
+# a known sandbox-escape used as a real-fixture validation target).
+#
+# Packages NOT on this list will still trigger an ImportError at probe
+# time — that's documented as a known limitation; a selective-registry
+# allowlist enabling on-demand install is the next env-fix step
+# (post-Phase 3).
+
+# npm packages — installed to /opt/node_packages, exposed via NODE_PATH
+# so `require()` from /workspace falls back to the pre-installed set.
+RUN mkdir -p /opt/node_packages && \
+    cd /opt/node_packages && \
+    npm init -y > /dev/null 2>&1 && \
+    npm install --no-fund --no-audit --no-save --silent \
+      sandboxjs \
+      lodash@^4 \
+      axios@^1 \
+      express@^4 \
+      body-parser@^1 \
+      async@^3 \
+      chalk@^5 \
+      debug@^4 \
+      semver@^7 \
+      glob@^10 \
+      minimist@^1 \
+      fs-extra@^11 \
+      yargs@^17 \
+      commander@^11 \
+      ws@^8 \
+      cookie@^0 \
+      qs@^6 \
+      dotenv@^16 \
+      uuid@^10 \
+      node-fetch@^3 \
+      && chmod -R a+rX /opt/node_packages
+
+# Make pre-installed npm packages reachable from /workspace via two
+# independent mechanisms:
+#   1. NODE_PATH env var — works for any cwd; Node falls back to it after
+#      walking up node_modules from cwd. May not survive `runuser -u
+#      runner` (which clears the env) so we ALSO add (2).
+#   2. /workspace/node_modules symlink — Node's standard require()
+#      resolution checks the cwd's node_modules first. Symlinking here
+#      makes require('pkg') work regardless of NODE_PATH, regardless of
+#      env-var clearing during user-switch. Belt-and-suspenders.
+ENV NODE_PATH=/opt/node_packages/node_modules
+RUN ln -s /opt/node_packages/node_modules /workspace/node_modules
+
+# pip packages — installed system-wide for global importability.
+# Pinning is not strict here: minor-version latest is fine for runtime
+# probing, where we want recent-enough surface to match real supply-
+# chain code.
+RUN pip install --no-cache-dir --quiet \
+      requests \
+      flask \
+      fastapi \
+      click \
+      jinja2 \
+      pyyaml \
+      lxml \
+      cryptography \
+      pyjwt \
+      sqlalchemy \
+      pillow \
+      gunicorn \
+      python-dateutil \
+      urllib3 \
+      packaging \
+      typing-extensions
+
 COPY entrypoint.py /usr/local/bin/dast-entrypoint
 RUN chmod 755 /usr/local/bin/dast-entrypoint
 

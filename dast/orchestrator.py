@@ -910,14 +910,39 @@ async def _run_phase_b_runtime_probe(
     # are appended afterward. Each mutation gets a distinct hypothesis ID
     # (HRP_<c>_<i>_m<m>) and a journal-tagged mutation_strategy so we can
     # attribute confirmations to specific bypass families.
+    #
+    # Phase 1c — parallel probe submission. Build all SandboxPlans first
+    # (fast, in-process), then submit them concurrently via
+    # asyncio.gather with a bounded semaphore. Without this, a file with
+    # mutation enabled (up to 54 probes) takes 18-25 min wall-clock at
+    # ~20s per cold-started Fly machine. Parallel submission compresses
+    # that to ~30-90s while spending the same total Fly machine-seconds
+    # (Fly bills compute time, not wall-clock). Trace interpretation +
+    # journal writes happen sequentially AFTER the gather so the journal
+    # records land in deterministic order.
+    import asyncio as _asyncio  # noqa: PLC0415
+
     from dast.probe_mutator import mutate_input  # noqa: PLC0415
 
     findings_from_probes: list[dict[str, Any]] = []
-    n_probes_run = 0
-    # Stops the outer loop early if a HARD cap is exceeded; protects
+    # Stops the outer build loop early if a HARD cap is exceeded; protects
     # against exotic candidates with many string args producing
     # cartesian-product blow-up.
     _HARD_PROBE_CAP = MAX_PROBE_RUNS_PER_FILE * 6  # 9 × 6 = 54
+    # Concurrency limit for parallel sandbox submissions. Default Fly
+    # accounts allow ~25 concurrent machines per app, but burst-creating
+    # 100+ machines in <1 minute hits Fly's machine-create rate limit
+    # (observed empirically in Phase 1c live testing: 134 probes via
+    # Semaphore(15) produced FlyMachinesError on a significant fraction).
+    # 8 is conservative: 6-7x wall-clock speedup over serial without
+    # triggering burst-limit errors. Bump upward if you have a higher-
+    # tier Fly account or are running fewer total probes per file.
+    _PROBE_CONCURRENCY: int = 8
+
+    # ── Sub-step 2a: build all SandboxPlans (fast, in-process) ─────────
+    # Each entry tracks the metadata we need at interpret-time so we can
+    # produce ordered journal records after the parallel gather completes.
+    pending_probes: list[tuple[int, int, int, str, "RuntimeProbeCandidate", RuntimeProbeInput, str, SandboxPlan]] = []
 
     for c_idx, cand in enumerate(candidates):
         if not cand.function_name or not cand.test_inputs:
@@ -946,7 +971,7 @@ async def _run_phase_b_runtime_probe(
                     fanout.append((mutated_input, m_idx, strategy))
 
             for probe_input, m_idx, mutation_strategy in fanout:
-                if n_probes_run >= _HARD_PROBE_CAP:
+                if len(pending_probes) >= _HARD_PROBE_CAP:
                     break
                 plan_dict = build_runtime_probe_plan(
                     file_name=file_name,
@@ -982,101 +1007,135 @@ async def _run_phase_b_runtime_probe(
                         "attack_class": cand.attack_class,
                     },
                 )
-                n_probes_run += 1
-                try:
-                    trace: SandboxTrace = await sandbox.submit(plan)
-                except Exception as exc:  # noqa: BLE001
-                    journal.append(
-                        JournalRecord(
-                            iter=iter_num,
-                            phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                            claim_id=hid,
-                            verdict="rejected",
-                            rationale=(
-                                f"sandbox submit failed (mutation={mutation_strategy}): "
-                                f"{type(exc).__name__}: {str(exc)[:200]}"
-                            ),
-                            evidence_refs=[],
-                        )
-                    )
-                    continue
+                pending_probes.append((c_idx, i_idx, m_idx, mutation_strategy, cand, probe_input, hid, plan))
 
-                # ── Step 3: trace interpretation ─────────────────────────
-                parsed_trace = parse_probe_trace(
-                    candidate_function=cand.function_name,
-                    input_args_json=probe_input.args_json,
-                    exit_code=trace.exit_code,
-                    stdout=trace.stdout_excerpt,
-                    stderr=trace.stderr_excerpt,
-                    elapsed_ms=trace.elapsed_ms,
-                )
-                finding = interpret_probe_trace(
-                    parsed_trace,
-                    cand,
-                    probe_input,
-                    candidate_idx=c_idx,
-                    input_idx=i_idx,
-                )
-                if finding is None:
-                    _pr = parsed_trace.parsed_result or {}
-                    _exc_type = _pr.get("exception_type", "")
-                    _exc_msg = (_pr.get("exception_msg") or "")[:160]
-                    _ok = bool(_pr.get("ok"))
-                    journal.append(
-                        JournalRecord(
-                            iter=iter_num,
-                            phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                            claim_id=hid,
-                            verdict="rejected",
-                            rationale=(
-                                f"runtime probe ran; no exploit observed. "
-                                f"Function={cand.function_name}, class={cand.attack_class}, "
-                                f"mutation={mutation_strategy}, "
-                                f"input={probe_input.args_json[:100]}, "
-                                f"exit_code={parsed_trace.exit_code}, "
-                                f"call_ok={_ok}, "
-                                f"exc={_exc_type}: {_exc_msg}"
-                            ),
-                            evidence_refs=[trace.events[0].event_id] if trace.events else [],
-                        )
-                    )
-                    continue
+    n_probes_run = len(pending_probes)
 
-                # CONFIRMED via runtime evidence.
-                evidence_ref = trace.events[0].event_id if trace.events else ""
-                journal.append(
-                    JournalRecord(
-                        iter=iter_num,
-                        phase=JournalPhase.PHASE_B_HYPOTHESIS,
-                        claim_id=hid,
-                        verdict="confirmed",
-                        rationale=(
-                            f"runtime probe CONFIRMED {finding.attack_class} in "
-                            f"{cand.function_name} (mutation={mutation_strategy}): "
-                            f"{finding.runtime_evidence[:240]}"
-                        ),
-                        evidence_refs=[evidence_ref] if evidence_ref else [],
-                    )
+    # ── Sub-step 2b: parallel sandbox submission ────────────────────────
+    # asyncio.gather with a Semaphore bounds concurrent Fly machines.
+    # Each probe is independent (fresh microVM, no shared state), so
+    # parallel submission is safe. We capture (trace, exception) per
+    # probe and interpret them in declaration order afterwards.
+    _sem = _asyncio.Semaphore(_PROBE_CONCURRENCY)
+
+    async def _submit_one(p: SandboxPlan) -> tuple[SandboxTrace | None, BaseException | None]:
+        """Bounded sandbox.submit() — returns (trace, None) on success
+        and (None, exc) on failure. Never raises; the caller journals
+        either path. The semaphore is acquired in this coroutine so the
+        gather() spawns all coroutines instantly and they queue on the
+        semaphore — keeps gather()'s structured-concurrency contract."""
+        async with _sem:
+            try:
+                return await sandbox.submit(p), None
+            except BaseException as exc:  # noqa: BLE001
+                return None, exc
+
+    if pending_probes:
+        plans_only = [pp[7] for pp in pending_probes]
+        results: list[tuple[SandboxTrace | None, BaseException | None]] = await _asyncio.gather(
+            *(_submit_one(p) for p in plans_only)
+        )
+    else:
+        results = []
+
+    # ── Sub-step 2c: interpret traces + write journal records (sequential
+    # for deterministic order; all CPU-local, very fast). ───────────────
+    for (c_idx, i_idx, _m_idx, mutation_strategy, cand, probe_input, hid, _plan), (
+        trace,
+        submit_exc,
+    ) in zip(pending_probes, results, strict=True):
+        if submit_exc is not None:
+            journal.append(
+                JournalRecord(
+                    iter=iter_num,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=hid,
+                    verdict="rejected",
+                    rationale=(
+                        f"sandbox submit failed (mutation={mutation_strategy}): "
+                        f"{type(submit_exc).__name__}: {str(submit_exc)[:200]}"
+                    ),
+                    evidence_refs=[],
                 )
-                findings_from_probes.append(
-                    {
-                        "id": hid,
-                        "finding_ref": hid,
-                        "finding_type": finding.attack_class,
-                        "severity": finding.severity,
-                        "cwe": finding.cwe,
-                        "line": None,
-                        "code_snippet": cand.function_name,
-                        "explanation": finding.description,
-                        "data_flow_trace": (
-                            f"runtime probe via Phase B+ (mutation={mutation_strategy}): {finding.runtime_evidence}"
-                        ),
-                        "proof_of_concept": (f"{cand.function_name}(*{finding.test_input_args})"),
-                        "confidence": 1.0,
-                        "runtime_evidence": finding.runtime_evidence,
-                        "mutation_strategy": mutation_strategy,
-                    }
+            )
+            continue
+
+        # ── Step 3: trace interpretation ────────────────────────────────
+        parsed_trace = parse_probe_trace(
+            candidate_function=cand.function_name,
+            input_args_json=probe_input.args_json,
+            exit_code=trace.exit_code,
+            stdout=trace.stdout_excerpt,
+            stderr=trace.stderr_excerpt,
+            elapsed_ms=trace.elapsed_ms,
+        )
+        finding = interpret_probe_trace(
+            parsed_trace,
+            cand,
+            probe_input,
+            candidate_idx=c_idx,
+            input_idx=i_idx,
+        )
+        if finding is None:
+            _pr = parsed_trace.parsed_result or {}
+            _exc_type = _pr.get("exception_type", "")
+            _exc_msg = (_pr.get("exception_msg") or "")[:160]
+            _ok = bool(_pr.get("ok"))
+            journal.append(
+                JournalRecord(
+                    iter=iter_num,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=hid,
+                    verdict="rejected",
+                    rationale=(
+                        f"runtime probe ran; no exploit observed. "
+                        f"Function={cand.function_name}, class={cand.attack_class}, "
+                        f"mutation={mutation_strategy}, "
+                        f"input={probe_input.args_json[:100]}, "
+                        f"exit_code={parsed_trace.exit_code}, "
+                        f"call_ok={_ok}, "
+                        f"exc={_exc_type}: {_exc_msg}"
+                    ),
+                    evidence_refs=[trace.events[0].event_id] if trace.events else [],
                 )
+            )
+            continue
+
+        # CONFIRMED via runtime evidence.
+        evidence_ref = trace.events[0].event_id if trace.events else ""
+        journal.append(
+            JournalRecord(
+                iter=iter_num,
+                phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                claim_id=hid,
+                verdict="confirmed",
+                rationale=(
+                    f"runtime probe CONFIRMED {finding.attack_class} in "
+                    f"{cand.function_name} (mutation={mutation_strategy}): "
+                    f"{finding.runtime_evidence[:240]}"
+                ),
+                evidence_refs=[evidence_ref] if evidence_ref else [],
+            )
+        )
+        findings_from_probes.append(
+            {
+                "id": hid,
+                "finding_ref": hid,
+                "finding_type": finding.attack_class,
+                "severity": finding.severity,
+                "cwe": finding.cwe,
+                "line": None,
+                "code_snippet": cand.function_name,
+                "explanation": finding.description,
+                "data_flow_trace": (
+                    f"runtime probe via Phase B+ (mutation={mutation_strategy}): {finding.runtime_evidence}"
+                ),
+                "proof_of_concept": (f"{cand.function_name}(*{finding.test_input_args})"),
+                "confidence": 1.0,
+                "runtime_evidence": finding.runtime_evidence,
+                "mutation_strategy": mutation_strategy,
+            }
+        )
 
     stats.sandbox_calls += n_probes_run
 

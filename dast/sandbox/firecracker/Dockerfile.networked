@@ -53,6 +53,59 @@ RUN useradd -m -u 1000 -s /bin/bash runner && \
 RUN mkdir -p /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app && \
     chmod 1777 /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app
 
+# Phase 1.x env-fix — pre-installed npm + pip packages (mirrors minimal).
+# Sandbox's DNS hijack blocks runtime registry access; build-time install
+# gives the harness a working third-party package set without needing
+# network access during the probe.
+RUN mkdir -p /opt/node_packages && \
+    cd /opt/node_packages && \
+    npm init -y > /dev/null 2>&1 && \
+    npm install --no-fund --no-audit --no-save --silent \
+      sandboxjs \
+      lodash@^4 \
+      axios@^1 \
+      express@^4 \
+      body-parser@^1 \
+      async@^3 \
+      chalk@^5 \
+      debug@^4 \
+      semver@^7 \
+      glob@^10 \
+      minimist@^1 \
+      fs-extra@^11 \
+      yargs@^17 \
+      commander@^11 \
+      ws@^8 \
+      cookie@^0 \
+      qs@^6 \
+      dotenv@^16 \
+      uuid@^10 \
+      node-fetch@^3 \
+      && chmod -R a+rX /opt/node_packages
+
+# Same NODE_PATH + symlink approach as minimal — see minimal Dockerfile
+# for rationale (runuser strips env, so we also expose via symlink).
+ENV NODE_PATH=/opt/node_packages/node_modules
+RUN ln -s /opt/node_packages/node_modules /workspace/node_modules
+
+RUN pip install --no-cache-dir --quiet \
+      requests \
+      flask \
+      fastapi \
+      click \
+      jinja2 \
+      pyyaml \
+      lxml \
+      cryptography \
+      pyjwt \
+      sqlalchemy \
+      pillow \
+      gunicorn \
+      python-dateutil \
+      urllib3 \
+      packaging \
+      typing-extensions
+
 # Same entrypoint stack as minimal. The init script handles DNS-hijack
 # capture setup (needs root) then drops to `runner` for plan execution.
 COPY entrypoint.py /usr/local/bin/dast-entrypoint
