@@ -1894,3 +1894,370 @@ async def test_runtime_probe_model_declines_journal_records_rationale(tmp_path) 
     assert len(declines) == 1
     assert "declined" in declines[0].get("rationale", "").lower()
     assert "data constants" in declines[0].get("rationale", "")
+
+
+# ── Phase 1b — Iterative refinement on BLOCKED probes ─────────────────
+
+
+def _phase_b_refinement_response(refined_inputs: list[dict]) -> str:
+    """Stub Sonnet response shape for Phase 1b refinement candidate-gen."""
+    return json.dumps(
+        {
+            "non_refinable_reason": "" if refined_inputs else "no refinement found",
+            "refined_inputs": refined_inputs,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_iterative_refinement_skipped_when_flag_disabled(tmp_path) -> None:
+    """If ``enable_runtime_probe_iterative=False`` (default), the
+    refinement helper does NOT run — even when initial probes blocked
+    with recoverable failures. Cost-neutral default."""
+    sandbox = _CapturingProbeSandbox(
+        traces_by_hypothesis={
+            "HRP_0_0": {
+                "stdout": (
+                    'RESULT_JSON:{"ok": false, "exception_type": "TypeError", '
+                    '"exception_msg": "expected str got int"}\n'
+                    'SIDE_EFFECTS:{"tmp_files_added": []}\n'
+                ),
+                "exit_code": 0,
+                "elapsed_ms": 20,
+            },
+        },
+    )
+
+    refinement_call_count = {"n": 0}
+
+    async def fake_inference(prompt, options, schema):
+        if schema.get("required") == ["refined_inputs", "non_refinable_reason"]:
+            refinement_call_count["n"] += 1  # should never fire
+            return {"text": _phase_b_refinement_response([]), "usage": {}, "finish_reason": "stop"}
+        if schema.get("required") == ["candidates", "non_probable_reason"]:
+            return {
+                "text": _phase_b_probe_response(
+                    [
+                        {
+                            "function_name": "f",
+                            "attack_class": "path_traversal",
+                            "rationale": "x",
+                            "test_inputs": [
+                                {
+                                    "args_json": "[42]",  # int, causes TypeError
+                                    "kwargs_json": "{}",
+                                    "expected_observable": "/etc/passwd",
+                                    "exploit_proof_if_observed": "path traversal",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        return {"text": _phase_a_verdict_response(), "usage": {}, "finish_reason": "stop"}
+
+    file_record = {
+        "file_id": "h",
+        "source_text": "def f(p): return open(p).read()\n",
+        "file_name": "v.py",
+        "original_bytes": b"def f(p): return open(p).read()\n",
+        "ml_format": None,
+    }
+    l1_output = {"verdict": {"verdict_label": "malicious"}, "hypotheses": []}
+
+    await run_dast(
+        file_record=file_record,
+        l1_output=l1_output,
+        sandbox=sandbox,
+        validator=HypothesisValidator(),
+        journal_dir=Path(tmp_path),
+        inference=fake_inference,
+        enable_runtime_probe=True,
+        enable_runtime_probe_iterative=False,  # OFF
+    )
+
+    assert refinement_call_count["n"] == 0, "refinement should NOT fire when flag disabled"
+
+
+@pytest.mark.asyncio
+async def test_iterative_refinement_fires_on_recoverable_failure(tmp_path) -> None:
+    """When opt-in AND initial probe blocked with a RECOVERABLE
+    exception (TypeError / SyntaxError / RangeError / etc.), the helper
+    invokes Sonnet with the failure details and submits a refined probe.
+
+    If the refined probe confirms via Rule 1 (evidence-signature match)
+    OR Rule 2 (canary), the finding lands in findings_validated."""
+    sandbox = _CapturingProbeSandbox(
+        traces_by_hypothesis={
+            "HRP_0_0": {
+                # Initial probe BLOCKS with TypeError (recoverable)
+                "stdout": (
+                    'RESULT_JSON:{"ok": false, "exception_type": "TypeError", '
+                    '"exception_msg": "expected str got int"}\n'
+                    'SIDE_EFFECTS:{"tmp_files_added": []}\n'
+                ),
+                "exit_code": 0,
+                "elapsed_ms": 20,
+            },
+            "HRP_0_r0": {
+                # Refinement probe CONFIRMS (signature-matching content
+                # in the value_preview → Rule 1 fires).
+                "stdout": (
+                    'RESULT_JSON:{"ok": true, "type": "str", '
+                    '"value_preview": "root:x:0:0:root:/root:/bin/bash"}\n'
+                    'SIDE_EFFECTS:{"tmp_files_added": []}\n'
+                ),
+                "exit_code": 0,
+                "elapsed_ms": 50,
+            },
+        },
+    )
+
+    refinement_call_count = {"n": 0}
+    last_refinement_prompt = {"text": ""}
+
+    async def fake_inference(prompt, options, schema):
+        if schema.get("required") == ["refined_inputs", "non_refinable_reason"]:
+            refinement_call_count["n"] += 1
+            last_refinement_prompt["text"] = prompt
+            return {
+                "text": _phase_b_refinement_response(
+                    [
+                        {
+                            "args_json": '["../../etc/passwd"]',  # string, not int
+                            "kwargs_json": "{}",
+                            "rationale": "TypeError says expected str — switching to a string",
+                        }
+                    ]
+                ),
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        if schema.get("required") == ["candidates", "non_probable_reason"]:
+            return {
+                "text": _phase_b_probe_response(
+                    [
+                        {
+                            "function_name": "read_file_safely",
+                            "attack_class": "path_traversal",
+                            "rationale": "x",
+                            "test_inputs": [
+                                {
+                                    "args_json": "[42]",  # wrong type, blocks
+                                    "kwargs_json": "{}",
+                                    "expected_observable": "/etc/passwd content",
+                                    "exploit_proof_if_observed": "path traversal",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        return {"text": _phase_a_verdict_response(), "usage": {}, "finish_reason": "stop"}
+
+    file_record = {
+        "file_id": "h",
+        "source_text": "def read_file_safely(p): return open(p).read()\n",
+        "file_name": "v.py",
+        "original_bytes": b"def read_file_safely(p): return open(p).read()\n",
+        "ml_format": None,
+    }
+    l1_output = {"verdict": {"verdict_label": "malicious"}, "hypotheses": []}
+
+    result = await run_dast(
+        file_record=file_record,
+        l1_output=l1_output,
+        sandbox=sandbox,
+        validator=HypothesisValidator(),
+        journal_dir=Path(tmp_path),
+        inference=fake_inference,
+        enable_runtime_probe=True,
+        enable_runtime_probe_iterative=True,
+    )
+
+    # Refinement was invoked
+    assert refinement_call_count["n"] == 1, "refinement should fire exactly once"
+    # Prompt carried the previous TypeError so Sonnet has context
+    assert "TypeError" in last_refinement_prompt["text"]
+    assert "expected str got int" in last_refinement_prompt["text"]
+
+    # The refined probe's HRP_0_r0 plan reached the sandbox
+    refine_plans = [p for p in sandbox.submitted_plans if "_r0" in p.hypothesis_id]
+    assert len(refine_plans) == 1, f"expected 1 refined plan; got {[p.hypothesis_id for p in sandbox.submitted_plans]}"
+
+    # Refinement confirmed → HRP_0_r0 in findings_validated
+    assert any("_r0" in fid for fid in result.findings_validated), (
+        f"refinement HRP not in findings_validated: {result.findings_validated}"
+    )
+
+    # Journal has confirmed record with refinement_idx tag
+    confirmed_refines = [
+        r
+        for r in result.journal_records
+        if r.get("claim_id", "").startswith("HRP_")
+        and r.get("verdict") == "confirmed"
+        and "refinement_idx" in r.get("rationale", "")
+    ]
+    assert len(confirmed_refines) >= 1
+
+
+@pytest.mark.asyncio
+async def test_iterative_refinement_skipped_on_unrecoverable_failures(tmp_path) -> None:
+    """When EVERY initial probe failure is unrecoverable (ImportError /
+    AttributeError / empty exception_type — the function was never
+    reached), refinement does NOT fire. Refining without runtime
+    evidence of the function actually running is just guessing — the
+    fix is env-side (missing dep, wrong file_name), not payload-side."""
+    sandbox = _CapturingProbeSandbox(
+        traces_by_hypothesis={
+            "HRP_0_0": {
+                # ImportError — function was NEVER reached.
+                "stdout": (
+                    'RESULT_JSON:{"ok": false, "exception_type": "ImportError", '
+                    '"exception_msg": "Cannot find module \'sandboxjs\'"}\n'
+                    'SIDE_EFFECTS:{"tmp_files_added": []}\n'
+                ),
+                "exit_code": 0,
+                "elapsed_ms": 15,
+            },
+        },
+    )
+
+    refinement_call_count = {"n": 0}
+
+    async def fake_inference(prompt, options, schema):
+        if schema.get("required") == ["refined_inputs", "non_refinable_reason"]:
+            refinement_call_count["n"] += 1  # should not fire
+            return {
+                "text": _phase_b_refinement_response([]),
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        if schema.get("required") == ["candidates", "non_probable_reason"]:
+            return {
+                "text": _phase_b_probe_response(
+                    [
+                        {
+                            "function_name": "f",
+                            "attack_class": "path_traversal",
+                            "rationale": "x",
+                            "test_inputs": [
+                                {
+                                    "args_json": '["x"]',
+                                    "kwargs_json": "{}",
+                                    "expected_observable": "y",
+                                    "exploit_proof_if_observed": "z",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        return {"text": _phase_a_verdict_response(), "usage": {}, "finish_reason": "stop"}
+
+    file_record = {
+        "file_id": "h",
+        "source_text": "def f(p): return open(p).read()\n",
+        "file_name": "v.py",
+        "original_bytes": b"def f(p): return open(p).read()\n",
+        "ml_format": None,
+    }
+    l1_output = {"verdict": {"verdict_label": "malicious"}, "hypotheses": []}
+
+    await run_dast(
+        file_record=file_record,
+        l1_output=l1_output,
+        sandbox=sandbox,
+        validator=HypothesisValidator(),
+        journal_dir=Path(tmp_path),
+        inference=fake_inference,
+        enable_runtime_probe=True,
+        enable_runtime_probe_iterative=True,
+    )
+
+    assert refinement_call_count["n"] == 0, (
+        "refinement should NOT fire when all failures are unrecoverable (ImportError)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_iterative_refinement_skipped_when_initial_probe_confirmed(tmp_path) -> None:
+    """If the initial probe already CONFIRMED an exploit for a candidate,
+    refinement does NOT fire for that candidate — we already have a
+    finding, no need to spend tokens looking for more."""
+    sandbox = _CapturingProbeSandbox(
+        traces_by_hypothesis={
+            "HRP_0_0": {
+                # Initial probe CONFIRMS via signature match.
+                "stdout": (
+                    'RESULT_JSON:{"ok": true, "type": "str", '
+                    '"value_preview": "root:x:0:0:root:/root:/bin/bash"}\n'
+                    'SIDE_EFFECTS:{"tmp_files_added": []}\n'
+                ),
+                "exit_code": 0,
+                "elapsed_ms": 20,
+            },
+        },
+    )
+
+    refinement_call_count = {"n": 0}
+
+    async def fake_inference(prompt, options, schema):
+        if schema.get("required") == ["refined_inputs", "non_refinable_reason"]:
+            refinement_call_count["n"] += 1
+            return {
+                "text": _phase_b_refinement_response([]),
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        if schema.get("required") == ["candidates", "non_probable_reason"]:
+            return {
+                "text": _phase_b_probe_response(
+                    [
+                        {
+                            "function_name": "read_file_safely",
+                            "attack_class": "path_traversal",
+                            "rationale": "x",
+                            "test_inputs": [
+                                {
+                                    "args_json": '["../../etc/passwd"]',
+                                    "kwargs_json": "{}",
+                                    "expected_observable": "/etc/passwd content",
+                                    "exploit_proof_if_observed": "path traversal",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "usage": {},
+                "finish_reason": "stop",
+            }
+        return {"text": _phase_a_verdict_response(), "usage": {}, "finish_reason": "stop"}
+
+    file_record = {
+        "file_id": "h",
+        "source_text": "def read_file_safely(p): return open(p).read()\n",
+        "file_name": "v.py",
+        "original_bytes": b"def read_file_safely(p): return open(p).read()\n",
+        "ml_format": None,
+    }
+    l1_output = {"verdict": {"verdict_label": "malicious"}, "hypotheses": []}
+
+    await run_dast(
+        file_record=file_record,
+        l1_output=l1_output,
+        sandbox=sandbox,
+        validator=HypothesisValidator(),
+        journal_dir=Path(tmp_path),
+        inference=fake_inference,
+        enable_runtime_probe=True,
+        enable_runtime_probe_iterative=True,
+    )
+
+    assert refinement_call_count["n"] == 0, "refinement should NOT fire when initial probe already confirmed"

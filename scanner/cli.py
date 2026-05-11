@@ -163,6 +163,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "Implies --enable-runtime-probe.",
     )
     scan.add_argument(
+        "--enable-runtime-probe-iterative",
+        action="store_true",
+        help="enable iterative refinement on BLOCKED probes. When all "
+        "initial probes for a candidate function failed but the function "
+        "was reached (recoverable exceptions like TypeError, SyntaxError, "
+        "RangeError), Sonnet sees the actual exception types/messages "
+        "and generates refined inputs that address them. Up to 2 retries "
+        "per candidate. Adds ~$0.20-0.40/file when refinement fires. "
+        "Implies --enable-runtime-probe.",
+    )
+    scan.add_argument(
         "--max-cost",
         type=float,
         default=None,
@@ -359,6 +370,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--enable-runtime-probe. Implies --enable-runtime-probe.",
     )
     repo.add_argument(
+        "--enable-runtime-probe-iterative",
+        action="store_true",
+        help="enable iterative refinement on BLOCKED probes (Phase 1b). "
+        "When all probes for a candidate failed but the function was "
+        "reached, Sonnet generates refined inputs addressing the "
+        "specific failure modes. Adds ~$0.20-0.40/file when refinement "
+        "fires. Implies --enable-runtime-probe.",
+    )
+    repo.add_argument(
         "--dast-trigger-verdicts",
         type=str,
         default=None,
@@ -504,6 +524,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--enable-runtime-probe. Implies --enable-runtime-probe.",
     )
     install.add_argument(
+        "--enable-runtime-probe-iterative",
+        action="store_true",
+        help="enable iterative refinement on BLOCKED probes (Phase 1b). "
+        "Implies --enable-runtime-probe. See `argus scan` for details.",
+    )
+    install.add_argument(
         "--max-cost",
         type=float,
         default=None,
@@ -594,6 +620,10 @@ async def _run_scan(args: argparse.Namespace) -> int:
         # parent flag too.
         config_kwargs["enable_runtime_probe"] = True
         config_kwargs["enable_runtime_probe_mutation"] = True
+    if getattr(args, "enable_runtime_probe_iterative", False):
+        # Iterative refinement implies probing — same convenience rule.
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_runtime_probe_iterative"] = True
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -922,6 +952,10 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         # parent flag too.
         config_kwargs["enable_runtime_probe"] = True
         config_kwargs["enable_runtime_probe_mutation"] = True
+    if getattr(args, "enable_runtime_probe_iterative", False):
+        # Iterative refinement implies probing — same convenience rule.
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_runtime_probe_iterative"] = True
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -1317,6 +1351,10 @@ async def _run_install(args: argparse.Namespace) -> int:
         # parent flag too.
         config_kwargs["enable_runtime_probe"] = True
         config_kwargs["enable_runtime_probe_mutation"] = True
+    if getattr(args, "enable_runtime_probe_iterative", False):
+        # Iterative refinement implies probing — same convenience rule.
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_runtime_probe_iterative"] = True
     scan_cfg = ScanConfig(**config_kwargs)
 
     cache_dir = args.cache_dir or CACHE_DIR_DEFAULT

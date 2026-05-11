@@ -177,6 +177,7 @@ async def run_dast(
     enable_phase_c: bool = True,
     enable_runtime_probe: bool = False,
     enable_runtime_probe_mutation: bool = False,
+    enable_runtime_probe_iterative: bool = False,
 ) -> DastResult:
     """Run the DAST loop on one file.
 
@@ -261,6 +262,7 @@ async def run_dast(
                 iter_num=1,
                 stats=probe_pre_init_stats,
                 enable_mutation=enable_runtime_probe_mutation,
+                enable_iterative=enable_runtime_probe_iterative,
             )
             # Fix #2: HRPs are NOT appended to l1_output.hypotheses (would
             # cause Phase A re-test + contradiction). They flow only via
@@ -769,6 +771,7 @@ async def _run_phase_b_runtime_probe(
     iter_num: int,
     stats: IterationStats,
     enable_mutation: bool = False,
+    enable_iterative: bool = False,
 ) -> list[dict]:
     """Phase B+ — runtime-guided exploit discovery (v1.5).
 
@@ -925,19 +928,43 @@ async def _run_phase_b_runtime_probe(
     from dast.probe_mutator import mutate_input  # noqa: PLC0415
 
     findings_from_probes: list[dict[str, Any]] = []
+    # Phase 1b — per-candidate bookkeeping for iterative refinement.
+    # confirmed_by_candidate[c_idx] = True iff any probe for that
+    # candidate fired Rule 1 or Rule 2. recoverable_failures_by_candidate
+    # accumulates BLOCKED probes where the function was reached (i.e.,
+    # exception_type is NOT ImportError / AttributeError). Refinement
+    # only fires when (a) no confirm + (b) at least one recoverable
+    # failure → the model has something concrete to refine against.
+    confirmed_by_candidate: dict[int, bool] = {}
+    recoverable_failures_by_candidate: dict[int, list[dict[str, str]]] = {}
+    _UNRECOVERABLE_EXC_TYPES: frozenset[str] = frozenset(
+        {
+            "ImportError",
+            "AttributeError",
+            "ModuleNotFoundError",
+            "",  # empty exception_type — harness failed before invocation
+        }
+    )
     # Stops the outer build loop early if a HARD cap is exceeded; protects
     # against exotic candidates with many string args producing
     # cartesian-product blow-up.
     _HARD_PROBE_CAP = MAX_PROBE_RUNS_PER_FILE * 6  # 9 × 6 = 54
     # Concurrency limit for parallel sandbox submissions. Default Fly
     # accounts allow ~25 concurrent machines per app, but burst-creating
-    # 100+ machines in <1 minute hits Fly's machine-create rate limit
-    # (observed empirically in Phase 1c live testing: 134 probes via
-    # Semaphore(15) produced FlyMachinesError on a significant fraction).
-    # 8 is conservative: 6-7x wall-clock speedup over serial without
-    # triggering burst-limit errors. Bump upward if you have a higher-
-    # tier Fly account or are running fewer total probes per file.
-    _PROBE_CONCURRENCY: int = 8
+    # too many in <1 min hits Fly's machine-create rate limit.
+    #
+    # Tuning history:
+    #   * 15 (initial Phase 1c): produced FlyMachinesError on significant
+    #     fraction of probes — burst-rate limit hit.
+    #   * 8 (Phase 1c v2): no more FlyMachinesError but ~20% of probes
+    #     had "exit_code=None, empty exception" — machine boot timeout,
+    #     not API throttling. Diagnosis: v5 image is 200MB heavier
+    #     than v2; 8 parallel cold-pulls competed for Fly host bandwidth.
+    #   * 12 (current, paired with MAX_MUTATIONS_PER_INPUT=3): probe
+    #     count drops via the mutation cap, so Sem=12 fits within Fly's
+    #     burst limit AND each batch's cold-pulls don't saturate the
+    #     host. Net: faster wall-clock + higher per-probe reliability.
+    _PROBE_CONCURRENCY: int = 12
 
     # ── Sub-step 2a: build all SandboxPlans (fast, in-process) ─────────
     # Each entry tracks the metadata we need at interpret-time so we can
@@ -1099,9 +1126,22 @@ async def _run_phase_b_runtime_probe(
                     evidence_refs=[trace.events[0].event_id] if trace.events else [],
                 )
             )
+            # Phase 1b bookkeeping: track recoverable failures so the
+            # refinement stage knows which candidates have a real chance
+            # of being unblocked by a payload tweak.
+            if _exc_type not in _UNRECOVERABLE_EXC_TYPES:
+                recoverable_failures_by_candidate.setdefault(c_idx, []).append(
+                    {
+                        "args_json": probe_input.args_json,
+                        "mutation_strategy": mutation_strategy,
+                        "exception_type": _exc_type,
+                        "exception_msg": _exc_msg,
+                    }
+                )
             continue
 
         # CONFIRMED via runtime evidence.
+        confirmed_by_candidate[c_idx] = True
         evidence_ref = trace.events[0].event_id if trace.events else ""
         journal.append(
             JournalRecord(
@@ -1139,6 +1179,31 @@ async def _run_phase_b_runtime_probe(
 
     stats.sandbox_calls += n_probes_run
 
+    # ── Phase 1b — Iterative refinement on BLOCKED probes ────────────────
+    # When opt-in, for each candidate that BLOCKED on the initial fan-out
+    # but had at least one recoverable failure (function was reached;
+    # exception is something like TypeError / SyntaxError / RangeError
+    # rather than ImportError / AttributeError), ask Sonnet to generate
+    # refined inputs that address the SPECIFIC exception types observed.
+    # Up to MAX_REFINEMENT_ATTEMPTS new probes per candidate. Costs ~1
+    # inference call + N sandbox calls per refined candidate.
+    if enable_iterative:
+        await _run_phase_b_iterative_refinement(
+            file_record=file_record,
+            candidates=candidates,
+            confirmed_by_candidate=confirmed_by_candidate,
+            recoverable_failures_by_candidate=recoverable_failures_by_candidate,
+            findings_from_probes=findings_from_probes,
+            file_name=file_name,
+            file_id=file_id,
+            original_bytes=original_bytes,
+            inference=inference,
+            sandbox=sandbox,
+            journal=journal,
+            iter_num=iter_num,
+            stats=stats,
+        )
+
     # v1.5 design choice (Fix #2): probe-confirmed HRP findings are
     # SURFACED via findings_validated (engine → ScanResult.dast_findings)
     # but are NOT appended to ``l1_output["hypotheses"]``. The probe
@@ -1156,6 +1221,297 @@ async def _run_phase_b_runtime_probe(
     # 1. Extend findings_validated with their IDs (→ engine surfacing).
     # 2. Decide whether to bump max_dast_verdict_rank (Fix #1).
     return findings_from_probes
+
+
+async def _run_phase_b_iterative_refinement(
+    *,
+    file_record: dict,
+    candidates: list,
+    confirmed_by_candidate: dict[int, bool],
+    recoverable_failures_by_candidate: dict[int, list[dict[str, str]]],
+    findings_from_probes: list[dict[str, Any]],
+    file_name: str,
+    file_id: str,
+    original_bytes: bytes,
+    inference: InferenceFn,
+    sandbox: SandboxClient,
+    journal: Journal,
+    iter_num: int,
+    stats: IterationStats,
+) -> None:
+    """Phase 1b — iterative refinement helper.
+
+    For each candidate where the initial fan-out (originals + mutations)
+    blocked AND the function was reached at least once, ask Sonnet for
+    refined inputs that address the SPECIFIC exception types observed.
+    Submit those refined probes; if any confirm, append to
+    ``findings_from_probes`` (mutated in place).
+
+    No-op when:
+    * No candidates have recoverable failures (every failure was
+      ImportError / AttributeError or the original confirmed).
+    * Caller didn't opt in (``enable_iterative=False``).
+
+    All exceptions during refinement are journaled as REJECTED records
+    rather than propagated — the helper is best-effort, never fatal.
+    """
+    from dast.prompts import build_phase_b_refinement_prompt, phase_b_refinement_schema  # noqa: PLC0415
+    from dast.runtime_probe import (  # noqa: PLC0415
+        MAX_REFINEMENT_ATTEMPTS,
+        RuntimeProbeInput,
+        build_runtime_probe_plan,
+        interpret_probe_trace,
+        normalize_args_json,
+        parse_probe_trace,
+    )
+
+    source_text = file_record.get("source_text", "") or ""
+
+    # Build the list of candidates to refine.
+    to_refine: list[tuple[int, Any]] = []
+    for c_idx, cand in enumerate(candidates):
+        if confirmed_by_candidate.get(c_idx):
+            # Already confirmed via initial fan-out — no need to refine
+            continue
+        rejections = recoverable_failures_by_candidate.get(c_idx, [])
+        if not rejections:
+            # No recoverable failures (all ImportError/AttributeError, or
+            # we just didn't probe this candidate at all). Refining
+            # without runtime evidence is just guessing.
+            continue
+        to_refine.append((c_idx, cand))
+
+    if not to_refine:
+        return
+
+    # Refinement plans per candidate: build sequentially (need the
+    # inference call to complete before knowing the plan), then submit
+    # all of them in parallel via gather using the same semaphore the
+    # initial fan-out used.
+    refined_probes: list[tuple[int, int, Any, RuntimeProbeInput, str, SandboxPlan]] = []
+
+    for c_idx, cand in to_refine:
+        rejections = recoverable_failures_by_candidate[c_idx]
+        # Use the first rejection's test_input as the representative
+        # template for expected_observable / exploit_proof — they all
+        # share these (mutator preserves them).
+        # Locate it from cand.test_inputs (assume i=0 since refinement
+        # is candidate-level, not input-level).
+        if not cand.test_inputs:
+            continue
+        template_input = cand.test_inputs[0]
+
+        # Ask the model for refined inputs given the recoverable failures
+        prompt = build_phase_b_refinement_prompt(
+            function_name=cand.function_name,
+            attack_class=cand.attack_class,
+            expected_observable=template_input.expected_observable,
+            exploit_proof_if_observed=template_input.exploit_proof_if_observed,
+            file_text=source_text,
+            previous_attempts=rejections[:5],  # cap to 5 most informative
+        )
+        try:
+            refine_resp = await inference(
+                prompt,
+                {"temperature": 0.0, "max_tokens": 2048, "seed": 0},
+                phase_b_refinement_schema(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            journal.append(
+                JournalRecord(
+                    iter=iter_num,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=f"HRP_{c_idx}_REFINE_ERROR",
+                    verdict="rejected",
+                    rationale=(
+                        f"refinement inference failed for {cand.function_name}: {type(exc).__name__}: {str(exc)[:200]}"
+                    ),
+                    evidence_refs=[],
+                )
+            )
+            continue
+
+        # Track refinement inference tokens against the iter total so
+        # the cost cap accounts for them.
+        usage = refine_resp.get("usage") or {}
+        stats.phase_b_runtime_probe_in += usage.get("prompt_tokens", 0) or 0
+        stats.phase_b_runtime_probe_out += usage.get("completion_tokens", 0) or 0
+
+        refine_obj = _parse_json_or_empty(refine_resp.get("text", ""))
+        if not isinstance(refine_obj, dict):
+            continue
+        refined_inputs_raw = refine_obj.get("refined_inputs") or []
+        if not isinstance(refined_inputs_raw, list) or not refined_inputs_raw:
+            # Model legitimately couldn't refine — journal the reason
+            reason = str(refine_obj.get("non_refinable_reason") or "no refinable inputs")
+            journal.append(
+                JournalRecord(
+                    iter=iter_num,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=f"HRP_{c_idx}_REFINE_NONE",
+                    verdict="rejected",
+                    rationale=f"refinement declined: {reason[:200]}",
+                    evidence_refs=[],
+                )
+            )
+            continue
+
+        for r_idx, ref in enumerate(refined_inputs_raw[:MAX_REFINEMENT_ATTEMPTS]):
+            if not isinstance(ref, dict):
+                continue
+            refined_input = RuntimeProbeInput(
+                args_json=normalize_args_json(str(ref.get("args_json") or "[]")),
+                kwargs_json=normalize_args_json(str(ref.get("kwargs_json") or "{}"))
+                if isinstance(ref.get("kwargs_json"), str)
+                else "{}",
+                expected_observable=template_input.expected_observable,
+                exploit_proof_if_observed=template_input.exploit_proof_if_observed,
+            )
+            plan_dict = build_runtime_probe_plan(
+                file_name=file_name,
+                file_bytes=original_bytes,
+                candidate=cand,
+                test_input=refined_input,
+                candidate_idx=c_idx,
+                input_idx=0,
+            )
+            if plan_dict is None:
+                continue
+            hid = f"HRP_{c_idx}_r{r_idx}"
+            plan = SandboxPlan(
+                plan_id=f"i{iter_num}-{hid}",
+                file_id=file_id,
+                hypothesis_id=hid,
+                commands=plan_dict["commands"],
+                expected_oracle=plan_dict["oracle"],
+                payload=plan_dict["payload"],
+                timeout_sec=plan_dict["timeout_sec"],
+                image_hint=plan_dict["image_hint"],
+                file_name=file_name,
+                synthesis_context={
+                    "runtime_probe": True,
+                    "candidate_idx": c_idx,
+                    "input_idx": 0,
+                    "refinement_idx": r_idx,
+                    "refinement_rationale": str(ref.get("rationale") or "")[:200],
+                    "attack_class": cand.attack_class,
+                },
+            )
+            refined_probes.append((c_idx, r_idx, cand, refined_input, hid, plan))
+
+    if not refined_probes:
+        return
+
+    # Submit refined probes in parallel via the same gather pattern.
+    # Reuse the semaphore-bound _submit_one shape inline (the outer
+    # function's semaphore is out of scope here; we make a small one
+    # for refinement traffic separately).
+    import asyncio as _asyncio  # noqa: PLC0415
+
+    _ref_sem = _asyncio.Semaphore(8)
+
+    async def _submit_one_ref(p: SandboxPlan) -> tuple[SandboxTrace | None, BaseException | None]:
+        async with _ref_sem:
+            try:
+                return await sandbox.submit(p), None
+            except BaseException as exc:  # noqa: BLE001
+                return None, exc
+
+    plans_only = [pp[5] for pp in refined_probes]
+    ref_results: list[tuple[SandboxTrace | None, BaseException | None]] = await _asyncio.gather(
+        *(_submit_one_ref(p) for p in plans_only)
+    )
+
+    stats.sandbox_calls += len(refined_probes)
+
+    for (c_idx, r_idx, cand, refined_input, hid, _plan), (trace, submit_exc) in zip(
+        refined_probes, ref_results, strict=True
+    ):
+        if submit_exc is not None:
+            journal.append(
+                JournalRecord(
+                    iter=iter_num,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=hid,
+                    verdict="rejected",
+                    rationale=(
+                        f"refinement sandbox submit failed: {type(submit_exc).__name__}: {str(submit_exc)[:200]}"
+                    ),
+                    evidence_refs=[],
+                )
+            )
+            continue
+
+        parsed_trace = parse_probe_trace(
+            candidate_function=cand.function_name,
+            input_args_json=refined_input.args_json,
+            exit_code=trace.exit_code,
+            stdout=trace.stdout_excerpt,
+            stderr=trace.stderr_excerpt,
+            elapsed_ms=trace.elapsed_ms,
+        )
+        finding = interpret_probe_trace(
+            parsed_trace,
+            cand,
+            refined_input,
+            candidate_idx=c_idx,
+            input_idx=0,
+        )
+        if finding is None:
+            _pr = parsed_trace.parsed_result or {}
+            _exc_type = _pr.get("exception_type", "")
+            _exc_msg = (_pr.get("exception_msg") or "")[:160]
+            journal.append(
+                JournalRecord(
+                    iter=iter_num,
+                    phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                    claim_id=hid,
+                    verdict="rejected",
+                    rationale=(
+                        f"refinement probe ran; no exploit observed. "
+                        f"Function={cand.function_name}, "
+                        f"refinement_idx={r_idx}, "
+                        f"input={refined_input.args_json[:100]}, "
+                        f"exc={_exc_type}: {_exc_msg}"
+                    ),
+                    evidence_refs=[trace.events[0].event_id] if trace.events else [],
+                )
+            )
+            continue
+
+        # CONFIRMED via refined input
+        evidence_ref = trace.events[0].event_id if trace.events else ""
+        journal.append(
+            JournalRecord(
+                iter=iter_num,
+                phase=JournalPhase.PHASE_B_HYPOTHESIS,
+                claim_id=hid,
+                verdict="confirmed",
+                rationale=(
+                    f"refinement probe CONFIRMED {finding.attack_class} in "
+                    f"{cand.function_name} (refinement_idx={r_idx}): "
+                    f"{finding.runtime_evidence[:240]}"
+                ),
+                evidence_refs=[evidence_ref] if evidence_ref else [],
+            )
+        )
+        findings_from_probes.append(
+            {
+                "id": hid,
+                "finding_ref": hid,
+                "finding_type": finding.attack_class,
+                "severity": finding.severity,
+                "cwe": finding.cwe,
+                "line": None,
+                "code_snippet": cand.function_name,
+                "explanation": finding.description,
+                "data_flow_trace": (f"runtime probe via Phase B+ (refinement_idx={r_idx}): {finding.runtime_evidence}"),
+                "proof_of_concept": (f"{cand.function_name}(*{finding.test_input_args})"),
+                "confidence": 1.0,
+                "runtime_evidence": finding.runtime_evidence,
+                "mutation_strategy": f"refinement_r{r_idx}",
+            }
+        )
 
 
 def _iter_inner_sandbox_clients(sandbox: SandboxClient):

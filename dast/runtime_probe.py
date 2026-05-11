@@ -132,6 +132,16 @@ MAX_INPUTS_PER_CANDIDATE: int = 3
 #: practice the inference layer also caps via the probe schema itself.
 MAX_PROBE_RUNS_PER_FILE: int = MAX_CANDIDATES * MAX_INPUTS_PER_CANDIDATE
 
+#: Phase 1b — Iterative refinement. Maximum number of REFINED inputs
+#: per candidate when the initial fan-out blocks but the function was
+#: reached (i.e., recoverable exception, not ImportError /
+#: AttributeError). Each refinement = 1 inference call to ask the
+#: model "what's the next-shape input given THIS failure" + 1 sandbox
+#: probe. Capped at 2 so total cost per candidate stays bounded:
+#: ~2 × ($0.05 inference + $0.05 sandbox) = $0.20 added when refinement
+#: actually fires.
+MAX_REFINEMENT_ATTEMPTS: int = 2
+
 #: Default per-probe timeout in the sandbox. 30s is enough for a Python
 #: import + a single function call + side-effect snapshot, even on
 #: filesystem-heavy probes.
@@ -1398,6 +1408,7 @@ __all__ = [
     "MAX_CANDIDATES",
     "MAX_INPUTS_PER_CANDIDATE",
     "MAX_PROBE_RUNS_PER_FILE",
+    "MAX_REFINEMENT_ATTEMPTS",
     "RuntimeProbeCandidate",
     "RuntimeProbeFinding",
     "RuntimeProbeInput",

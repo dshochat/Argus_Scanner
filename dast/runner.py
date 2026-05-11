@@ -172,6 +172,7 @@ def make_dast_runner(
         enable_phase_c: bool = True,
         enable_runtime_probe: bool = False,
         enable_runtime_probe_mutation: bool = False,
+        enable_runtime_probe_iterative: bool = False,
     ) -> dict:
         text = content.decode("utf-8", errors="replace")
         file_id = (getattr(pp, "file_hash", None) if pp is not None else None) or filename
@@ -241,6 +242,7 @@ def make_dast_runner(
             enable_phase_c=enable_phase_c,
             enable_runtime_probe=enable_runtime_probe,
             enable_runtime_probe_mutation=enable_runtime_probe_mutation,
+            enable_runtime_probe_iterative=enable_runtime_probe_iterative,
         )
         elapsed_ms = int((time.time() - t0) * 1000)
         return _dast_result_to_engine_dict(result, elapsed_ms)

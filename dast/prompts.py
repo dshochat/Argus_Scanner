@@ -1799,6 +1799,154 @@ def build_phase_b_runtime_probe_prompt(
     return body + payload
 
 
+# ── Phase 1b — Iterative refinement on BLOCKED probes ────────────────────
+
+
+_PHASE_B_REFINEMENT_BODY = """\
+You generated attack inputs for a function probe; every input ran but
+NONE produced the expected exploit signal. Each input failed in a
+SPECIFIC way (a particular exception type + message). Your job now is
+to look at THOSE failures and generate REFINED inputs that address
+them — different shapes that work around the exact rejection patterns
+you've observed.
+
+This is NOT a guess. The function executed each previous input. The
+runtime evidence is real. Use the exception types + messages to
+narrow your search — they tell you what the function did with your
+input and where it broke.
+
+Reasoning patterns you should apply:
+
+* ``TypeError: expected str got int`` → wrap your payload in a string
+  literal, or pass a string-typed wrapper.
+* ``RangeError: value too large`` → try a shorter payload, or a value
+  near the boundary.
+* ``SyntaxError`` from inside the sandbox → your payload broke the
+  parser; try a different syntactic shape (e.g., template literal
+  vs string concatenation).
+* ``ReferenceError: X is not defined`` → the function doesn't expose
+  X; try a different bypass primitive (e.g., if ``constructor`` is
+  blocked, try ``__proto__.constructor`` or ``Object.getPrototypeOf``).
+* Any exception WHERE the function still ran the harmful side-effect
+  → revisit Rule 2 (canary check) — the exception might be misleading.
+
+OUTPUT CONTRACT (the schema enforces this):
+
+* Return AT MOST {MAX_REFINEMENT_ATTEMPTS} refined inputs.
+* Each input has the same ``args_json`` / ``kwargs_json`` shape as the
+  original probe schema.
+* Include a brief ``rationale`` for each — what failure mode you're
+  addressing, and why this new shape might bypass it.
+* If you genuinely can't think of a refinement (the function is robust,
+  the exceptions don't reveal a clear path forward), return an empty
+  ``refined_inputs`` list and explain via ``non_refinable_reason``.
+  Don't manufacture refinements just to fill the quota.
+
+==== INPUTS ====
+"""
+
+
+def phase_b_refinement_schema() -> dict[str, Any]:
+    """JSON schema for Phase 1b iterative-refinement candidate generation.
+
+    Shape mirrors the original probe schema for the inputs, but only
+    one candidate (the one being refined) and capped at
+    :data:`MAX_REFINEMENT_ATTEMPTS` refined inputs.
+    """
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["refined_inputs", "non_refinable_reason"],
+        "properties": {
+            "non_refinable_reason": {
+                "type": "string",
+                "description": (
+                    "Free-text reason if you couldn't refine "
+                    "(e.g., 'all failures were ImportError on missing "
+                    "dependency — payload shape can't help'). Empty "
+                    "string when you DID produce refined inputs."
+                ),
+                "maxLength": 500,
+            },
+            "refined_inputs": {
+                "type": "array",
+                "maxItems": 3,  # MAX_REFINEMENT_ATTEMPTS upper bound
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["args_json", "kwargs_json", "rationale"],
+                    "properties": {
+                        "args_json": {"type": "string", "maxLength": 1000},
+                        "kwargs_json": {"type": "string", "maxLength": 1000},
+                        "rationale": {
+                            "type": "string",
+                            "maxLength": 500,
+                            "description": (
+                                "Which previous failure mode this input addresses, and why this shape might bypass it."
+                            ),
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def build_phase_b_refinement_prompt(
+    *,
+    function_name: str,
+    attack_class: str,
+    expected_observable: str,
+    exploit_proof_if_observed: str,
+    file_text: str,
+    previous_attempts: list[dict[str, str]],
+) -> str:
+    """Build the Phase 1b refinement prompt.
+
+    ``previous_attempts`` is a list of dicts shaped like:
+
+        {
+            "args_json": "<original args>",
+            "mutation_strategy": "<class:variant or 'original'>",
+            "exception_type": "TypeError",
+            "exception_msg": "expected str got int",
+        }
+
+    The orchestrator passes the TOP-N most-informative rejections (those
+    that reached the function — i.e., exception_type is not
+    ImportError / AttributeError). The prompt asks the model to generate
+    refined inputs that address THOSE specific failure modes.
+    """
+    from dast.runtime_probe import MAX_REFINEMENT_ATTEMPTS  # noqa: PLC0415
+
+    body = _PHASE_B_REFINEMENT_BODY.replace("{MAX_REFINEMENT_ATTEMPTS}", str(MAX_REFINEMENT_ATTEMPTS))
+
+    attempts_section = "\n".join(
+        f"  Attempt {i + 1}:\n"
+        f"    args_json: {a.get('args_json', '')[:300]}\n"
+        f"    mutation:  {a.get('mutation_strategy', 'original')}\n"
+        f"    exception: {a.get('exception_type', '?')}: "
+        f"{a.get('exception_msg', '')[:200]}"
+        for i, a in enumerate(previous_attempts[:5])
+    )
+
+    payload = (
+        f"\n=== CANDIDATE FUNCTION ===\n"
+        f"function_name:        {function_name}\n"
+        f"attack_class:         {attack_class}\n"
+        f"expected_observable:  {expected_observable}\n"
+        f"exploit_proof:        {exploit_proof_if_observed}\n"
+        f"\n=== TARGET FILE (for context) ===\n"
+        f"{file_text[:6000]}\n"
+        f"\n=== PREVIOUS ATTEMPTS (all blocked, with their failures) ===\n"
+        f"{attempts_section}\n"
+        f"\n=== TASK ===\n"
+        f"Generate refined inputs that address the specific failure modes above.\n"
+    )
+
+    return body + payload
+
+
 # ── Phase C — Fix-and-verify (v1.2) ────────────────────────────────────────
 
 

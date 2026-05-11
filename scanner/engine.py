@@ -123,6 +123,15 @@ class ScanConfig:
     # didn't hit. Adds ~5x sandbox-run cost on top of the base probe.
     # Off by default; opt-in via ``--enable-runtime-probe-mutation``.
     enable_runtime_probe_mutation: bool = False
+    # Phase 1b — iterative refinement on BLOCKED probes. When all probes
+    # for a candidate function failed but at least one reached the
+    # function (recoverable exception like TypeError / SyntaxError),
+    # ask Sonnet to generate refined inputs that specifically address
+    # those failure modes. Up to MAX_REFINEMENT_ATTEMPTS retries per
+    # candidate. Adds ~1 inference call + ~2 sandbox runs per refined
+    # candidate (~$0.20-0.40/file when refinement actually fires). Off
+    # by default; opt-in via --enable-runtime-probe-iterative.
+    enable_runtime_probe_iterative: bool = False
     # DAST-204 v0.0 (v1.1): proactive vulnerability discovery via the
     # hardcoded payload library in dast/discovery.py. Runs alongside
     # the standard DAST orchestrator (which only validates L1's
@@ -531,6 +540,7 @@ async def scan_file(
                 enable_phase_c=cfg.enable_phase_c,
                 enable_runtime_probe=cfg.enable_runtime_probe,
                 enable_runtime_probe_mutation=cfg.enable_runtime_probe_mutation,
+                enable_runtime_probe_iterative=cfg.enable_runtime_probe_iterative,
             )
             result.dast_attempted = True
             result.dast_findings = (dast_out or {}).get("validated_findings", [])

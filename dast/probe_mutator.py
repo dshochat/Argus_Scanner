@@ -49,6 +49,15 @@ import urllib.parse
 #: Maximum mutations applied per model-generated input. Caps the fan-out
 #: so total sandbox runs stay bounded (see module docstring for cost
 #: math). Tunable via the orchestrator entry point.
+#:
+#: 5 is the production default — gives every attack class room for its
+#: full set of class-specific mutations (path_traversal has 5: quad_dot,
+#: encoded_slash, backslash, encoded_dot, absolute_path; command_injection
+#: has 6) before universal mutations fill remaining slots. Dropping to
+#: 3 saves ~33% sandbox cost but loses real CVE-bypass coverage —
+#: ``file:///etc/passwd`` for SSRF, ``absolute_path`` for path_traversal,
+#: etc. Bump down to 3 for cost-conscious ``argus install`` runs on
+#: large dep closures; leave at 5 for security-paranoid scans.
 MAX_MUTATIONS_PER_INPUT: int = 5
 
 #: Length-extreme padding size for length-stress mutations.
