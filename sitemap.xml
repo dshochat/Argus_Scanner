@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://dshochat.github.io/Argus_Scanner/</loc>
+         <lastmod>2026-05-12</lastmod>
+    </url>
+    <url>
+         <loc>https://dshochat.github.io/Argus_Scanner/api-keys/</loc>
+         <lastmod>2026-05-12</lastmod>
+    </url>
+    <url>
+         <loc>https://dshochat.github.io/Argus_Scanner/architecture/</loc>
+         <lastmod>2026-05-12</lastmod>
+    </url>
+    <url>
+         <loc>https://dshochat.github.io/Argus_Scanner/contributing/</loc>
+         <lastmod>2026-05-12</lastmod>
+    </url>
+    <url>
+         <loc>https://dshochat.github.io/Argus_Scanner/cost-guide/</loc>
+         <lastmod>2026-05-12</lastmod>
+    </url>
+    <url>
+         <loc>https://dshochat.github.io/Argus_Scanner/dast-setup/</loc>
+         <lastmod>2026-05-12</lastmod>
+    </url>
+    <url>
+         <loc>https://dshochat.github.io/Argus_Scanner/install/</loc>
+         <lastmod>2026-05-12</lastmod>
+    </url>
+</urlset>
