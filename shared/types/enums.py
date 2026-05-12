@@ -237,6 +237,7 @@ class ObfuscationTechnique(str, Enum):
     ZLIB_COMPRESS = "zlib_compress"
     MARSHAL = "marshal"
     CUSTOM_ENCODING = "custom_encoding"
+    JS_STRING_ARRAY = "js_string_array"
 
 
 class FindingType(str, Enum):

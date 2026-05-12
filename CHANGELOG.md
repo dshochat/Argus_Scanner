@@ -4,6 +4,33 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — JS string-array deobfuscation preprocessing
+
+**Live-caught the Mini Shai-Hulud TanStack npm supply-chain attack (May 11, 2026).** The malicious `@tanstack/react-router@1.169.8` shipped a 2.3 MB obfuscator.io-encoded payload (`router_init.js`) at the package root — a deliberate evasion designed to overflow AI scanner context windows. At ~1.53 M tokens it was past every 1 M-context model's input cap; Argus fail-closed to `suspicious vulns=0` and the operator got no detail. This release introduces a preprocessing stage that deobfuscates obfuscator.io string-array payloads via `webcrack` BEFORE the model sees them. Token count on the same file: **1.53 M → 589 K**, fits with headroom. Re-scan verdict: `critical_malicious`, risk **95/100**, **8 enumerated CWEs** (data_exfiltration, code_injection, command_injection, prompt_injection, privilege_escalation, +3).
+
+### The wedge
+
+Obfuscation against AI scanners has shifted from "hide what the code does" to "make the code too big to read." Bloat a payload past every model's context window and semantic analysis dies regardless of provider. Static deobfuscation has to live in preprocessing — before the model sees a single token — or you get a silent detection gap on modern npm supply-chain malware.
+
+### Added
+
+- **`preprocessing/deobfuscation_js.py`** — new preprocessing stage that detects the obfuscator.io fingerprint (`_0x[a-f0-9]{4,}=_0x[a-f0-9]{4,}` in the first 4 KB) and shells out to `webcrack` to inline the string table, strip dead code, and unminify. Output replaces the raw text for the rest of the pipeline (token count, model invocation, prompt-injection scan). Safety budgets: 60 s subprocess timeout, 5 MB output cap, 20 % shrinkage threshold below which the deobfuscation is treated as a no-op.
+- **`ObfuscationTechnique.JS_STRING_ARRAY`** enum value; surfaced in the schema via `obfuscation_techniques` and `deobfuscation_applied=True`.
+- **`scanner/engine.py` content swap** — when `JS_STRING_ARRAY` fires, the engine substitutes `bundle.decoded_content` for `content` before runner dispatch so the model actually receives the deobfuscated source (the existing v1 runner contract takes `content: bytes` directly and ignored `bundle.decoded_content`; this was a real detection gap, not just an unused field). Narrowly scoped — only this technique triggers the swap; existing Python deobfuscation behavior is unchanged.
+- **Top-level `--no-deobfuscation` CLI flag** — escape hatch for airgapped / locked-down environments that cannot install Node/webcrack. Files with obfuscator.io payloads will fall back to the model's fail-closed `suspicious` verdict.
+- **Startup dependency probe** in `scanner/cli.py` — verifies `webcrack` is resolvable via `shutil.which("webcrack")` (or `ARGUS_WEBCRACK` for non-PATH installs). Fails fast with the install command for macOS / Debian / RHEL / Docker when missing, so operators install once and move on instead of getting silently degraded scans.
+- **Unit tests** (`preprocessing/tests/test_deobfuscation_js.py`) covering: marker detection in obfuscator.io preamble, marker scan-window cap, no-op when webcrack missing, no-op on nonzero exit / timeout / non-shrinking output, applied-true happy path, PATH-vs-env-var precedence, `ARGUS_NO_DEOBFUSCATION` disable gate.
+
+### Dependencies
+
+- **New runtime dependency: Node 22 LTS + `webcrack`.** Installed via `brew install node@22 && npm install -g webcrack` (macOS), NodeSource setup + `npm install -g webcrack` (Linux), or `node:22-slim` base image (Docker). Full per-platform commands in the [README "Dependencies" section](./README.md#dependencies).
+
+### Env vars
+
+- **`ARGUS_WEBCRACK`** — override path to the `webcrack` binary for non-PATH installs (e.g. project-local `node_modules/.bin/webcrack`). Consulted only when `shutil.which("webcrack")` returns nothing.
+- **`ARGUS_NO_DEOBFUSCATION`** — set by `--no-deobfuscation`; short-circuits the deobfuscation stage entirely for restricted environments.
+
+
 ## [1.5.0] — 2026-05-10 — Phase B+ runtime exploit probing
 
 **DAST now finds new vulnerabilities by ACTUALLY EXECUTING the code, not by re-reading it. Sonnet generates concrete attack inputs; the Firecracker microVM runs them; runtime evidence becomes the finding. Live-validated end-to-end on multiple fixture classes — shell injection, command injection, path traversal — with exploits proven via the actual exfil bytes captured in the trace (e.g., `/etc/passwd` content returned by a vulnerable file-read function).**

@@ -40,6 +40,7 @@ from .attack_vector_extensions import detect_attack_vector_extension
 from .binary_detect import classify_binary_or_empty
 from .crypto_sensitivity import analyze_file as analyze_crypto_sensitivity
 from .deobfuscation import deobfuscate
+from .deobfuscation_js import unwrap_js_string_array
 from .framework_markers import detect_framework
 from .imperative_install import analyze_file as analyze_imperative_install
 from .language import detect_language
@@ -218,6 +219,19 @@ class Preprocessor:
             if decomp.is_valid:
                 raw_text = decomp.synthesized_source
 
+        # PREP-014: JS string-array deobfuscation. obfuscator.io-style
+        # bundles often blow past every model's context window (the Mini
+        # Shai-Hulud TanStack `router_init.js` is 1.5 M tokens). Unwrap
+        # before the Python-targeted deobfuscate() runs so downstream
+        # token counting, prompt-injection scan, and model stages see a
+        # readable, shrunk source. Fail paths leave raw_text untouched.
+        js_string_array_applied = False
+        if language in ("javascript", "typescript"):
+            js_result = unwrap_js_string_array(raw_text)
+            if js_result.applied:
+                raw_text = js_result.content
+                js_string_array_applied = True
+
         deob = deobfuscate(raw_text)
 
         token_count = approx_token_count(deob.content)
@@ -234,8 +248,8 @@ class Preprocessor:
 
         pp = Preprocessing(
             dependencies=dependencies,
-            deobfuscation_applied=deob.applied,
-            deobfuscation_layers=deob.layers,
+            deobfuscation_applied=deob.applied or js_string_array_applied,
+            deobfuscation_layers=deob.layers + (1 if js_string_array_applied else 0),
             file_hash=file_hash,
             known_malware_match=malware_match,
             detected_language=language,
@@ -262,10 +276,14 @@ class Preprocessor:
         if deob.applied and detect_marker_spoofing(deob.content):
             attack_attempt = "marker_spoofing"
 
+        techniques = list(deob.techniques)
+        if js_string_array_applied:
+            techniques.append(ObfuscationTechnique.JS_STRING_ARRAY)
+
         return PreprocessingBundle(
             preprocessing=pp,
             decoded_content=deob.content,
-            obfuscation_techniques=list(deob.techniques),
+            obfuscation_techniques=techniques,
             imperative_install_reasons=list(signal.reasons),
             obfuscation_blob_count=deob.blob_count,
             obfuscation_decoded_blob_count=deob.decoded_blob_count,
