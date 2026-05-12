@@ -116,6 +116,15 @@ def format_markdown(result: ScanResult) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="argus", description="AI-native code security scanner")
+    parser.add_argument(
+        "--no-deobfuscation",
+        action="store_true",
+        help="skip the JS string-array deobfuscation preprocessing stage "
+        "(webcrack). Use in environments that cannot install Node/webcrack "
+        "(airgapped, locked-down CI). Obfuscator.io-style JS payloads will "
+        "fall back to the model's fail-closed 'suspicious' verdict instead "
+        "of receiving full semantic analysis.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     scan = sub.add_parser("scan", help="Scan a single file")
@@ -1399,6 +1408,44 @@ async def _run_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def _check_deobfuscation_dependency(disabled: bool) -> int | None:
+    """Verify the JS deobfuscation dependency (webcrack) is installed.
+
+    Returns an exit code if the check fails and the user has not
+    opted out; ``None`` otherwise. Argus relies on webcrack to handle
+    obfuscator.io-style JS payloads that overflow model context
+    windows (1.5 M+ tokens). Without it, modern JS supply-chain
+    malware reports as ``suspicious vulns=0`` instead of a real
+    verdict — silently lossy. Fail fast at startup so the operator
+    can install once and move on.
+    """
+    if disabled:
+        os.environ["ARGUS_NO_DEOBFUSCATION"] = "1"
+        return None
+    from preprocessing.deobfuscation_js import is_available  # noqa: PLC0415
+
+    if is_available():
+        return None
+    print(
+        "error: webcrack not found on PATH. Argus uses webcrack to "
+        "deobfuscate JS string-array payloads before they hit the model — "
+        "this is a hard requirement so modern npm supply-chain malware "
+        "doesn't silently downgrade to a 'suspicious' verdict.\n"
+        "\n"
+        "Install:\n"
+        "  macOS:   brew install node@22 && npm install -g webcrack\n"
+        "  Debian:  curl -fsSL https://deb.nodesource.com/setup_22.x | "
+        "sudo bash - && sudo apt install -y nodejs && sudo npm install -g webcrack\n"
+        "  Docker:  use node:22-slim as the base, RUN npm install -g webcrack\n"
+        "\n"
+        "If you cannot install Node/webcrack in this environment, re-run "
+        "with --no-deobfuscation to accept the reduced detection on "
+        "obfuscated JS files.",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
     # Force UTF-8 stdout so Windows cp1252 consoles don't choke on
@@ -1407,6 +1454,9 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     parser = _build_parser()
     args = parser.parse_args(argv)
+    dep_check = _check_deobfuscation_dependency(getattr(args, "no_deobfuscation", False))
+    if dep_check is not None:
+        return dep_check
     if args.command == "scan":
         return asyncio.run(_run_scan(args))
     if args.command == "bench":

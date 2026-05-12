@@ -21,6 +21,13 @@ You pay your providers directly — Anthropic + Google for the cascade, Fly.io f
 Get from install to first scan in under 60 seconds:
 
 ```bash
+# Node + webcrack are required so Argus can deobfuscate obfuscator.io-style
+# JS payloads before sending them to the model. Without this, modern npm
+# supply-chain malware (Shai-Hulud variants, etc.) overflows the model's
+# context window and silently downgrades to a "suspicious" verdict.
+brew install node@22                                # macOS — see "Dependencies" for Linux/Docker
+npm install -g webcrack
+
 pip install argus-ai-scanner
 export ANTHROPIC_API_KEY="your-anthropic-key"
 export GEMINI_API_KEY="your-gemini-key"
@@ -42,6 +49,21 @@ argus install litellm --strict-coverage             # extra-paranoid mode
 ```
 
 Without DAST configured the CLI gracefully degrades to cascade-only verdicts. DAST mode (Firecracker sandbox) requires a Fly.io account — see [docs/dast-setup.md](./docs/dast-setup.md).
+
+### Dependencies
+
+Argus requires `webcrack` (Node 22 LTS+) at runtime for the JS string-array deobfuscation preprocessing stage. This is what lets Argus characterize obfuscator.io-style npm payloads instead of failing-closed on context-window overflow — see the [Mini Shai-Hulud TanStack case](./CHANGELOG.md) for what this catches.
+
+| Platform | Install |
+|---|---|
+| macOS | `brew install node@22 && npm install -g webcrack` |
+| Debian / Ubuntu | `curl -fsSL https://deb.nodesource.com/setup_22.x \| sudo bash - && sudo apt install -y nodejs && sudo npm install -g webcrack` |
+| RHEL / Fedora | NodeSource RPM setup, then `sudo npm install -g webcrack` |
+| Docker | Base image `node:22-slim`, then `RUN npm install -g webcrack` |
+
+Argus resolves the binary via `shutil.which("webcrack")` (the standard install path). For non-PATH installs (project-local `node_modules/.bin/webcrack`), set `ARGUS_WEBCRACK` to the absolute binary path.
+
+**Restricted environments:** If you cannot install Node/webcrack (airgapped CI, locked-down hosts), run with `argus --no-deobfuscation <subcommand>`. Obfuscated JS files will fall back to the model's fail-closed `suspicious` verdict instead of full semantic analysis.
 
 ## Benchmark Performance
 

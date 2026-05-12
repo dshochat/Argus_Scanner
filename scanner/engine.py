@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from preprocessing import preprocess_file
+from shared.types.enums import ObfuscationTechnique
 from shared.types.preprocessing import Preprocessing
 
 log = logging.getLogger("argus.engine")
@@ -359,6 +360,16 @@ async def scan_file(
         result.file_hash = pp.file_hash or ""
         result.language = pp.detected_language
         result.scan_path.append("preprocessing")
+
+        # JS string-array deobfuscation (PREP-014): swap the raw obfuscator.io
+        # payload for webcrack's deobfuscated output before the model sees
+        # it. Narrow gate — only on this technique — so existing Python
+        # deobfuscation behavior is untouched. Without this swap the model
+        # still receives the 1.5 M-token obfuscated blob and rejects it
+        # past the 1 M context cap.
+        if ObfuscationTechnique.JS_STRING_ARRAY in bundle.obfuscation_techniques:
+            content = bundle.decoded_content.encode("utf-8")
+            result.scan_path.append("js_string_array_deobfuscation")
 
         # Short-circuit on known-malware hash
         if pp.known_malware_match:
