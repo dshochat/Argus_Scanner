@@ -4,6 +4,25 @@
 
 Open source, BYOK, Apache 2.0.
 
+## How Argus uses LLMs (the cutting edge)
+
+Past sandbox-validated security tools treated the LLM as a triage step bolted onto a deterministic runtime: a pattern matcher up front, a fixed fuzzer in the middle, maybe a templated fix at the end. Argus inverts that. **The LLM is in the loop at every step that requires semantic reasoning; the sandbox is the ground-truth oracle.**
+
+```
+LLM reads the file                  → static findings + verdict
+LLM designs the attack inputs       → executed in the sandbox
+LLM interprets the sandbox trace    → CONFIRMED / REFUTED / BLOCKED / …
+LLM writes the patch                → applied to a clean source copy
+LLM designs the post-patch replay   → executed in the same sandbox
+LLM judges the replay observation   → NEUTRALIZED / STILL_EXPLOITABLE / …
+```
+
+Every step that needs "is this exploit real / what does this trace mean / will this patch close the hole" goes through Sonnet 4.6 or Opus 4.6. Every step that needs ground truth — did the syscall fire, did the file actually open, did the patched code still leak — happens in a Firecracker microVM with kernel-syscall observation via bpftrace.
+
+This composition is the differentiator. Static SAST tools have no runtime. Classic DAST tools have no semantic reasoning about the file under test. Pattern-based remediation tools generate patches without verification. Argus closes all three gaps with the LLM-in-the-loop running against a real sandbox.
+
+The result: a CONFIRMED finding in an Argus report has both an AI-authored rationale **and** a kernel-level event trace proving the exploit fired. The Remediation block has a patch **and** sandbox-replay evidence that the original exploit no longer fires. Neither half is trustable alone; together they're a credible ship signal.
+
 ## The problem
 
 Vulnerability throughput is up and to the right and it isn't slowing down. CVE counts, supply-chain advisories, AI-generated code, agent-authored PRs, agent-installed dependencies — the queue of "things to patch" grows every quarter while the team that has to patch them does not. CISOs aren't asking "can you find more bugs?" anymore. They're asking "**how do I close 10,000 open findings before next audit?**"

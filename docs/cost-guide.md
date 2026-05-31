@@ -1,75 +1,95 @@
 # Cost guide
 
-Argus is BYOK (bring your own keys). You pay Anthropic and Google directly; Argus collects nothing.
+Argus is BYOK. You pay Anthropic + Fly directly; Argus collects nothing. The default cascade is built to keep per-file cost predictable.
 
-## Per-file API spend (measured live)
+## Per-file cost by scan path (v1.11)
 
 | Scan path | When it fires | Cost per file |
 |---|---|---|
 | Triage CLEAN short-circuit | Pure-utility code, no security-relevant patterns | **~$0.0001** |
-| Sonnet 4.6 default HIGH | Most malicious code (no preprocessing high-stakes flags) | **~$0.05-0.30** |
-| Opus 4.6 high-stakes | `crypto_sensitivity` / `attack_vector_extension` / `ai_file_match` / `obfuscation_detected` | **~$0.15-0.50** |
-| Sonnet + DAST | Confirmed-malicious files (DAST-triggered) | **+$0.20-0.80** for DAST |
-| Opus high-stakes + DAST | Worst case for a single file | **~$1.00 worst-case** |
+| Triage LOW → Sonnet 4.6 | Most low-risk files | **~$0.02–$0.08** |
+| Triage HIGH → Sonnet split L1 | Most security-relevant files | **~$0.05–$0.20** |
+| Above + Opus 4.6 escalation | Borderline uncertainty / high-stakes preprocessing flags | **+$0.05–$0.30** |
+| Above + **Finding Validation** (sandbox) | Verdict ≥ suspicious — runs by default | **+$0.05–$0.20** (Anthropic) + **$0.02–$0.10** (Fly) |
+| Above + **Remediation** (auto-patch + replay) | Any CONFIRMED finding — runs by default | **+$0.05–$0.15** (Anthropic) + **$0.02–$0.10** (Fly) |
+| All opt-in stages enabled | `--enable-runtime-probe` + `--enable-phase-3-discovery` + `--enable-phase-3-loop` | **+$0.30–$1.50** |
 
-These numbers come from the live runs in this session — see the methodology benchmark output (`bench_results/<timestamp>/summary.json`) once BENCH-004 has run on your end.
+Default cascade (no opt-in flags) for a confirmed-suspicious file: **~$0.20–$0.60**. With all three opt-in stages: **~$0.50–$2.00**.
 
 ## Per-100-file scan projection
 
-| Component | Calls | API spend |
-|---|---|---|
-| Triage (Flash-Lite) | 100 | $0.10 |
-| LOW bucket (~50, Flash) | 50 | $1.00 |
-| HIGH-standard (~15, Sonnet) | 15 | $1.05 |
-| HIGH-high-stakes (~5, Sonnet+Opus) | 5 | $1.00 |
-| Ensemble re-verdict (~3, Opus) | 3 | $0.60 |
-| DAST verification (~3) | 3 | $0.90 |
-| **Total** | | **~$4.65** |
+Typical mix on a real codebase, default v1.11 cascade:
 
-## The cost cap (`--max-cost`)
+| Slice | Files | Per-file | Subtotal |
+|---|---:|---:|---:|
+| Triage CLEAN short-circuit | ~70 | $0.0001 | ~$0.01 |
+| LOW-bucket Sonnet | ~20 | $0.05 | $1.00 |
+| HIGH-bucket Sonnet split L1 | ~7 | $0.15 | $1.05 |
+| HIGH + Opus escalation | ~3 | $0.35 | $1.05 |
+| Validation + Remediation (suspicious+) | ~5 | $0.30 | $1.50 |
+| **Total** | 100 | | **~$4.60** |
 
-The engine refuses to spend more than `ScanConfig.max_cost_per_file_usd` ($1.00 by default) on a single file:
+Suspicious-file count varies by codebase. A typical OSS Python SDK scan we ran (32 files) cost $6.71 with full defaults engaged.
+
+Opt-in zero-day hunting roughly **triples** the bill (the Exploit Discovery / Behavioral Profiling / Adversarial Reasoning stages each add ~$0.10-0.50/file when they engage).
+
+## The cost cap
+
+Argus refuses to spend more than `max_cost_per_file_usd` ($1.00 default) on a single file:
 
 ```bash
 # Override per-scan
-uv run argus scan path/to/file.py --max-cost 0.25
+argus scan path/to/file.py --max-cost 0.50
 
-# Disable the cap (benchmarks, etc.)
-uv run argus scan path/to/file.py --max-cost 0
+# Disable (benchmarks / pathological-file investigation)
+argus scan path/to/file.py --max-cost 0
 ```
 
-When the cap is breached, the engine:
+On breach, the engine:
 
-- Aborts the cascade after the offending stage finishes (no in-flight call gets cancelled)
-- Returns the partial result with `status: 402` and `error: "cost_cap_exceeded: $X.XX > $Y.YY after <stage> stage"`
-- Adds a `cost_cap_exceeded_after:<stage>(<actual>>$<cap>)` marker to `scan_path` for telemetry
+- Aborts after the in-flight stage completes (no calls cancelled)
+- Returns the partial result with `status: 402`, `error: "cost_cap_exceeded: $X.XX > $Y.YY after <stage>"`
+- Adds `cost_cap_exceeded_after:<stage>(<actual>>$<cap>)` to `scan_path`
+- Exits with code `1`
 
-The exit code on cost-cap abort is `1` (matches generic scan error).
-
-## When the cap matters
-
-The cap is a safety net for runaway scans, not a fine-grained budget tool. Real-world per-file spend on the 23-file regression suite (no DAST): typically $0.06-0.30. With DAST: $0.30-0.80. The $1.00 default catches:
-
-- A pathological file that DAST iterates 3× without converging
-- A run where every cascade tier (Sonnet → Opus → DAST → Opus iter-3) fires
-- A misconfigured loop (e.g., infinite retries on a transient API error)
-
-## Per-scan vs per-file caps
-
-`ScanConfig` declares two caps:
-
-- `max_cost_per_file_usd: float = 1.00` — currently enforced by `scan_file` (one file at a time)
-- `max_cost_per_scan_usd: float = 50.00` — for batch scanning; not yet enforced by the CLI (single-file mode). Future API server / batch CLI will layer it on top.
+The cap is a runaway-safety, not a fine-grained budget tool. Real-world per-file spend lands well under $1.00 except on files where Adversarial Reasoning hits multiple sandbox-iter cycles.
 
 ## DAST cost dynamics
 
 DAST is the most variable spend. Per-file cost depends on:
 
-- **Number of iterations** the orchestrator runs (capped at 3)
-- **Number of Phase A hypotheses** the model proposes per iteration
-- **Number of sandbox calls** (one per executable plan)
-- **Whether iter-3 escalates to Opus** (DAST-103, post-v1)
+- **Validation** ≈ 1 sandbox call per L1 finding. ~$0.05 + a few cents Fly.
+- **Remediation** ≈ 1 patch-generation call + 1 sandbox replay per CONFIRMED finding. ~$0.05 + Fly.
+- **Exploit Discovery** ≈ 1 Sonnet call + up to 3 sandbox probes per probe-attractive function. ~$0.20-0.50/file when fired.
+- **Adversarial Reasoning** ≈ 1 Opus call + 1-3 sandbox runs per file. ~$0.05-0.15/file.
 
-Empirically: 1 iteration × 4 hypotheses × 5 sandbox calls × ~30s/call → $0.20-0.80 per DAST scan, dominated by Sonnet inference time.
+To cap Fly spend specifically, set per-machine limits via `flyctl scale` — Fly bills per-second on actual machine runtime.
 
-If DAST cost is a concern, run with `--no-dast`. Argus's L1 cascade alone still beats most pattern-based scanners; DAST is the differentiator for confirmed-exploitability findings.
+## Three ways to cut cost
+
+**Compliance / CI / read-only audits** (skip Remediation, keep Validation):
+
+```bash
+argus scan-repo . --no-enable-remediation
+```
+
+**Strictest cost-controlled mode** (DAST only on confirmed-malicious files):
+
+```bash
+argus scan-repo . --dast-trigger-verdicts "malicious,critical_malicious"
+```
+
+**Cheapest possible scan** (L1 only, no sandbox at all):
+
+```bash
+argus scan-repo . --no-dast
+```
+
+## Per-file vs per-scan caps
+
+`ScanConfig` declares two caps:
+
+- `max_cost_per_file_usd: float = 1.00` — enforced by `scan_file` (one file at a time)
+- `max_cost_per_scan_usd: float = 50.00` — for batch scanning via `argus scan-repo`. Engine aborts the run and marks remaining files `cost_cap_reached`.
+
+Both adjustable via `--max-cost` on the relevant subcommand.
