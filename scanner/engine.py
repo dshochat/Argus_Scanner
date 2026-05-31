@@ -66,6 +66,44 @@ class ScanConfig:
     the canonical default.
     """
 
+    # ── Anthropic model overrides (SCAN-020, v1.11.1) ────────────────────
+    # Per-tier model IDs Argus sends to the Anthropic API. Defaults match
+    # the v1.11 pin (Sonnet 4.6 / Opus 4.6) — operators who want to
+    # upgrade (Opus 4.8, etc.) or swap one tier entirely (use Opus for
+    # everything, or use a future Anthropic-compatible model in either
+    # slot) override via --scan-model / --reasoning-model on the CLI
+    # without code edits.
+    #
+    # Role-based naming (not family-based) so the slot doesn't lock you
+    # into a particular model family:
+    #
+    #   * scan_model     — the "workhorse" tier. Runs triage, L1
+    #                      analysis (split + combined paths), and
+    #                      DAST probe-inference. Sees most files.
+    #                      Default: Sonnet 4.6 (cheap, fast, deterministic).
+    #
+    #   * reasoning_model — the "deep reasoning" tier. Runs L1
+    #                       escalation on borderline-uncertainty files,
+    #                       DAST iter-3 escalation, Adversarial
+    #                       Reasoning (Phase 3 Stage 2), the
+    #                       adjudicator, and methodology benches.
+    #                       Default: Opus 4.6 (extended thinking).
+    #
+    # The value is the literal model_id sent to the Anthropic API; no
+    # validation beyond non-empty. Anthropic returns a 404 on unknown
+    # IDs which surfaces as an Argus runner error.
+    #
+    # Caveats:
+    #   * Some Anthropic models (notably claude-opus-4-7) refuse Argus's
+    #     live-payload fixtures and produce empty responses. v1.11.1
+    #     doesn't try to guess compatibility; operators pick the model_id
+    #     and own the compatibility risk. Always run a smoke scan after
+    #     overriding.
+    #   * Both slots can be set to the same model_id (e.g., Opus 4.8
+    #     everywhere for a high-precision audit mode).
+    scan_model: str = "claude-sonnet-4-6"
+    reasoning_model: str = "claude-opus-4-6"
+
     # Triage layer
     enable_pre_triage_regex: bool = True
     enable_triage_safety_net: bool = True

@@ -4,6 +4,43 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.1] — 2026-05-30 — Anthropic model overrides (SCAN-020)
+
+Adds two new CLI flags so operators can pick the Anthropic model used in each tier without code edits — bump to a newer Opus version, run Opus in both slots for a high-precision audit, or swap a future Anthropic-compatible model into either slot.
+
+### Added
+
+* **`--scan-model MODEL_ID`** — overrides the workhorse tier (triage, L1 analysis, DAST probe-inference). Default: `claude-sonnet-4-6`.
+* **`--reasoning-model MODEL_ID`** — overrides the deep-reasoning tier (L1 escalation, DAST iter-3, Adversarial Reasoning, adjudicator). Default: `claude-opus-4-6`.
+* Both flags accepted on `argus scan`, `argus scan-repo`, and `argus install`.
+* `ScanConfig.scan_model` + `ScanConfig.reasoning_model` fields surfaced for programmatic callers.
+
+### Role-based naming, not family-based
+
+Slots describe what the model does in the cascade, not which family it comes from. Set both flags to the same `model_id` (e.g., `claude-opus-4-8`) for a high-precision audit mode that runs the reasoning-tier model everywhere.
+
+### Caveats (documented in `--help`)
+
+* The `model_id` is sent verbatim to the Anthropic API. Unknown IDs surface as a runner error (Anthropic returns 404).
+* Cost constants stay pinned to the default rate card. Overriding to a more expensive model means reported `cost_usd` undercounts — raise `--max-cost` accordingly.
+* Some models (e.g. `claude-opus-4-7`) refuse Argus's live-payload fixtures and produce empty responses. Operators own the compatibility risk; always run a smoke scan after overriding.
+
+### Examples
+
+```bash
+# Bump just the reasoning tier to Opus 4.8
+argus scan --reasoning-model claude-opus-4-8 path/to/file.py
+
+# Run Opus everywhere on a sensitive repo
+argus scan-repo \
+  --scan-model claude-opus-4-8 \
+  --reasoning-model claude-opus-4-8 \
+  path/to/repo
+
+# Audit a dependency closure with bumped models before installing
+argus install --reasoning-model claude-opus-4-8 fastapi
+```
+
 ## [1.11.0] — 2026-05-21 — Remediation-first repositioning + production-grade FP defense
 
 This release repositions Argus around **machine-scale verified remediation**: every CONFIRMED finding gets a patched source generated, then the original exploit is replayed against the patched code in the same sandbox. Finding Validation + Remediation are now the default cascade. Zero-day-hunting stages (Exploit Discovery, Behavioral Profiling, Adversarial Reasoning) become opt-in for users who want broader coverage.

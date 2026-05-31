@@ -1,6 +1,6 @@
 [project]
 name = "argus-ai-scanner"
-version = "1.11.0"
+version = "1.11.1"
 description = "AI-native code security scanner: runtime sandbox-validated remediation. Confirm exploits, auto-patch, replay against the fix — all at machine scale."
 readme = "README.md"
 requires-python = ">=3.12"

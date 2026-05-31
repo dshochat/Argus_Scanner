@@ -518,6 +518,38 @@ def _build_parser() -> argparse.ArgumentParser:
         "exploits (e.g. SSRF that needs a real internal endpoint to "
         "demonstrate).",
     )
+    scan.add_argument(
+        "--scan-model",
+        type=str,
+        default=None,
+        metavar="MODEL_ID",
+        help="SCAN-020 (v1.11.1): override the Anthropic model used for "
+        "the workhorse scan tier — triage + L1 analysis + DAST "
+        "probe-inference (everything except deep-reasoning escalation). "
+        "Default: 'claude-sonnet-4-6'. Pass any Anthropic-SDK-compatible "
+        "model_id (e.g. 'claude-opus-4-8') to upgrade or swap families. "
+        "Set the SAME model_id on both --scan-model AND --reasoning-model "
+        "for a high-precision audit mode that runs the reasoning-tier "
+        "model everywhere. The model_id is sent verbatim to the Anthropic "
+        "API; unknown IDs surface as a runner error. Cost constants stay "
+        "pinned to the default rate card — overriding to a more expensive "
+        "model means reported cost_usd undercounts; raise --max-cost "
+        "accordingly.",
+    )
+    scan.add_argument(
+        "--reasoning-model",
+        type=str,
+        default=None,
+        metavar="MODEL_ID",
+        help="SCAN-020 (v1.11.1): override the Anthropic model used for "
+        "the deep-reasoning tier — L1 escalation on borderline-uncertainty "
+        "files, DAST iter-3 escalation, Adversarial Reasoning (Phase 3 "
+        "Stage 2), adjudicator, and methodology benches. Default: "
+        "'claude-opus-4-6'. Same semantics as --scan-model — accepts any "
+        "Anthropic-SDK-compatible model_id. Common use: bumping to a "
+        "newer Opus version (e.g. 'claude-opus-4-8') without bumping the "
+        "scan tier.",
+    )
 
     bench = sub.add_parser(
         "bench",
@@ -782,6 +814,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "`argus scan --help` for details.",
     )
     repo.add_argument(
+        "--scan-model",
+        type=str,
+        default=None,
+        metavar="MODEL_ID",
+        help="SCAN-020 (v1.11.1): override the Anthropic model used for "
+        "the workhorse scan tier (triage + L1 + DAST probe-inference) "
+        "across every file in the run. Default: 'claude-sonnet-4-6'. "
+        "See `argus scan --help` for full semantics + caveats.",
+    )
+    repo.add_argument(
+        "--reasoning-model",
+        type=str,
+        default=None,
+        metavar="MODEL_ID",
+        help="SCAN-020 (v1.11.1): override the Anthropic model used for "
+        "the deep-reasoning tier (L1 escalation, DAST iter-3, "
+        "Adversarial Reasoning, adjudicator) across every file in the "
+        "run. Default: 'claude-opus-4-6'. See `argus scan --help` for "
+        "full semantics + caveats.",
+    )
+    repo.add_argument(
         "--continue-on-error",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -976,6 +1029,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="max number of artifacts scanned concurrently (default: 4). "
         "Lower if you hit API rate limits.",
     )
+    install.add_argument(
+        "--scan-model",
+        type=str,
+        default=None,
+        metavar="MODEL_ID",
+        help="SCAN-020 (v1.11.1): override the Anthropic model used for "
+        "the workhorse scan tier on every wheel in the closure. "
+        "Default: 'claude-sonnet-4-6'. See `argus scan --help` for "
+        "full semantics + caveats.",
+    )
+    install.add_argument(
+        "--reasoning-model",
+        type=str,
+        default=None,
+        metavar="MODEL_ID",
+        help="SCAN-020 (v1.11.1): override the Anthropic model used for "
+        "the deep-reasoning tier on every wheel in the closure. "
+        "Default: 'claude-opus-4-6'. See `argus scan --help` for full "
+        "semantics + caveats.",
+    )
     return parser
 
 
@@ -1011,6 +1084,19 @@ async def _run_scan(args: argparse.Namespace) -> int:
 
     content = file_path.read_bytes()
 
+    # SCAN-020 (v1.11.1): model overrides. None = use factory default
+    # (which mirrors ScanConfig.scan_model / ScanConfig.reasoning_model
+    # — i.e. claude-sonnet-4-6 / claude-opus-4-6 at v1.11). When the
+    # user passes --scan-model / --reasoning-model, the chosen model_id
+    # is threaded through to (a) every workhorse/reasoning factory built
+    # here, (b) the DAST runner's inference factories, and (c)
+    # ScanConfig so downstream consumers (engine guards, adjudicator
+    # wire-up, etc.) see the override.
+    _scan_model_arg = getattr(args, "scan_model", None)
+    _reasoning_model_arg = getattr(args, "reasoning_model", None)
+    _scan_kw: dict[str, str] = {"model_id": _scan_model_arg} if _scan_model_arg else {}
+    _opus_kw: dict[str, str] = {"model_id": _reasoning_model_arg} if _reasoning_model_arg else {}
+
     # v15.9 (2026-05-20): triage model is selectable. Default is
     # Sonnet 4.6 (higher determinism, ~$0.02/file) per the v15.9
     # switch; Flash-Lite is the explicit opt-back option.
@@ -1018,13 +1104,13 @@ async def _run_scan(args: argparse.Namespace) -> int:
     if _triage_model == "gemini-flash-lite":
         triage = make_gemini_triage_runner(gemini_key)
     else:
-        triage = make_sonnet_triage_runner(anthropic_key)
+        triage = make_sonnet_triage_runner(anthropic_key, **_scan_kw)
     # v15.8 Gap 3: optional confirm-clean wrapper. Opt-in via
     # --triage-confirm-clean so default behavior stays unchanged.
     if getattr(args, "triage_confirm_clean", False):
         triage = with_confirm_clean(triage)
-    sonnet = make_sonnet_runner(anthropic_key)
-    opus = make_opus_runner(anthropic_key)
+    sonnet = make_sonnet_runner(anthropic_key, **_scan_kw)
+    opus = make_opus_runner(anthropic_key, **_opus_kw)
     # SCAN-010 (v1.1, default-enabled 2026-05-18): build split-mode
     # runners when --l1-mode is split OR auto. ``auto`` was a
     # placeholder during the validation period that resolved to
@@ -1034,8 +1120,8 @@ async def _run_scan(args: argparse.Namespace) -> int:
     l1_mode = getattr(args, "l1_mode", "auto") or "auto"
     use_split = l1_mode in ("split", "auto")
     if use_split:
-        sonnet_split = make_sonnet_runner_split(anthropic_key)
-        opus_split = make_opus_runner_split(anthropic_key)
+        sonnet_split = make_sonnet_runner_split(anthropic_key, **_scan_kw)
+        opus_split = make_opus_runner_split(anthropic_key, **_opus_kw)
     else:
         sonnet_split = None
         opus_split = None
@@ -1049,15 +1135,9 @@ async def _run_scan(args: argparse.Namespace) -> int:
         if l1_hunters_arg == "all":
             hunter_set = None  # None means all in ATTACK_CLASS_HUNTERS
         else:
-            hunter_set = tuple(
-                k.strip() for k in l1_hunters_arg.split(",") if k.strip()
-            )
-        sonnet_hunter = make_sonnet_runner_hunter(
-            anthropic_key, hunter_set=hunter_set
-        )
-        opus_hunter = make_opus_runner_hunter(
-            anthropic_key, hunter_set=hunter_set
-        )
+            hunter_set = tuple(k.strip() for k in l1_hunters_arg.split(",") if k.strip())
+        sonnet_hunter = make_sonnet_runner_hunter(anthropic_key, hunter_set=hunter_set, **_scan_kw)
+        opus_hunter = make_opus_runner_hunter(anthropic_key, hunter_set=hunter_set, **_opus_kw)
     else:
         sonnet_hunter = None
         opus_hunter = None
@@ -1066,7 +1146,12 @@ async def _run_scan(args: argparse.Namespace) -> int:
     if args.no_dast:
         dast_runner = None
     else:
-        dast_runner = make_dast_runner_from_env(api_key=anthropic_key)
+        _dast_kw: dict[str, str] = {}
+        if _scan_model_arg:
+            _dast_kw["scan_model"] = _scan_model_arg
+        if _reasoning_model_arg:
+            _dast_kw["reasoning_model"] = _reasoning_model_arg
+        dast_runner = make_dast_runner_from_env(api_key=anthropic_key, **_dast_kw)
         if dast_runner is None:
             log.info(
                 "DAST disabled: missing Fly config "
@@ -1186,6 +1271,15 @@ async def _run_scan(args: argparse.Namespace) -> int:
     policy = getattr(args, "dast_required_policy", None)
     if policy is not None:
         config_kwargs["dast_required_policy"] = policy
+    # SCAN-020 (v1.11.1): model overrides propagated into ScanConfig so
+    # downstream consumers (engine.scan_file's escalation thresholds,
+    # adjudicator wire-up, future per-tier dispatchers) see the chosen
+    # model_id alongside the runner factories that were already built
+    # with the override above.
+    if _scan_model_arg:
+        config_kwargs["scan_model"] = _scan_model_arg
+    if _reasoning_model_arg:
+        config_kwargs["reasoning_model"] = _reasoning_model_arg
     config = ScanConfig(**config_kwargs) if config_kwargs else None
 
     result = await scan_file(
@@ -1579,6 +1673,17 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
     policy = getattr(args, "dast_required_policy", None)
     if policy is not None:
         config_kwargs["dast_required_policy"] = policy
+    # SCAN-020 (v1.11.1): capture --scan-model / --reasoning-model so the
+    # chosen model_id is propagated into ScanConfig AND every runner
+    # factory built below. See _run_scan for the full rationale.
+    _scan_model_arg = getattr(args, "scan_model", None)
+    _reasoning_model_arg = getattr(args, "reasoning_model", None)
+    if _scan_model_arg:
+        config_kwargs["scan_model"] = _scan_model_arg
+    if _reasoning_model_arg:
+        config_kwargs["reasoning_model"] = _reasoning_model_arg
+    _scan_kw: dict[str, str] = {"model_id": _scan_model_arg} if _scan_model_arg else {}
+    _opus_kw: dict[str, str] = {"model_id": _reasoning_model_arg} if _reasoning_model_arg else {}
     scan_config = ScanConfig(**config_kwargs) if config_kwargs else None
 
     # Build runners (same wiring as `argus scan`).
@@ -1589,20 +1694,20 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
     if _triage_model == "gemini-flash-lite":
         triage = make_gemini_triage_runner(gemini_key)
     else:
-        triage = make_sonnet_triage_runner(anthropic_key)
+        triage = make_sonnet_triage_runner(anthropic_key, **_scan_kw)
     # v15.8 Gap 3: optional confirm-clean wrapper. Opt-in via
     # --triage-confirm-clean so default behavior stays unchanged.
     if getattr(args, "triage_confirm_clean", False):
         triage = with_confirm_clean(triage)
-    sonnet = make_sonnet_runner(anthropic_key)
-    opus = make_opus_runner(anthropic_key)
+    sonnet = make_sonnet_runner(anthropic_key, **_scan_kw)
+    opus = make_opus_runner(anthropic_key, **_opus_kw)
     # SCAN-010 (default-enabled 2026-05-18) — split runs by default
     # (l1_mode auto / split). ``combined`` is the opt-out.
     l1_mode = getattr(args, "l1_mode", "auto") or "auto"
     use_split = l1_mode in ("split", "auto")
     if use_split:
-        sonnet_split = make_sonnet_runner_split(anthropic_key)
-        opus_split = make_opus_runner_split(anthropic_key)
+        sonnet_split = make_sonnet_runner_split(anthropic_key, **_scan_kw)
+        opus_split = make_opus_runner_split(anthropic_key, **_opus_kw)
         # scan_config default already has l1_split_enabled=True; no
         # mutation needed in the auto case. Force it on for explicit
         # ``--l1-mode split`` in case the caller built a ScanConfig
@@ -1623,7 +1728,12 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
     if args.no_dast:
         dast_runner = None
     else:
-        dast_runner = make_dast_runner_from_env(api_key=anthropic_key)
+        _dast_kw: dict[str, str] = {}
+        if _scan_model_arg:
+            _dast_kw["scan_model"] = _scan_model_arg
+        if _reasoning_model_arg:
+            _dast_kw["reasoning_model"] = _reasoning_model_arg
+        dast_runner = make_dast_runner_from_env(api_key=anthropic_key, **_dast_kw)
         if dast_runner is None:
             log.info(
                 "DAST disabled: missing Fly config (FLY_API_TOKEN / "
@@ -1992,6 +2102,14 @@ async def _run_install(args: argparse.Namespace) -> int:
     file_concurrency = 1 if args.deep else 4
     parallel_scans = 4 if args.deep else max(1, args.parallel)
 
+    # SCAN-020 (v1.11.1): model overrides — see _run_scan for full
+    # rationale. On the install path the override is also propagated
+    # into ScanConfig below so downstream consumers see it.
+    _scan_model_arg = getattr(args, "scan_model", None)
+    _reasoning_model_arg = getattr(args, "reasoning_model", None)
+    _scan_kw: dict[str, str] = {"model_id": _scan_model_arg} if _scan_model_arg else {}
+    _opus_kw: dict[str, str] = {"model_id": _reasoning_model_arg} if _reasoning_model_arg else {}
+
     # v15.9 (2026-05-20): triage model is selectable. Default is
     # Sonnet 4.6 (higher determinism, ~$0.02/file) per the v15.9
     # switch; Flash-Lite is the explicit opt-back option.
@@ -1999,14 +2117,22 @@ async def _run_install(args: argparse.Namespace) -> int:
     if _triage_model == "gemini-flash-lite":
         triage = make_gemini_triage_runner(gemini_key)
     else:
-        triage = make_sonnet_triage_runner(anthropic_key)
+        triage = make_sonnet_triage_runner(anthropic_key, **_scan_kw)
     # v15.8 Gap 3: optional confirm-clean wrapper. Opt-in via
     # --triage-confirm-clean so default behavior stays unchanged.
     if getattr(args, "triage_confirm_clean", False):
         triage = with_confirm_clean(triage)
-    sonnet = make_sonnet_runner(anthropic_key, thinking_budget=thinking_budget)
-    opus = make_opus_runner(anthropic_key, thinking_budget=thinking_budget)
-    dast_runner = None if args.no_dast else make_dast_runner_from_env(api_key=anthropic_key)
+    sonnet = make_sonnet_runner(anthropic_key, thinking_budget=thinking_budget, **_scan_kw)
+    opus = make_opus_runner(anthropic_key, thinking_budget=thinking_budget, **_opus_kw)
+    if args.no_dast:
+        dast_runner = None
+    else:
+        _dast_kw: dict[str, str] = {}
+        if _scan_model_arg:
+            _dast_kw["scan_model"] = _scan_model_arg
+        if _reasoning_model_arg:
+            _dast_kw["reasoning_model"] = _reasoning_model_arg
+        dast_runner = make_dast_runner_from_env(api_key=anthropic_key, **_dast_kw)
     if dast_runner is None and not args.no_dast:
         log.info("DAST not configured (Fly env missing); install gate runs cascade-only")
 
@@ -2057,6 +2183,14 @@ async def _run_install(args: argparse.Namespace) -> int:
         config_kwargs["enable_runtime_probe"] = True
         config_kwargs["enable_phase_3_discovery"] = True
         config_kwargs["enable_phase_3_loop"] = True
+    # SCAN-020 (v1.11.1): propagate the model-override into ScanConfig
+    # so downstream consumers (engine guards, adjudicator wire-up, etc.)
+    # see the chosen model alongside the runner factories that were
+    # already built with the override above.
+    if _scan_model_arg:
+        config_kwargs["scan_model"] = _scan_model_arg
+    if _reasoning_model_arg:
+        config_kwargs["reasoning_model"] = _reasoning_model_arg
     scan_cfg = ScanConfig(**config_kwargs)
 
     cache_dir = args.cache_dir or CACHE_DIR_DEFAULT

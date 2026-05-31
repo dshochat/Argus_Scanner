@@ -225,18 +225,26 @@ def parse_anthropic_response(
 # ── Production factory ─────────────────────────────────────────────────────
 
 
-def make_dast_sonnet_inference(api_key: str) -> InferenceFn:
-    """Sonnet 4.6 backing for the DAST orchestrator.
+def make_dast_sonnet_inference(
+    api_key: str,
+    *,
+    model_id: str = "claude-sonnet-4-6",
+) -> InferenceFn:
+    """Workhorse-tier backing for the DAST orchestrator.
 
     DAST is a many-call iter loop (3 phases × up to 3 iterations × N
     hypotheses) so per-call spend matters. ``thinking_budget=8000``
-    keeps cost in check; iter-3 Opus escalation (DAST-103) bumps to a
-    deeper budget by swapping in a different inference function.
+    keeps cost in check; iter-3 reasoning-tier escalation (DAST-103)
+    bumps to a deeper budget by swapping in
+    :func:`make_dast_opus_inference`.
+
+    SCAN-020 v1.11.1: ``model_id`` is the scan-tier model. Default is
+    the v1.11 Sonnet 4.6 pin; CLI's ``--scan-model`` flag overrides
+    via ScanConfig.scan_model.
     """
     import anthropic
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
-    model_id = "claude-sonnet-4-6"
     thinking_budget = 8000
 
     async def infer(
@@ -254,17 +262,25 @@ def make_dast_sonnet_inference(api_key: str) -> InferenceFn:
     return infer
 
 
-def make_dast_opus_inference(api_key: str) -> InferenceFn:
-    """Opus 4.6 backing for DAST iter-3 escalation (DAST-103).
+def make_dast_opus_inference(
+    api_key: str,
+    *,
+    model_id: str = "claude-opus-4-6",
+) -> InferenceFn:
+    """Reasoning-tier backing for DAST iter-3 escalation (DAST-103)
+    and the Adversarial Reasoning loop (Phase 3 Stage 2).
 
-    Same shape as the Sonnet inference but ``thinking_budget=24000``
+    Same shape as the scan-tier inference but ``thinking_budget=24000``
     ("extra high" depth) and the deeper model. Used by the orchestrator
     only when iter-1 and iter-2 both produced inconclusive verdicts.
+
+    SCAN-020 v1.11.1: ``model_id`` is the reasoning-tier model.
+    Default is the v1.11 Opus 4.6 pin; CLI's ``--reasoning-model``
+    flag overrides via ScanConfig.reasoning_model.
     """
     import anthropic
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
-    model_id = "claude-opus-4-6"
     thinking_budget = 24000
 
     async def infer(

@@ -1039,8 +1039,9 @@ def make_sonnet_runner(
     api_key: str,
     *,
     thinking_budget: int = 24000,
+    model_id: str = "claude-sonnet-4-6",
 ) -> Callable[..., Awaitable[dict]]:
-    """Build the Sonnet 4.6 analysis runner — default HIGH-tier path.
+    """Build the workhorse-tier analysis runner — default HIGH-tier path.
 
     Configured for deep security analysis: ``thinking_budget=24000``
     ("extra high" depth) by default, system-prompt caching enabled (90%
@@ -1055,6 +1056,13 @@ def make_sonnet_runner(
     ``attack_vector_extension``, ``crypto_sensitivity_detected``,
     ``ai_file_match``, ``obfuscation_detected``) still force-escalate
     files to HIGH-tier scrutiny regardless of thinking budget.
+
+    SCAN-020 v1.11.1: ``model_id`` is the literal model string passed
+    to the Anthropic API. Default is the v1.11 Sonnet 4.6 pin; CLI's
+    ``--scan-model`` flag overrides via ScanConfig.scan_model. Cost
+    constants (SONNET_46_COST_*) stay tied to the default rate card
+    — overriding to a more expensive model means the reported
+    cost_usd will undercount; raise --max-cost accordingly.
     """
     cfg: dict[str, Any] = {
         # 32768 covers Sonnet's full schema response on dense files.
@@ -1069,8 +1077,8 @@ def make_sonnet_runner(
         cfg["thinking_budget"] = thinking_budget
     adapter = AnthropicAdapter(
         {
-            "name": "argus-sonnet-4-6",
-            "model_id": "claude-sonnet-4-6",
+            "name": f"argus-{model_id}",
+            "model_id": model_id,
             "api_key_encrypted": api_key,
             "provider": "anthropic",
             "config": cfg,
@@ -1078,7 +1086,7 @@ def make_sonnet_runner(
     )
     return make_anthropic_runner_from_adapter(
         adapter,
-        model_label="claude-sonnet-4-6",
+        model_label=model_id,
         cost_per_m_input=SONNET_46_COST_IN,
         cost_per_m_output=SONNET_46_COST_OUT,
     )
@@ -1090,6 +1098,7 @@ def make_sonnet_runner_hunter(
     hunter_set: tuple[str, ...] | None = None,
     max_concurrent_hunters: int = 10,
     thinking_budget: int = 24000,
+    model_id: str = "claude-sonnet-4-6",
 ) -> Callable[..., Awaitable[dict]]:
     """SCAN-011 — Sonnet 4.6 runner that fans out N attack-class
     specialized hunters in parallel. See
@@ -1112,8 +1121,8 @@ def make_sonnet_runner_hunter(
         cfg["thinking_budget"] = thinking_budget
     adapter = AnthropicAdapter(
         {
-            "name": "argus-sonnet-4-6-hunter",
-            "model_id": "claude-sonnet-4-6",
+            "name": f"argus-{model_id}-hunter",
+            "model_id": model_id,
             "api_key_encrypted": api_key,
             "provider": "anthropic",
             "config": cfg,
@@ -1123,7 +1132,7 @@ def make_sonnet_runner_hunter(
         adapter,
         hunter_set=hunter_set,
         max_concurrent_hunters=max_concurrent_hunters,
-        model_label="claude-sonnet-4-6",
+        model_label=model_id,
         cost_per_m_input=SONNET_46_COST_IN,
         cost_per_m_output=SONNET_46_COST_OUT,
     )
@@ -1133,8 +1142,9 @@ def make_sonnet_runner_split(
     api_key: str,
     *,
     thinking_budget: int = 24000,
+    model_id: str = "claude-sonnet-4-6",
 ) -> Callable[..., Awaitable[dict]]:
-    """SCAN-010 — Sonnet 4.6 runner that fans out three specialized
+    """SCAN-010 — Workhorse-tier runner that fans out three specialized
     prompts (VULNS / BEHAVIORAL / CHAINS) in parallel.
 
     Same configuration as :func:`make_sonnet_runner` (thinking budget,
@@ -1148,6 +1158,9 @@ def make_sonnet_runner_split(
     is the shared prefix). Empirically verify post-deploy before
     flipping the engine default to split — see
     ``docs/scan_010_split_l1_design.md`` section 12.4.
+
+    SCAN-020 v1.11.1: ``model_id`` is the scan-tier model. See
+    :func:`make_sonnet_runner` docstring.
     """
     cfg: dict[str, Any] = {
         "max_tokens": 32768,
@@ -1157,8 +1170,8 @@ def make_sonnet_runner_split(
         cfg["thinking_budget"] = thinking_budget
     adapter = AnthropicAdapter(
         {
-            "name": "argus-sonnet-4-6-split",
-            "model_id": "claude-sonnet-4-6",
+            "name": f"argus-{model_id}-split",
+            "model_id": model_id,
             "api_key_encrypted": api_key,
             "provider": "anthropic",
             "config": cfg,
@@ -1166,7 +1179,7 @@ def make_sonnet_runner_split(
     )
     return make_anthropic_split_runner_from_adapter(
         adapter,
-        model_label="claude-sonnet-4-6",
+        model_label=model_id,
         cost_per_m_input=SONNET_46_COST_IN,
         cost_per_m_output=SONNET_46_COST_OUT,
     )
@@ -1409,7 +1422,11 @@ def make_triage_runner_from_adapter(
     return runner
 
 
-def make_sonnet_triage_runner(api_key: str) -> Callable[..., Awaitable[dict]]:
+def make_sonnet_triage_runner(
+    api_key: str,
+    *,
+    model_id: str = "claude-sonnet-4-6",
+) -> Callable[..., Awaitable[dict]]:
     """Sonnet 4.6 triage runner. v15.9 → v15.23.
 
     v15.9 (2026-05-20): switched default away from Gemini Flash-Lite
@@ -1450,8 +1467,8 @@ def make_sonnet_triage_runner(api_key: str) -> Callable[..., Awaitable[dict]]:
     }
     adapter = AnthropicAdapter(
         {
-            "name": "argus-sonnet-4-6-triage",
-            "model_id": "claude-sonnet-4-6",
+            "name": f"argus-{model_id}-triage",
+            "model_id": model_id,
             "api_key_encrypted": api_key,
             "provider": "anthropic",
             "config": cfg,
@@ -1459,7 +1476,7 @@ def make_sonnet_triage_runner(api_key: str) -> Callable[..., Awaitable[dict]]:
     )
     return make_triage_runner_from_adapter(
         adapter,
-        model_label="claude-sonnet-4-6-triage",
+        model_label=f"{model_id}-triage",
         cost_per_m_input=SONNET_46_COST_IN,
         cost_per_m_output=SONNET_46_COST_OUT,
     )
@@ -1573,19 +1590,25 @@ def make_opus_runner(
     api_key: str,
     *,
     thinking_budget: int = 24000,
+    model_id: str = "claude-opus-4-6",
 ) -> Callable[..., Awaitable[dict]]:
-    """Build the Opus 4.6 analysis runner — high-stakes / borderline tier.
+    """Build the reasoning-tier analysis runner — high-stakes / borderline.
 
-    Same composition as Sonnet but with Opus pricing and the deeper model.
-    Engine routes here for files where preprocessing flags a high-stakes
-    category (crypto, AI-tool, obfuscation) and for borderline-uncertainty
-    escalation from Sonnet.
+    Same composition as the scan-tier runner but with deep-reasoning
+    pricing and the deeper model. Engine routes here for files where
+    preprocessing flags a high-stakes category (crypto, AI-tool,
+    obfuscation) and for borderline-uncertainty escalation from the
+    scan tier.
 
-    Default ``thinking_budget=24000`` (full reasoning depth — when we pay
-    Opus's premium we usually want it). Pass ``thinking_budget=0`` to
-    disable extended thinking on the install path's bulk-scan mode where
-    throughput matters more than reasoning depth on already-Opus-tier
-    files (rare on the install path because most wheels stay in Sonnet).
+    Default ``thinking_budget=24000`` (full reasoning depth — when we
+    pay the reasoning-tier premium we usually want it). Pass
+    ``thinking_budget=0`` to disable extended thinking on the install
+    path's bulk-scan mode.
+
+    SCAN-020 v1.11.1: ``model_id`` is the reasoning-tier model. Default
+    is the v1.11 Opus 4.6 pin; CLI's ``--reasoning-model`` flag
+    overrides via ScanConfig.reasoning_model. Cost constants
+    (OPUS_46_COST_*) stay tied to the default rate card.
     """
     cfg: dict[str, Any] = {
         # See Sonnet runner: 16384 was too tight on dense files.
@@ -1596,8 +1619,8 @@ def make_opus_runner(
         cfg["thinking_budget"] = thinking_budget
     adapter = AnthropicAdapter(
         {
-            "name": "argus-opus-4-6",
-            "model_id": "claude-opus-4-6",
+            "name": f"argus-{model_id}",
+            "model_id": model_id,
             "api_key_encrypted": api_key,
             "provider": "anthropic",
             "config": cfg,
@@ -1605,7 +1628,7 @@ def make_opus_runner(
     )
     return make_anthropic_runner_from_adapter(
         adapter,
-        model_label="claude-opus-4-6",
+        model_label=model_id,
         cost_per_m_input=OPUS_46_COST_IN,
         cost_per_m_output=OPUS_46_COST_OUT,
     )
@@ -1617,8 +1640,9 @@ def make_opus_runner_hunter(
     hunter_set: tuple[str, ...] | None = None,
     max_concurrent_hunters: int = 10,
     thinking_budget: int = 24000,
+    model_id: str = "claude-opus-4-6",
 ) -> Callable[..., Awaitable[dict]]:
-    """SCAN-011 — Opus 4.6 runner with attack-class hunter fan-out.
+    """SCAN-011 — Reasoning-tier runner with attack-class hunter fan-out.
     Used on high-stakes HIGH-triage files. See
     :func:`make_sonnet_runner_hunter` for behavior + cost story."""
     cfg: dict[str, Any] = {
@@ -1629,8 +1653,8 @@ def make_opus_runner_hunter(
         cfg["thinking_budget"] = thinking_budget
     adapter = AnthropicAdapter(
         {
-            "name": "argus-opus-4-6-hunter",
-            "model_id": "claude-opus-4-6",
+            "name": f"argus-{model_id}-hunter",
+            "model_id": model_id,
             "api_key_encrypted": api_key,
             "provider": "anthropic",
             "config": cfg,
@@ -1640,7 +1664,7 @@ def make_opus_runner_hunter(
         adapter,
         hunter_set=hunter_set,
         max_concurrent_hunters=max_concurrent_hunters,
-        model_label="claude-opus-4-6",
+        model_label=model_id,
         cost_per_m_input=OPUS_46_COST_IN,
         cost_per_m_output=OPUS_46_COST_OUT,
     )
@@ -1650,11 +1674,12 @@ def make_opus_runner_split(
     api_key: str,
     *,
     thinking_budget: int = 24000,
+    model_id: str = "claude-opus-4-6",
 ) -> Callable[..., Awaitable[dict]]:
-    """SCAN-010 — Opus 4.6 runner that fans out three specialized
-    prompts. See :func:`make_sonnet_runner_split` for the rationale;
-    same change, Opus pricing + deeper model. Used when triage flags
-    a HIGH-stakes routing AND ``l1_split_enabled`` is on."""
+    """SCAN-010 — Reasoning-tier runner that fans out three specialized
+    prompts. See :func:`make_sonnet_runner_split` for the rationale.
+    Used when triage flags a HIGH-stakes routing AND
+    ``l1_split_enabled`` is on."""
     cfg: dict[str, Any] = {
         "max_tokens": 32768,
         "enable_system_cache": True,
@@ -1663,8 +1688,8 @@ def make_opus_runner_split(
         cfg["thinking_budget"] = thinking_budget
     adapter = AnthropicAdapter(
         {
-            "name": "argus-opus-4-6-split",
-            "model_id": "claude-opus-4-6",
+            "name": f"argus-{model_id}-split",
+            "model_id": model_id,
             "api_key_encrypted": api_key,
             "provider": "anthropic",
             "config": cfg,
@@ -1672,7 +1697,7 @@ def make_opus_runner_split(
     )
     return make_anthropic_split_runner_from_adapter(
         adapter,
-        model_label="claude-opus-4-6",
+        model_label=model_id,
         cost_per_m_input=OPUS_46_COST_IN,
         cost_per_m_output=OPUS_46_COST_OUT,
     )

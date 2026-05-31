@@ -708,7 +708,12 @@ def _stage_project_tree_for_phase_d(
 # ── Production factory ─────────────────────────────────────────────────────
 
 
-def make_dast_runner_from_env(api_key: str | None = None) -> DastRunner | None:
+def make_dast_runner_from_env(
+    api_key: str | None = None,
+    *,
+    scan_model: str = "claude-sonnet-4-6",
+    reasoning_model: str = "claude-opus-4-6",
+) -> DastRunner | None:
     """Build the production DAST runner from environment variables.
 
     Returns ``None`` if any required config is missing — engine.scan_file
@@ -724,6 +729,13 @@ def make_dast_runner_from_env(api_key: str | None = None) -> DastRunner | None:
         ECHO_DAST_IMAGE_ML_TOOLS    — falls back to LEAN if unset
         ARGUS_DAST_FLY_APP          — default: ``argus-dast-sandbox``
         ARGUS_DAST_FLY_REGION       — default: ``iad``
+
+    SCAN-020 v1.11.1: ``scan_model`` + ``reasoning_model`` plumb the
+    role-based model overrides through to DAST's Sonnet (Phase A /
+    Phase B+) and Opus (Phase 3 Stage 2 Adversarial Reasoning,
+    iter-3 escalation) inference functions. Defaults match the
+    v1.11 pin; CLI's ``--scan-model`` / ``--reasoning-model`` flags
+    propagate via ScanConfig.
 
     v1.8 P2b: env vars renamed from ECHO_DAST_IMAGE_MINIMAL/NETWORKED
     to ECHO_DAST_IMAGE_LEAN/RICH_PYTHON. If old names are still set
@@ -782,18 +794,18 @@ def make_dast_runner_from_env(api_key: str | None = None) -> DastRunner | None:
         fallback_hint="lean",
     )
 
-    inference = make_dast_sonnet_inference(api_key)
-    # v12 (2026-05-17): Opus 4.6 specifically for Phase 3 Stage 2
-    # hypothesis generation. The adversarial loop's reasoning bar is
-    # the highest in the pipeline — designing novel zero-day-class
-    # attack chains anchored on observed runtime behavior, picking
-    # between probe / single_function / stateful_sequence kinds,
-    # crafting argument shapes that bypass real-world validation.
-    # Sonnet is fine for L1 / Phase A / Phase B+ (validating L1's
-    # findings, simpler reasoning); Opus is the right tier for novel
-    # attack design. ~$0.30-0.40/file added cost vs ~$0 PR value of
-    # the zero-day catch quality lift.
-    phase_3_inference = make_dast_opus_inference(api_key)
+    inference = make_dast_sonnet_inference(api_key, model_id=scan_model)
+    # v12 (2026-05-17): reasoning-tier specifically for Phase 3 Stage 2
+    # (Adversarial Reasoning) hypothesis generation. The adversarial
+    # loop's reasoning bar is the highest in the pipeline — designing
+    # novel zero-day-class attack chains anchored on observed runtime
+    # behavior, picking between probe / single_function /
+    # stateful_sequence kinds, crafting argument shapes that bypass
+    # real-world validation. Scan-tier is fine for L1 / Phase A /
+    # Phase B+ (validating L1's findings, simpler reasoning);
+    # reasoning-tier is the right model for novel attack design.
+    # ~$0.30-0.40/file added cost vs the zero-day catch quality lift.
+    phase_3_inference = make_dast_opus_inference(api_key, model_id=reasoning_model)
 
     return make_dast_runner(
         inference=inference,

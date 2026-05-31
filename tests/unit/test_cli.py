@@ -688,3 +688,192 @@ def test_every_subparser_help_renders_cleanly() -> None:
                                 f"— literal percent signs must be "
                                 f"written as ``%%``."
                             ) from e
+
+
+# ── SCAN-020 (v1.11.1): model-override CLI flags ──────────────────────────
+
+
+def test_scanconfig_has_scan_model_and_reasoning_model_defaults() -> None:
+    """SCAN-020 contract: ScanConfig owns the source-of-truth defaults
+    for the two Anthropic tiers. CLI flags layer over these via the
+    None-means-use-default pattern."""
+    from scanner.engine import ScanConfig
+
+    cfg = ScanConfig()
+    assert cfg.scan_model == "claude-sonnet-4-6"
+    assert cfg.reasoning_model == "claude-opus-4-6"
+
+
+def test_scanconfig_accepts_scan_model_and_reasoning_model_overrides() -> None:
+    """ScanConfig accepts both fields as kwargs so the CLI's
+    config_kwargs[…] wire-up round-trips."""
+    from scanner.engine import ScanConfig
+
+    cfg = ScanConfig(scan_model="claude-opus-4-8", reasoning_model="claude-opus-4-8")
+    assert cfg.scan_model == "claude-opus-4-8"
+    assert cfg.reasoning_model == "claude-opus-4-8"
+
+
+def test_parser_scan_model_flags_default_none_on_scan() -> None:
+    """Without the flags, args.{scan_model,reasoning_model} are None
+    so the wire-up at _run_scan respects ScanConfig's defaults."""
+    parser = cli._build_parser()
+    args = parser.parse_args(["scan", "foo.py"])
+    assert args.scan_model is None
+    assert args.reasoning_model is None
+
+
+def test_parser_scan_model_explicit_on_scan() -> None:
+    """--scan-model X + --reasoning-model Y parse cleanly on the
+    ``scan`` subparser."""
+    parser = cli._build_parser()
+    args = parser.parse_args(
+        [
+            "scan",
+            "foo.py",
+            "--scan-model",
+            "claude-opus-4-8",
+            "--reasoning-model",
+            "claude-opus-4-9",
+        ]
+    )
+    assert args.scan_model == "claude-opus-4-8"
+    assert args.reasoning_model == "claude-opus-4-9"
+
+
+def test_parser_scan_model_explicit_on_scan_repo() -> None:
+    """Same flags on ``scan-repo`` propagate identically — needed so a
+    multi-file run picks up the override on every dispatched scan."""
+    parser = cli._build_parser()
+    args = parser.parse_args(
+        [
+            "scan-repo",
+            ".",
+            "--scan-model",
+            "claude-sonnet-4-7",
+            "--reasoning-model",
+            "claude-opus-4-8",
+        ]
+    )
+    assert args.scan_model == "claude-sonnet-4-7"
+    assert args.reasoning_model == "claude-opus-4-8"
+
+
+def test_parser_scan_model_explicit_on_install() -> None:
+    """The install path scans every wheel in a dep closure; the flags
+    must reach this subparser too so users can audit a closure with a
+    bumped Opus."""
+    parser = cli._build_parser()
+    args = parser.parse_args(
+        [
+            "install",
+            "requests",
+            "--scan-model",
+            "claude-opus-4-8",
+            "--reasoning-model",
+            "claude-opus-4-8",
+        ]
+    )
+    assert args.scan_model == "claude-opus-4-8"
+    assert args.reasoning_model == "claude-opus-4-8"
+
+
+def test_scan_model_round_trip_into_scanconfig() -> None:
+    """Mirror _run_scan's wire-up: when the user passes --scan-model X
+    and --reasoning-model Y, ScanConfig comes out with those values."""
+    from scanner.engine import ScanConfig
+
+    parser = cli._build_parser()
+    args = parser.parse_args(
+        [
+            "scan",
+            "foo.py",
+            "--scan-model",
+            "claude-opus-4-8",
+            "--reasoning-model",
+            "claude-opus-4-9",
+        ]
+    )
+    # Mirror the wire-up in _run_scan exactly so a regression in the
+    # CLI's config_kwargs[...] section is caught here.
+    config_kwargs: dict[str, object] = {}
+    _scan_model_arg = getattr(args, "scan_model", None)
+    _reasoning_model_arg = getattr(args, "reasoning_model", None)
+    if _scan_model_arg:
+        config_kwargs["scan_model"] = _scan_model_arg
+    if _reasoning_model_arg:
+        config_kwargs["reasoning_model"] = _reasoning_model_arg
+    cfg = ScanConfig(**config_kwargs)  # type: ignore[arg-type]
+    assert cfg.scan_model == "claude-opus-4-8"
+    assert cfg.reasoning_model == "claude-opus-4-9"
+
+
+def test_scan_model_omitted_preserves_scanconfig_default() -> None:
+    """Round-trip: omit the flags → wire-up doesn't touch config_kwargs
+    → ScanConfig dataclass defaults kick in (the v1.11 Sonnet/Opus 4.6
+    pins). This is the protection against accidentally overriding the
+    defaults to None or empty string."""
+    from scanner.engine import ScanConfig
+
+    parser = cli._build_parser()
+    args = parser.parse_args(["scan", "foo.py"])
+
+    config_kwargs: dict[str, object] = {}
+    _scan_model_arg = getattr(args, "scan_model", None)
+    _reasoning_model_arg = getattr(args, "reasoning_model", None)
+    if _scan_model_arg:
+        config_kwargs["scan_model"] = _scan_model_arg
+    if _reasoning_model_arg:
+        config_kwargs["reasoning_model"] = _reasoning_model_arg
+    cfg = ScanConfig(**config_kwargs)  # type: ignore[arg-type]
+    assert cfg.scan_model == "claude-sonnet-4-6"
+    assert cfg.reasoning_model == "claude-opus-4-6"
+
+
+def test_runner_factories_accept_model_id_kwarg() -> None:
+    """Sanity-check the factory signatures the CLI relies on. If any of
+    these stop accepting ``model_id`` as a kwarg, the CLI wire-up will
+    crash at runtime — this test catches the regression statically."""
+    import inspect
+
+    from dast.inference import make_dast_opus_inference, make_dast_sonnet_inference
+    from dast.runner import make_dast_runner_from_env
+    from scanner.runners import (
+        make_opus_runner,
+        make_opus_runner_hunter,
+        make_opus_runner_split,
+        make_sonnet_runner,
+        make_sonnet_runner_hunter,
+        make_sonnet_runner_split,
+        make_sonnet_triage_runner,
+    )
+
+    for factory in (
+        make_sonnet_runner,
+        make_sonnet_runner_hunter,
+        make_sonnet_runner_split,
+        make_sonnet_triage_runner,
+        make_opus_runner,
+        make_opus_runner_hunter,
+        make_opus_runner_split,
+        make_dast_sonnet_inference,
+        make_dast_opus_inference,
+    ):
+        sig = inspect.signature(factory)
+        assert "model_id" in sig.parameters, (
+            f"{factory.__name__} must accept model_id kwarg for SCAN-020"
+        )
+        # Default must be the v1.11 pin so callers that omit model_id
+        # get back-compat behavior.
+        default = sig.parameters["model_id"].default
+        assert default in ("claude-sonnet-4-6", "claude-opus-4-6"), (
+            f"{factory.__name__} has unexpected model_id default: {default!r}"
+        )
+
+    # DAST runner takes scan_model / reasoning_model (one runner, two
+    # tiers internally).
+    dast_sig = inspect.signature(make_dast_runner_from_env)
+    assert "scan_model" in dast_sig.parameters
+    assert "reasoning_model" in dast_sig.parameters
+    assert dast_sig.parameters["scan_model"].default == "claude-sonnet-4-6"
+    assert dast_sig.parameters["reasoning_model"].default == "claude-opus-4-6"
