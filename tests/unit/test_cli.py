@@ -643,3 +643,48 @@ def test_v1_11_zero_day_hunting_stages_default_off_in_scanconfig() -> None:
 
     # And Remediation is default ON (the headline v1.11 flip).
     assert cfg.enable_phase_c is True
+
+
+# ── Help-text rendering regression guard ──────────────────────────────────
+
+
+def test_every_subparser_help_renders_cleanly() -> None:
+    """argparse's ``--help`` formatter feeds each action's ``help``
+    string through Python's ``%`` operator. A stray unescaped ``%``
+    in a help string (e.g., ``~16%`` instead of ``~16%%``) crashes
+    ``--help`` with ``TypeError: must be real number, not dict`` —
+    a silent break that no normal parse_args-based test catches.
+
+    This test invokes ``format_help`` on every subparser and every
+    action it owns, so any future help-text edit that drops a ``%``
+    escape fails CI before it lands.
+
+    Surfaced during the v1.11.0 public-sync smoke test: the
+    ``--l1-mode`` help string contained an unescaped ``~16%`` that
+    had been in the repo for months but never tripped because the
+    unit tests use ``parse_args`` (no help rendering)."""
+    parser = cli._build_parser()
+    # Top-level help.
+    parser.format_help()
+    # Each subparser's help.
+    for action in parser._actions:
+        if hasattr(action, "choices") and isinstance(action.choices, dict):
+            for sub_name, subp in action.choices.items():
+                subp.format_help()  # must not raise
+                # Each action's help string individually (catches
+                # rare cases where format_help survives but the
+                # action's help fails on its own).
+                for act in subp._actions:
+                    if act.help:
+                        try:
+                            _ = act.help % {}
+                        except (TypeError, ValueError, KeyError) as e:
+                            opts = "|".join(act.option_strings) or act.dest
+                            raise AssertionError(
+                                f"help string for ``{sub_name} {opts}`` "
+                                f"failed argparse %-formatting "
+                                f"({type(e).__name__}: {e}). Look for "
+                                f"unescaped ``%`` chars in the help text "
+                                f"— literal percent signs must be "
+                                f"written as ``%%``."
+                            ) from e

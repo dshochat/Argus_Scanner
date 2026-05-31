@@ -262,7 +262,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="SCAN-010: L1 analysis mode. ``auto`` (default) = ``split``. "
         "``split`` fans out three specialized prompts "
         "(VULNS / BEHAVIORAL / CHAINS) in parallel on HIGH-triage files — "
-        "less hedged findings, ~16% fewer output tokens, 2.6× faster "
+        "less hedged findings, ~16%% fewer output tokens, 2.6× faster "
         "wall-clock from the fan-out. LOW + CLEAN paths keep the combined "
         "prompt regardless of this flag (cost preservation on the cheap "
         "path). ``combined`` reverts to v1.0's single-call behavior — "
