@@ -17,6 +17,7 @@ short paragraph keyed on counts + IDs.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -28,6 +29,12 @@ from pydantic import BaseModel, ConfigDict
 class JournalPhase(str, Enum):
     PHASE_A_PLAN = "phase_a_plan"
     PHASE_A_VERDICT = "phase_a_verdict"
+    # v1.10 SCAN-009: emitted when a Phase A inference call's tool_use
+    # response failed schema validation AND the one-shot retry also
+    # failed. Distinguishes "Phase A correctly found nothing" from
+    # "Phase A response was malformed and the cascade silently
+    # degraded" in the journal.
+    PHASE_A_SCHEMA_INVALID = "phase_a_schema_invalid"
     PHASE_B_HYPOTHESIS = "phase_b_hypothesis"
     SANDBOX_EXEC = "sandbox_exec"
 
@@ -153,10 +160,14 @@ class Journal:
             for it in range(1, up_to_iter + 1):
                 it_recs = [r for r in recs if r.iter == it]
                 it_conf = [
-                    r.claim_id for r in it_recs if r.phase == JournalPhase.PHASE_A_VERDICT and r.verdict == "confirmed"
+                    r.claim_id
+                    for r in it_recs
+                    if r.phase == JournalPhase.PHASE_A_VERDICT and r.verdict == "confirmed"
                 ]
                 it_ref = [
-                    r.claim_id for r in it_recs if r.phase == JournalPhase.PHASE_A_VERDICT and r.verdict == "refuted"
+                    r.claim_id
+                    for r in it_recs
+                    if r.phase == JournalPhase.PHASE_A_VERDICT and r.verdict == "refuted"
                 ]
                 it_inc = [
                     r.claim_id

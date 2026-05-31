@@ -281,6 +281,71 @@ async def test_scan_repo_cost_cap_hit(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_scan_repo_inherits_max_cost_per_scan_from_scan_config(
+    tmp_path: Path,
+) -> None:
+    """v1.9 SCAN-007: when ``max_cost_run_usd`` is unset on
+    RepoScanConfig but the per-file ``ScanConfig.max_cost_per_scan_usd``
+    is, the aggregate cap inherits from ScanConfig so the dangling
+    field gets enforced. Without this, a multi-file scan with
+    ScanConfig(max_cost_per_scan_usd=0.20) would have NO aggregate cap
+    even though the user explicitly set one."""
+    from scanner.engine import ScanConfig
+
+    for i in range(5):
+        (tmp_path / f"f{i}.py").write_text(f"x={i}")
+
+    inner_cfg = ScanConfig(max_cost_per_scan_usd=0.15)
+    cfg = RepoScanConfig(
+        root=tmp_path,
+        scan_config=inner_cfg,
+        # NOTE: max_cost_run_usd is NOT set explicitly — should inherit
+        # from inner_cfg.max_cost_per_scan_usd.
+    )
+    stub = _make_stub_scan_fn(cost_per_file=0.10, verdict="clean")
+
+    report = await scan_repo(cfg, scan_fn=stub)
+
+    # The inherited cap should fire: $0.10 + $0.10 = $0.20 > $0.15.
+    assert report.cost_cap_hit, (
+        "SCAN-007 wiring broke — RepoScanConfig.max_cost_run_usd "
+        "should inherit from ScanConfig.max_cost_per_scan_usd when unset"
+    )
+    assert cfg.max_cost_run_usd == 0.15, (
+        f"Inherited cap should be 0.15 USD; got {cfg.max_cost_run_usd}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_scan_repo_explicit_max_cost_run_overrides_scan_config_default(
+    tmp_path: Path,
+) -> None:
+    """v1.9 SCAN-007: when the caller passes an explicit
+    ``RepoScanConfig.max_cost_run_usd``, the per-file ScanConfig's
+    ``max_cost_per_scan_usd`` does NOT override it. CLI / library
+    callers retain full control of the aggregate cap."""
+    from scanner.engine import ScanConfig
+
+    for i in range(5):
+        (tmp_path / f"f{i}.py").write_text(f"x={i}")
+
+    # Inner says $5 — but explicit aggregate cap is $0.15.
+    inner_cfg = ScanConfig(max_cost_per_scan_usd=5.00)
+    cfg = RepoScanConfig(
+        root=tmp_path,
+        scan_config=inner_cfg,
+        max_cost_run_usd=0.15,  # explicit — should win
+    )
+    stub = _make_stub_scan_fn(cost_per_file=0.10, verdict="clean")
+    report = await scan_repo(cfg, scan_fn=stub)
+
+    assert report.cost_cap_hit
+    assert cfg.max_cost_run_usd == 0.15, (
+        "Explicit max_cost_run_usd must NOT be overridden by ScanConfig"
+    )
+
+
+@pytest.mark.asyncio
 async def test_scan_repo_continue_on_error(tmp_path: Path) -> None:
     """One file's exception is recorded as a FileError; other files continue."""
     (tmp_path / "a.py").write_text("ok")

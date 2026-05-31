@@ -1,7 +1,11 @@
-# Argus DAST Firecracker sandbox — `ml_tools` variant.
+# Argus DAST Firecracker sandbox — `ml_tools` tier.
 #
-# Same Fly app as the minimal/networked variants; differs only in the
+# Same Fly app as the lean/rich_python tiers; differs only in the
 # Dockerfile reference. Use via `flyctl deploy --config fly.ml_tools.toml`.
+#
+# App-name note: self-hosters MUST override the default below. Deploy
+# scripts pass ``--app $ARGUS_DAST_FLY_APP`` which overrides. See
+# fly.lean.toml for the full explanation.
 
 app = "argus-dast-sandbox"
 primary_region = "iad"

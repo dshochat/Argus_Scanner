@@ -55,6 +55,8 @@ _EXTENSION_MAP: dict[str, str] = {
     ".css": "css",
     ".md": "markdown",
     ".dockerfile": "dockerfile",
+    # Jupyter notebooks — decomposed into Python-with-comments by
+    # preprocessing/notebook.py at pipeline-dispatch time.
     ".ipynb": "jupyter",
     # ── ML model artifact formats (binary; analyzed via preprocessing/ml_model.py) ──
     ".pkl": "pickle",

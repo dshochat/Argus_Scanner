@@ -17,6 +17,7 @@ from methodology.launch_report import (
     _dast_evidence_count,
     _gate_lift_pp,
     _load_judgments,
+    _render_section_5_dast_evidence,
     _verdict_match_stats,
     build_launch_report,
     render_launch_report,
@@ -177,9 +178,9 @@ def test_load_judgments_handles_malformed(tmp_path: Path) -> None:
 
 def test_render_launch_report_passes_gate_when_lift_ge_15() -> None:
     # Argus 80%, Opus 60% → 20pp lift, gate PASS.
-    argus_rows = [_row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(8)] + [
-        _row(f"f{i}.py", "critical_malicious", "suspicious") for i in range(8, 10)
-    ]
+    argus_rows = [
+        _row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(8)
+    ] + [_row(f"f{i}.py", "critical_malicious", "suspicious") for i in range(8, 10)]
     opus_rows = [_row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(6)] + [
         _row(f"f{i}.py", "critical_malicious", "suspicious") for i in range(6, 10)
     ]
@@ -203,9 +204,9 @@ def test_render_launch_report_passes_gate_when_lift_ge_15() -> None:
 
 def test_render_launch_report_fails_gate_when_lift_lt_15() -> None:
     # Argus 60%, Opus 60% → 0pp lift, gate FAIL.
-    argus_rows = [_row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(6)] + [
-        _row(f"f{i}.py", "critical_malicious", "suspicious") for i in range(6, 10)
-    ]
+    argus_rows = [
+        _row(f"f{i}.py", "critical_malicious", "critical_malicious") for i in range(6)
+    ] + [_row(f"f{i}.py", "critical_malicious", "suspicious") for i in range(6, 10)]
     opus_rows = list(argus_rows)
     diff_records = [
         _diff_record(
@@ -442,3 +443,126 @@ def test_build_launch_report_handles_missing_inputs(tmp_path: Path) -> None:
     assert summary["n_opus_rows"] == 0
     md = out_path.read_text(encoding="utf-8")
     assert "FAIL" in md  # 0 lift -> below gate
+
+
+# ── v1.6: REJECTED status + expanded NOT_TESTED reasons rendering ───────────
+
+
+def test_render_section_5_includes_rejected_bucket() -> None:
+    """v1.6 Fix #1: per-finding aggregate must split REJECTED out of
+    NOT_TESTED, both in the headline bar chart and the per-file table.
+    Regression guard for the launch_report.py renderer to ensure
+    REJECTED findings don't silently disappear into the NOT_TESTED
+    bucket (which they did pre-v1.6 — the renderer only knew 4 statuses)."""
+    row = _row("a.py", "malicious", "malicious", dast_attempted=True)
+    row.per_finding_validation = [
+        {
+            "finding_id": "H001",
+            "cwe": "CWE-78",
+            "type": "x",
+            "severity": "high",
+            "line": 1,
+            "status": "CONFIRMED",
+            "confidence": 1.0,
+            "rejection_reason": None,
+            "not_tested_reason": None,
+            "proof_of_concept": "",
+            "runtime_evidence": "",
+        },
+        {
+            "finding_id": "H002",
+            "cwe": "CWE-89",
+            "type": "x",
+            "severity": "high",
+            "line": 2,
+            "status": "BLOCKED",
+            "confidence": 0.6,
+            "rejection_reason": "input sanitized",
+            "not_tested_reason": None,
+            "proof_of_concept": None,
+            "runtime_evidence": None,
+        },
+        {
+            "finding_id": "H003",
+            "cwe": "CWE-22",
+            "type": "x",
+            "severity": "high",
+            "line": 3,
+            "status": "UNREACHED",
+            "confidence": 0.6,
+            "rejection_reason": "code path unreachable",
+            "not_tested_reason": None,
+            "proof_of_concept": None,
+            "runtime_evidence": None,
+        },
+        {
+            "finding_id": "H004",
+            "cwe": "CWE-918",
+            "type": "x",
+            "severity": "high",
+            "line": 4,
+            "status": "REJECTED",
+            "confidence": 0.6,
+            "rejection_reason": "DAST observed no signal",
+            "not_tested_reason": None,
+            "proof_of_concept": None,
+            "runtime_evidence": None,
+        },
+        {
+            "finding_id": "H005",
+            "cwe": "CWE-451",
+            "type": "x",
+            "severity": "low",
+            "line": 5,
+            "status": "NOT_TESTED",
+            "confidence": 0.4,
+            "rejection_reason": None,
+            "not_tested_reason": "unfireable_pattern_cwe",
+            "proof_of_concept": None,
+            "runtime_evidence": None,
+        },
+    ]
+    md = _render_section_5_dast_evidence([row])
+    # Headline bar chart: REJECTED has its own row with its own count.
+    assert "REJECTED" in md
+    assert "(1)  DAST ran the exploit" in md
+    # Per-file table includes REJECTED column AND the row reflects the count.
+    assert "| File | L1 | CONFIRMED | BLOCKED | UNREACHED | REJECTED | NOT_TESTED |" in md
+    assert "| `a.py` | 5 | **1** | 1 | 1 | 1 | 1 |" in md
+
+
+def test_render_section_5_handles_all_eight_not_tested_reasons() -> None:
+    """v1.6 Fix #3: NOT_TESTED reason breakdown must render prose for
+    every reason variant in the data, not just the 3 original ones
+    (infra_stub / inconclusive / not_planned). Regression guard:
+    creates a row with all 5 new reasons and asserts each renders."""
+    new_reasons = [
+        "unfireable_pattern_cwe",
+        "budget_exceeded",
+        "non_python_file",
+        "unreachable_function",
+        "dast_not_attempted",
+    ]
+    row = _row("b.py", "malicious", "malicious", dast_attempted=True)
+    row.per_finding_validation = [
+        {
+            "finding_id": f"H{i:03d}",
+            "cwe": "CWE-451",
+            "type": "x",
+            "severity": "low",
+            "line": i,
+            "status": "NOT_TESTED",
+            "confidence": 0.3,
+            "rejection_reason": None,
+            "not_tested_reason": rsn,
+            "proof_of_concept": None,
+            "runtime_evidence": None,
+        }
+        for i, rsn in enumerate(new_reasons, start=1)
+    ]
+    md = _render_section_5_dast_evidence([row])
+    # Every new reason renders prose, with the count attached.
+    for rsn in new_reasons:
+        assert f"`{rsn}` (1):" in md
+    # And the section header is present.
+    assert "NOT_TESTED breakdown" in md

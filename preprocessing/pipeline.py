@@ -40,7 +40,7 @@ from .attack_vector_extensions import detect_attack_vector_extension
 from .binary_detect import classify_binary_or_empty
 from .crypto_sensitivity import analyze_file as analyze_crypto_sensitivity
 from .deobfuscation import deobfuscate
-from .deobfuscation_js import unwrap_js_string_array
+from .deobfuscation_js import unwrap_js_string_array  # PREP-014 (public sync)
 from .framework_markers import detect_framework
 from .imperative_install import analyze_file as analyze_imperative_install
 from .language import detect_language
@@ -125,14 +125,15 @@ class Preprocessor:
             )
 
         # ML model files (.pkl, .pt, .bin, .safetensors, .h5, .onnx) are
-        # binary by construction; classify_binary_or_empty would skip them.
-        # Decompose first: extract a textual summary (suspicious globals,
-        # REDUCE opcodes, safetensors metadata, …) WITHOUT executing any
-        # callables, then feed that text through the rest of the pipeline.
-        # The cascade then sees a Python-with-comments report describing
-        # what's structurally inside the artifact.
+        # binary by construction; classify_binary_or_empty would skip
+        # them. Decompose first: extract a textual summary (suspicious
+        # globals, REDUCE opcodes, safetensors metadata, …) WITHOUT
+        # executing any callables, then feed that text through the rest
+        # of the pipeline. The cascade then sees a Python-with-comments
+        # report describing what's structurally inside the artifact.
+        # (Public sync — file-type expansion, commit d00e504.)
         ml_lower = str(p).lower()
-        ml_extensions = (
+        if ml_lower.endswith((
             ".pkl",
             ".pickle",
             ".pt",
@@ -142,18 +143,16 @@ class Preprocessor:
             ".hdf5",
             ".keras",
             ".onnx",
-        )
-        if ml_lower.endswith(ml_extensions):
+        )):
             from .ml_model import decompose_ml_model  # noqa: PLC0415
 
             ml = decompose_ml_model(str(p), content)
             if ml.is_valid:
-                synth_bytes = ml.synthesized_source.encode("utf-8")
                 # Replace content for downstream stages — file_hash stays
-                # the original-bytes hash (already computed above), so the
+                # the original-bytes hash (already computed above) so the
                 # report tracks the real artifact even though analysis
                 # operates on the synthesized text.
-                content = synth_bytes
+                content = ml.synthesized_source.encode("utf-8")
 
         # PREP-010 empty / binary skip. Runs after the oversize check so
         # the ordering of ``skip_reason`` values is deterministic:
@@ -190,6 +189,7 @@ class Preprocessor:
         # sweep (pull_request_target, unpinned third-party actions,
         # ${{ }} injection, secrets-near-network-verb) and synthesize a
         # report that the cascade reads as Python-with-comments.
+        # (Public sync — file-type expansion.)
         from .github_actions import (  # noqa: PLC0415
             analyze_workflow,
             is_github_actions_workflow,
@@ -205,13 +205,10 @@ class Preprocessor:
         # all downstream detectors (deobfuscation, prompt-injection scan,
         # imperative-install analysis, model cascade) see the cells as
         # one synthesized source. Shell magic (``!pip install``) and
-        # IPython magic (``%load_ext``) lines survive verbatim in the
-        # synthesized text, so the model and existing detectors can
-        # reason about them without notebook-specific machinery. Falls
-        # back to raw text on parse failure (we don't want a malformed
-        # notebook to skip cascade analysis entirely — a malicious
-        # notebook with intentionally-corrupt JSON should still get
-        # scanned).
+        # IPython magic (``%load_ext``) lines survive verbatim. Falls
+        # back to raw text on parse failure — a malicious notebook with
+        # intentionally-corrupt JSON should still get scanned.
+        # (Public sync — file-type expansion.)
         if language == "jupyter":
             from .notebook import decompose_notebook  # noqa: PLC0415
 
@@ -219,12 +216,14 @@ class Preprocessor:
             if decomp.is_valid:
                 raw_text = decomp.synthesized_source
 
-        # PREP-014: JS string-array deobfuscation. obfuscator.io-style
-        # bundles often blow past every model's context window (the Mini
-        # Shai-Hulud TanStack `router_init.js` is 1.5 M tokens). Unwrap
-        # before the Python-targeted deobfuscate() runs so downstream
-        # token counting, prompt-injection scan, and model stages see a
-        # readable, shrunk source. Fail paths leave raw_text untouched.
+        # PREP-014: JS string-array deobfuscation via webcrack.
+        # obfuscator.io-style bundles often blow past every model's
+        # context window (the Mini Shai-Hulud TanStack `router_init.js`
+        # was 1.5 M tokens). Unwrap before the Python-targeted
+        # deobfuscate() runs so downstream token counting, prompt-
+        # injection scan, and model stages see a readable, shrunk
+        # source. Fail paths leave raw_text untouched.
+        # (Public sync — commit 29156ad.)
         js_string_array_applied = False
         if language in ("javascript", "typescript"):
             js_result = unwrap_js_string_array(raw_text)
@@ -240,7 +239,9 @@ class Preprocessor:
 
         signal = analyze_imperative_install(p, raw_text)
 
-        prompt_injection_indicators = detect_prompt_injection(raw_text, decoded_content=deob.content)
+        prompt_injection_indicators = detect_prompt_injection(
+            raw_text, decoded_content=deob.content
+        )
         ai_file_match = detect_ai_file(p)
         framework_hint = detect_framework(deob.content)
         attack_vector_extension = detect_attack_vector_extension(p)
@@ -248,6 +249,9 @@ class Preprocessor:
 
         pp = Preprocessing(
             dependencies=dependencies,
+            # PREP-014: count JS string-array unwrap as a deobfuscation
+            # layer when it fired, so the cascade sees the file flagged
+            # as having been deobfuscated.
             deobfuscation_applied=deob.applied or js_string_array_applied,
             deobfuscation_layers=deob.layers + (1 if js_string_array_applied else 0),
             file_hash=file_hash,

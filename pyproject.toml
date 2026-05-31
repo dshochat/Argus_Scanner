@@ -1,7 +1,7 @@
 [project]
 name = "argus-ai-scanner"
-version = "1.5.0"
-description = "AI-native code security scanner with cascade analysis and Firecracker-microVM DAST runtime validation"
+version = "1.11.0"
+description = "AI-native code security scanner: runtime sandbox-validated remediation. Confirm exploits, auto-patch, replay against the fix — all at machine scale."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
@@ -41,6 +41,7 @@ dependencies = [
     "anthropic>=0.40.0",
     "google-genai>=0.3.0",
     "httpx>=0.27.0",
+    "jsonschema>=4.26.0",
     "pathspec>=0.12.0",
     "pydantic>=2.8.0",
     "python-dotenv>=1.0.0",

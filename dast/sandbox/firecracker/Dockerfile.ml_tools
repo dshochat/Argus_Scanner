@@ -1,7 +1,8 @@
-# Sandbox image for Argus DAST — `ml_tools` variant (DAST-014).
+# Sandbox image for Argus DAST — `ml_tools` tier (v1.8 P2b).
 #
-# Strict superset of `networked`. Adds Python ML packages so DAST plans
-# can confirm exploits whose chain runs through a model loader:
+# Strict superset of `rich_python` (v1.8, was `networked` through v1.7).
+# Adds Python ML packages so DAST plans can confirm exploits whose
+# chain runs through a model loader:
 #
 #   * torch (CPU-only)        — required by transformers; covers
 #                                 load_distributed_checkpoint,
@@ -16,12 +17,12 @@
 #   * tensorflow / tensorflow-cpu — none of the campaign targets are
 #     TF-based. TF adds ~500 MB compressed; reintroduce if a TF-specific
 #     malicious-loader file lands in the corpus.
-#   * scikit-learn, xgboost, etc. — same reason; add when a target file
-#     justifies it.
+#   * xgboost — add when a target file justifies it. (scikit-learn is
+#     in the rich_python tier as of v1.8 P2b.)
 #
-# Image size delta vs networked: ~2-2.5 GB compressed. The bulk is torch
-# CPU wheels. Boot time delta: ~3-5 seconds extra (cold kernel module
-# load on first import).
+# Image size delta vs rich_python: ~2-2.5 GB compressed. The bulk is
+# torch CPU wheels. Boot time delta: ~3-5 seconds extra (cold kernel
+# module load on first import).
 #
 # Cost note: per-call Fly Firecracker boot time depends on image size
 # linearly. ml_tools should ONLY be selected by plans that genuinely
@@ -29,7 +30,9 @@
 
 FROM python:3.13-slim
 
-# Multi-language toolchain + networked tools.
+# Multi-language toolchain (same set as lean/rich_python). Network CLI
+# tools are now in lean as of v1.8 P2b — kept here for self-contained
+# build (each Dockerfile builds independently).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -39,11 +42,12 @@ RUN apt-get update && \
         npm \
         default-jre-headless \
         curl \
-        util-linux \
         wget \
         netcat-openbsd \
         dnsutils \
         openssl \
+        util-linux \
+        git \
         && rm -rf /var/lib/apt/lists/*
 
 # Python ML stack — CPU-only wheels.
@@ -63,80 +67,63 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
         transformers==4.46.3 \
         safetensors==0.4.5 \
-        huggingface_hub==0.26.2
+        huggingface_hub==0.26.2 && \
+    pip install --no-cache-dir \
+        requests \
+        flask \
+        fastapi \
+        click \
+        jinja2 \
+        pyyaml \
+        lxml \
+        cryptography \
+        pyjwt \
+        sqlalchemy \
+        pillow \
+        gunicorn \
+        python-dateutil \
+        urllib3 \
+        packaging \
+        typing-extensions \
+        pandas \
+        numpy \
+        boto3 \
+        botocore \
+        beautifulsoup4 \
+        paramiko \
+        redis \
+        pymongo \
+        python-magic \
+        pytz \
+        tzdata \
+        mcp \
+        gitpython \
+        httpx \
+        markdownify \
+        readabilipy \
+        protego \
+        pydantic \
+        tzlocal \
+        \
+        scipy \
+        scikit-learn \
+        openai \
+        anthropic \
+        langchain-core \
+        aiohttp \
+        aiofiles \
+        psutil \
+        psycopg2-binary
 
 # Pre-warm the import path so the first plan call doesn't pay the
 # initial-import latency. ``-c`` ensures we surface any wheel-
 # incompatibility issues at build time, not at first plan execution.
 RUN python -c "import torch, transformers, safetensors, huggingface_hub; print('ml_tools image OK:', torch.__version__)"
 
-# Non-root runner. Same as minimal/networked.
+# Non-root runner. Same as lean/rich_python.
 RUN useradd -m -u 1000 -s /bin/bash runner && \
     mkdir -p /workspace && \
     chown runner:runner /workspace
-
-# Pre-create common app data directories (mirrors minimal Dockerfile).
-# Path-traversal probes need hard-coded prefix dirs to exist so Linux's
-# path resolver can descend through them. Mode 1777 = sticky-world-
-# writable, same as /tmp.
-RUN mkdir -p /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app && \
-    chmod 1777 /data /srv/app /srv/data /var/lib/app /opt/app /var/data /app
-
-# Phase 1.x env-fix — pre-installed npm + pip packages (mirrors minimal).
-# Sandbox DNS hijack blocks runtime registry; build-time install gives
-# the harness a working third-party package set without runtime network.
-# pip set here is in ADDITION to the ML deps installed above (torch,
-# transformers, safetensors, huggingface_hub).
-RUN mkdir -p /opt/node_packages && \
-    cd /opt/node_packages && \
-    npm init -y > /dev/null 2>&1 && \
-    npm install --no-fund --no-audit --no-save --silent \
-      sandboxjs \
-      lodash@^4 \
-      axios@^1 \
-      express@^4 \
-      body-parser@^1 \
-      async@^3 \
-      chalk@^5 \
-      debug@^4 \
-      semver@^7 \
-      glob@^10 \
-      minimist@^1 \
-      fs-extra@^11 \
-      yargs@^17 \
-      commander@^11 \
-      ws@^8 \
-      cookie@^0 \
-      qs@^6 \
-      dotenv@^16 \
-      uuid@^10 \
-      node-fetch@^3 \
-      && chmod -R a+rX /opt/node_packages
-
-# Same NODE_PATH + symlink approach as minimal — see minimal Dockerfile
-# for rationale (runuser strips env, so we also expose via symlink).
-ENV NODE_PATH=/opt/node_packages/node_modules
-RUN ln -s /opt/node_packages/node_modules /workspace/node_modules
-
-RUN pip install --no-cache-dir --quiet \
-      requests \
-      flask \
-      fastapi \
-      click \
-      jinja2 \
-      pyyaml \
-      lxml \
-      pyjwt \
-      sqlalchemy \
-      pillow \
-      gunicorn \
-      python-dateutil \
-      urllib3 \
-      packaging \
-      typing-extensions
-# Note: cryptography is intentionally NOT installed in ml_tools — it
-# conflicts with the torch CUDA wheel's bundled cryptography in some
-# image-pull paths. Re-add if a probe-fixture demands it.
 
 # Disable HF hub network calls by default — the sandbox is air-gapped
 # and HF would just hang on DNS hijack. Plans that need a specific
@@ -145,7 +132,7 @@ ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
     HF_HOME=/workspace/.cache/huggingface
 
-# Same entrypoint stack as minimal/networked.
+# Same entrypoint stack as lean/rich_python.
 COPY entrypoint.py /usr/local/bin/dast-entrypoint
 RUN chmod 755 /usr/local/bin/dast-entrypoint
 

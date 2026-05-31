@@ -272,7 +272,9 @@ def write_cache(cache_dir: Path, verdict: WheelVerdict) -> None:
             "scanned_at_unix": int(time.time()),
             "verdict": verdict.to_dict(),
         }
-        _cache_path(cache_dir, verdict.sha256).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _cache_path(cache_dir, verdict.sha256).write_text(
+            json.dumps(payload, indent=2), encoding="utf-8"
+        )
     except OSError as exc:
         log.warning("install cache write failed for %s: %s", verdict.sha256, exc)
 
@@ -340,7 +342,11 @@ def _list_artifacts(staging_dir: Path) -> list[Path]:
     a pip artifact we don't care about (lock file, hash list, etc.)."""
     out: list[Path] = []
     for p in sorted(staging_dir.iterdir()):
-        if p.suffix.lower() in {".whl"} or p.name.endswith(".tar.gz") or p.suffix.lower() in {".zip"}:
+        if (
+            p.suffix.lower() in {".whl"}
+            or p.name.endswith(".tar.gz")
+            or p.suffix.lower() in {".zip"}
+        ):
             out.append(p)
     return out
 
@@ -543,7 +549,9 @@ async def scan_one_artifact(
             (r.risk_score for r in report.results if isinstance(r, ScanResult)),
             default=0,
         ),
-        n_vulnerabilities=sum(len(r.vulnerabilities or []) for r in report.results if isinstance(r, ScanResult)),
+        n_vulnerabilities=sum(
+            len(r.vulnerabilities or []) for r in report.results if isinstance(r, ScanResult)
+        ),
         n_files_scanned=len([r for r in report.results if isinstance(r, ScanResult)]),
         n_files_unscanned=n_unscanned,
         unscanned_extensions=ext_histogram,
@@ -571,6 +579,13 @@ STRICT_COVERAGE_RATIO_THRESHOLD: float = 0.7
 #: mode without pre-cached verdicts; the cap prevents a single
 #: ``argus install`` from surprising the user.
 DEFAULT_MAX_TOTAL_COST_USD: float = 10.0
+
+# Sentinel for v1.9 SCAN-007. When ``install(max_total_cost_usd=...)`` is
+# unset by the caller, we inherit ``ScanConfig.max_cost_per_scan_usd``
+# (or fall back to DEFAULT_MAX_TOTAL_COST_USD if ScanConfig didn't set
+# one). Distinguishes "caller explicitly passed None" (disable cap) from
+# "caller didn't pass anything" (use ScanConfig's cap).
+_INHERIT_FROM_SCAN_CONFIG = object()
 
 #: Default per-file scan concurrency inside each wheel. v1.3.1
 #: optimization — wheels with many files (29 in attrs, 42 in anyio,
@@ -604,7 +619,7 @@ async def install(
     pip_extra_args: Iterable[str] = (),
     parallel_scans: int = DEFAULT_INSTALL_PARALLEL_SCANS,
     file_concurrency: int = DEFAULT_INSTALL_FILE_CONCURRENCY,
-    max_total_cost_usd: float | None = DEFAULT_MAX_TOTAL_COST_USD,
+    max_total_cost_usd: float | None | object = _INHERIT_FROM_SCAN_CONFIG,
 ) -> InstallReport:
     """Argus install gate.
 
@@ -630,6 +645,22 @@ async def install(
 
     if scan_cfg.enable_phase_c:
         scan_cfg = _dc.replace(scan_cfg, enable_phase_c=False)
+
+    # v1.9 SCAN-007: resolve the aggregate cost cap with three-state
+    # semantics that finally enforce ``ScanConfig.max_cost_per_scan_usd``:
+    #   * Caller passed explicit ``None`` → cap DISABLED (preserved).
+    #   * Caller passed an explicit numeric value → respected verbatim.
+    #   * Caller passed nothing (sentinel default) → inherit from
+    #     ``ScanConfig.max_cost_per_scan_usd``; fall back to
+    #     ``DEFAULT_MAX_TOTAL_COST_USD`` (10.0) when ScanConfig didn't
+    #     set one. Closes the SCAN-007 gap where the per-scan cap field
+    #     existed on ScanConfig but no install code consulted it.
+    if max_total_cost_usd is _INHERIT_FROM_SCAN_CONFIG:
+        inherited = getattr(scan_cfg, "max_cost_per_scan_usd", None)
+        if isinstance(inherited, (int, float)) and inherited > 0:
+            max_total_cost_usd = float(inherited)
+        else:
+            max_total_cost_usd = DEFAULT_MAX_TOTAL_COST_USD
 
     started = time.time()
     report = InstallReport(target=target or f"-r {requirement_file}")
@@ -682,7 +713,9 @@ async def install(
             # by another concurrent task, don't burn API spend on this
             # one. Surface the wheel as unverified ("suspicious" with a
             # cap-hit marker) so the install gate fails-closed.
-            if max_total_cost_usd is not None and (cap_hit["value"] or cumulative_cost["value"] >= max_total_cost_usd):
+            if max_total_cost_usd is not None and (
+                cap_hit["value"] or cumulative_cost["value"] >= max_total_cost_usd
+            ):
                 cap_hit["value"] = True
                 pkg_name, version = _parse_artifact_name(art.name)
                 return WheelVerdict(
@@ -760,9 +793,14 @@ async def install(
     if report.worst_verdict in block_on:
         report.blocked = True
         culprits = [
-            w for w in wheel_verdicts if VERDICT_RANK.get(w.verdict, 0) >= VERDICT_RANK.get(report.worst_verdict, 0)
+            w
+            for w in wheel_verdicts
+            if VERDICT_RANK.get(w.verdict, 0) >= VERDICT_RANK.get(report.worst_verdict, 0)
         ]
-        names = ", ".join(f"{w.package_name}=={w.version}" if w.package_name else w.artifact_name for w in culprits[:5])
+        names = ", ".join(
+            f"{w.package_name}=={w.version}" if w.package_name else w.artifact_name
+            for w in culprits[:5]
+        )
         report.block_reason = (
             f"verdict={report.worst_verdict} in {culprits[0].artifact_name if culprits else 'unknown'} "
             f"(blocked artifacts: {names})"

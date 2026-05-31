@@ -9,8 +9,8 @@ VERDICT_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 VERDICT_MODEL = os.environ.get("VERDICT_MODEL", "claude-opus-4-6")
 
 # Verdict thresholds
-AUTO_APPLY_THRESHOLD = 0.85  # >= this: auto-apply verdict
-SPOT_CHECK_THRESHOLD = 0.60  # >= this but < auto: apply + flag for spot-check
+AUTO_APPLY_THRESHOLD = 0.85      # >= this: auto-apply verdict
+SPOT_CHECK_THRESHOLD = 0.60      # >= this but < auto: apply + flag for spot-check
 # Below 0.60: leave for human review, don't apply
 
 # Agent settings

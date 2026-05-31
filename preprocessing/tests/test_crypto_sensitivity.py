@@ -28,6 +28,7 @@ from preprocessing.crypto_sensitivity import (
     analyze_python_module,
 )
 
+
 # ---------------------------------------------------------------------------
 # Sensitive imports — fire on import alone
 # ---------------------------------------------------------------------------
@@ -107,7 +108,11 @@ def test_hmac_alone_does_not_fire() -> None:
 
 
 def test_hashlib_plus_misuse_name_fires() -> None:
-    src = "import hashlib\ndef derive(legacy_iv_mode):\n    return hashlib.md5(legacy_iv_mode).digest()\n"
+    src = (
+        "import hashlib\n"
+        "def derive(legacy_iv_mode):\n"
+        "    return hashlib.md5(legacy_iv_mode).digest()\n"
+    )
     sig = analyze_python_module(src)
     assert sig.detected is True
     # both the misuse name AND the hashlib import should be reported
@@ -121,7 +126,10 @@ def test_hashlib_plus_misuse_name_fires() -> None:
 
 
 def test_legacy_iv_identifier_fires() -> None:
-    src = "def encrypt(legacy_iv_mode, plaintext):\n    return plaintext\n"
+    src = (
+        "def encrypt(legacy_iv_mode, plaintext):\n"
+        "    return plaintext\n"
+    )
     sig = analyze_python_module(src)
     assert sig.detected is True
     assert any("misuse_name:legacy_iv" in r for r in sig.reasons)
@@ -187,7 +195,10 @@ def test_hardcoded_unrelated_var_does_not_fire() -> None:
 
 
 def test_mode_ecb_marker_fires() -> None:
-    src = "from Crypto.Cipher import AES\ncipher = AES.new(key, AES.MODE_ECB)\n"
+    src = (
+        "from Crypto.Cipher import AES\n"
+        "cipher = AES.new(key, AES.MODE_ECB)\n"
+    )
     sig = analyze_python_module(src)
     assert sig.detected is True
     # MODE_ECB content marker should appear alongside the import reason
@@ -196,7 +207,10 @@ def test_mode_ecb_marker_fires() -> None:
 
 def test_modes_ecb_attribute_fires() -> None:
     """``modes.ECB(...)`` form (cryptography hazmat) also matches."""
-    src = "from cryptography.hazmat.primitives.ciphers import modes\nm = modes.ECB()\n"
+    src = (
+        "from cryptography.hazmat.primitives.ciphers import modes\n"
+        "m = modes.ECB()\n"
+    )
     sig = analyze_python_module(src)
     assert sig.detected is True
     assert "MODE_ECB" in sig.reasons
@@ -209,7 +223,10 @@ def test_modes_ecb_attribute_fires() -> None:
 
 def test_syntax_error_falls_back_to_regex() -> None:
     """A file with a syntax error still gets a regex backstop scan."""
-    src = "this is not python at all\nbut contains MODE_ECB somewhere\n"
+    src = (
+        "this is not python at all\n"
+        "but contains MODE_ECB somewhere\n"
+    )
     sig = analyze_python_module(src)
     assert sig.detected is True
     assert "MODE_ECB" in sig.reasons
@@ -239,7 +256,11 @@ def test_analyze_file_non_python_uses_backstop() -> None:
 def test_analyze_file_clean_python_does_not_fire() -> None:
     """A normal hashlib-checksum file routes through Python AST and
     correctly reports no detection."""
-    src = "import hashlib\ndef sha(p):\n    return hashlib.sha256(p).hexdigest()\n"
+    src = (
+        "import hashlib\n"
+        "def sha(p):\n"
+        "    return hashlib.sha256(p).hexdigest()\n"
+    )
     sig = analyze_file(src, language="python")
     assert sig.detected is False
 
@@ -264,15 +285,18 @@ def test_tpm_symmetric_cipher_fixture_fires() -> None:
         pytest.skip(f"fixture not present: {fixture_path}")
     content = fixture_path.read_text(encoding="utf-8")
     sig = analyze_python_module(content)
-    assert sig.detected is True, f"tpm_symmetric_cipher fixture should fire crypto-sensitivity; reasons={sig.reasons}"
+    assert sig.detected is True, (
+        f"tpm_symmetric_cipher fixture should fire crypto-sensitivity; "
+        f"reasons={sig.reasons}"
+    )
     # Must include the cryptography.hazmat import signal
-    assert any(r.startswith("import:cryptography.hazmat") for r in sig.reasons), (
-        f"missing cryptography.hazmat in reasons={sig.reasons}"
-    )
+    assert any(
+        r.startswith("import:cryptography.hazmat") for r in sig.reasons
+    ), f"missing cryptography.hazmat in reasons={sig.reasons}"
     # Must include the legacy_iv misuse-name signal
-    assert any("misuse_name:legacy_iv" in r for r in sig.reasons), (
-        f"missing legacy_iv misuse-name in reasons={sig.reasons}"
-    )
+    assert any(
+        "misuse_name:legacy_iv" in r for r in sig.reasons
+    ), f"missing legacy_iv misuse-name in reasons={sig.reasons}"
 
 
 def test_tenda_device_audit_fixture_does_not_fire() -> None:

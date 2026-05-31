@@ -12,6 +12,7 @@ from scanner.runners import (
     make_anthropic_runner_from_adapter,
     make_triage_runner_from_adapter,
     score_to_verdict,
+    with_confirm_clean,
 )
 
 
@@ -151,7 +152,12 @@ def test_uncertainty_score_mid_band_low_uncertainty() -> None:
 def test_uncertainty_handles_missing_or_malformed_data() -> None:
     assert derive_uncertainty({}) == 0.0
     assert derive_uncertainty({"vulnerabilities": None, "composite_risk": None}) == 0.0
-    assert derive_uncertainty({"vulnerabilities": [{"type": "x"}], "composite_risk": {"score": "garbage"}}) >= 0.0
+    assert (
+        derive_uncertainty(
+            {"vulnerabilities": [{"type": "x"}], "composite_risk": {"score": "garbage"}}
+        )
+        >= 0.0
+    )
 
 
 @pytest.mark.asyncio
@@ -326,7 +332,9 @@ async def test_runner_propagates_adapter_error_over_parse_status() -> None:
     """If the adapter itself reported an error, that takes precedence
     over the json_parse_failed synthetic error — adapter-level errors
     are more informative."""
-    adapter = _FakeAdapter(_adapter_response(json_valid=False, in_tokens=10, out_tokens=10, error="rate_limited"))
+    adapter = _FakeAdapter(
+        _adapter_response(json_valid=False, in_tokens=10, out_tokens=10, error="rate_limited")
+    )
     runner = make_anthropic_runner_from_adapter(
         adapter,
         model_label="test",
@@ -360,6 +368,7 @@ def _triage_response(
     *,
     classification: str | None = "HIGH",
     reason: str = "test reason",
+    confidence: float | None = 1.0,
     json_valid: bool = True,
     in_tokens: int = 100,
     out_tokens: int = 20,
@@ -370,6 +379,8 @@ def _triage_response(
             "classification": classification,
             "reason": reason,
         }
+        if confidence is not None:
+            parsed["confidence"] = confidence
     else:
         parsed = None
     return {
@@ -444,3 +455,311 @@ async def test_triage_runner_cost_math() -> None:
     out = await runner("a.py", b"x", None)
     assert out["cost_usd"] == pytest.approx(0.000018)
     assert out["duration_ms"] == 800
+
+
+# ── v15.23: confidence + security-marker bias on triage ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_v1523_triage_passes_confidence_field_through() -> None:
+    """High-confidence classifications pass through unchanged; the
+    confidence field is surfaced on the returned dict for downstream
+    observability."""
+    adapter = _FakeAdapter(_triage_response(classification="HIGH", confidence=0.95))
+    runner = make_triage_runner_from_adapter(
+        adapter,
+        model_label="test",
+        cost_per_m_input=0.10,
+        cost_per_m_output=0.40,
+    )
+    out = await runner("a.py", b"x = 1\n", None)
+    assert out["classification"] == "HIGH"
+    assert out["confidence"] == pytest.approx(0.95)
+    assert out["bumps_applied"] == []
+
+
+@pytest.mark.asyncio
+async def test_v1523_low_confidence_escalates_clean_to_low() -> None:
+    """Sonnet says CLEAN/0.4 — auto-escalates to LOW. Low-confidence
+    CLEAN was the silent-failure mode the campaign exposed."""
+    adapter = _FakeAdapter(_triage_response(classification="CLEAN", confidence=0.4))
+    runner = make_triage_runner_from_adapter(
+        adapter,
+        model_label="test",
+        cost_per_m_input=0.10,
+        cost_per_m_output=0.40,
+    )
+    out = await runner("a.py", b"x = 1\n", None)
+    assert out["classification"] == "LOW"
+    assert any("confidence" in b for b in out["bumps_applied"])
+
+
+@pytest.mark.asyncio
+async def test_v1523_low_confidence_escalates_low_to_high() -> None:
+    """Low-confidence LOW → HIGH. Borderline cases shouldn't silently
+    take the cheap-L1 path when the model itself isn't sure."""
+    adapter = _FakeAdapter(_triage_response(classification="LOW", confidence=0.5))
+    runner = make_triage_runner_from_adapter(
+        adapter,
+        model_label="test",
+        cost_per_m_input=0.10,
+        cost_per_m_output=0.40,
+    )
+    out = await runner("a.py", b"x = 1\n", None)
+    assert out["classification"] == "HIGH"
+
+
+@pytest.mark.asyncio
+async def test_v1523_low_confidence_high_stays_high() -> None:
+    """Low-confidence HIGH stays HIGH (already at the top tier)."""
+    adapter = _FakeAdapter(_triage_response(classification="HIGH", confidence=0.5))
+    runner = make_triage_runner_from_adapter(
+        adapter,
+        model_label="test",
+        cost_per_m_input=0.10,
+        cost_per_m_output=0.40,
+    )
+    out = await runner("a.py", b"x = 1\n", None)
+    assert out["classification"] == "HIGH"
+    # No bump applied (already at HIGH)
+    assert not any("confidence" in b for b in out["bumps_applied"])
+
+
+@pytest.mark.asyncio
+async def test_v1523_missing_confidence_defaults_to_one() -> None:
+    """Legacy outputs without ``confidence`` get 1.0 — no auto-escalation,
+    pre-v15.23 behavior preserved."""
+    adapter = _FakeAdapter(_triage_response(classification="CLEAN", confidence=None))
+    runner = make_triage_runner_from_adapter(
+        adapter,
+        model_label="test",
+        cost_per_m_input=0.10,
+        cost_per_m_output=0.40,
+    )
+    out = await runner("clean.py", b"x = 1\n", None)
+    assert out["confidence"] == pytest.approx(1.0)
+    assert out["classification"] == "CLEAN"
+
+
+@pytest.mark.asyncio
+async def test_v1523_security_marker_bias_bumps_clean_to_low(tmp_path) -> None:
+    """File imports hashlib + has API key string → score>=1 → CLEAN
+    bumps to LOW. Single marker is borderline; bias intentionally
+    soft on 1-marker matches."""
+    # Use one weight-1 marker (urllib) only — score=1
+    content = (
+        b"import urllib.request\n"
+        b"def fetch(u):\n    return urllib.request.urlopen(u).read()\n"
+    )
+    adapter = _FakeAdapter(_triage_response(classification="CLEAN", confidence=0.95))
+    runner = make_triage_runner_from_adapter(
+        adapter,
+        model_label="test",
+        cost_per_m_input=0.10,
+        cost_per_m_output=0.40,
+    )
+    out = await runner("util.py", content, None)
+    assert out["classification"] == "LOW"
+    assert out["security_marker_score"] >= 1
+    assert any("security_markers" in b for b in out["bumps_applied"])
+
+
+@pytest.mark.asyncio
+async def test_v1523_security_marker_high_signal_bumps_to_high(tmp_path) -> None:
+    """File matches multiple high-weight markers (boto3 + Credentials
+    class + secret_key attr + Authorization header) → score >= 3 →
+    bump to HIGH regardless of model classification."""
+    content = (
+        b"import boto3\n"
+        b"from cryptography.hazmat.primitives import hashes\n"
+        b"class AwsCredentials:\n"
+        b"    aws_secret_key: str | None\n"
+        b"    def sign(self, req):\n"
+        b"        req.headers['Authorization'] = 'Bearer ' + self.aws_secret_key\n"
+    )
+    adapter = _FakeAdapter(_triage_response(classification="CLEAN", confidence=0.95))
+    runner = make_triage_runner_from_adapter(
+        adapter,
+        model_label="test",
+        cost_per_m_input=0.10,
+        cost_per_m_output=0.40,
+    )
+    out = await runner("creds.py", content, None)
+    assert out["classification"] == "HIGH"
+    assert out["security_marker_score"] >= 3
+
+
+@pytest.mark.asyncio
+async def test_v1523_security_marker_bias_never_downgrades(tmp_path) -> None:
+    """Even a file with security markers shouldn't be DOWNGRADED if
+    the model said HIGH. The bias is always a raising operation."""
+    content = (
+        b"import boto3\n"
+        b"from cryptography.hazmat.primitives import hashes\n"
+        b"class AwsCredentials: aws_secret_key: str\n"
+    )
+    adapter = _FakeAdapter(_triage_response(classification="HIGH", confidence=0.95))
+    runner = make_triage_runner_from_adapter(
+        adapter,
+        model_label="test",
+        cost_per_m_input=0.10,
+        cost_per_m_output=0.40,
+    )
+    out = await runner("creds.py", content, None)
+    # Stays HIGH
+    assert out["classification"] == "HIGH"
+
+
+def test_v1523_security_marker_score_pure_data_file() -> None:
+    """Pure data / no-import file scores 0 — bias never fires on
+    code that doesn't import anything security-relevant."""
+    from scanner.runners import _compute_security_marker_score
+
+    score, matched = _compute_security_marker_score(
+        "x = 1\ny = 'hello'\ndef add(a, b): return a + b\n"
+    )
+    assert score == 0
+    assert matched == []
+
+
+def test_v1523_security_marker_score_auth_file_high_signal() -> None:
+    """Auth file with boto3 + Credentials + secret_key + Authorization
+    scores >= 3. Verifies the canonical anthropic-sdk-python failure
+    pattern would now route to HIGH."""
+    from scanner.runners import _compute_security_marker_score
+
+    text = (
+        "import boto3\n"
+        "from cryptography.hazmat.primitives import hashes\n"
+        "class AwsCredentials:\n"
+        "    aws_secret_key: str | None = None\n"
+        "def sign(req):\n"
+        "    req.headers['Authorization'] = 'Bearer abc'\n"
+    )
+    score, matched = _compute_security_marker_score(text)
+    assert score >= 3, f"expected score>=3, got {score}; matched: {matched}"
+
+
+def test_v1523_security_marker_score_url_handler_minimum_one() -> None:
+    """File that takes base_url + uses requests qualifies for the LOW
+    bias (score>=1) — at minimum doesn't route CLEAN."""
+    from scanner.runners import _compute_security_marker_score
+
+    text = (
+        "import requests\n"
+        "def fetch(base_url: str, token: str):\n"
+        "    return requests.get(base_url, headers={'X-Auth-Token': token})\n"
+    )
+    score, _ = _compute_security_marker_score(text)
+    assert score >= 1
+
+
+@pytest.mark.asyncio
+async def test_v1523_combined_low_conf_and_security_markers() -> None:
+    """Low-confidence CLEAN + security markers stack: first the
+    confidence bump fires (CLEAN→LOW), then the marker bump fires
+    (LOW→HIGH if score≥3). Defense-in-depth."""
+    content = (
+        b"import boto3\n"
+        b"from cryptography.hazmat.primitives import hashes\n"
+        b"class AwsCredentials: aws_secret_key: str\n"
+    )
+    adapter = _FakeAdapter(_triage_response(classification="CLEAN", confidence=0.4))
+    runner = make_triage_runner_from_adapter(
+        adapter,
+        model_label="test",
+        cost_per_m_input=0.10,
+        cost_per_m_output=0.40,
+    )
+    out = await runner("creds.py", content, None)
+    assert out["classification"] == "HIGH"
+    # Both bumps recorded
+    assert len(out["bumps_applied"]) == 2
+
+
+# ── v15.8 Gap 3: confirm-clean triage wrapper ───────────────────────────────
+
+
+def _make_scripted_triage_runner(classifications: list[str]):
+    """Return a triage runner that yields successive classifications from
+    the given list. Each call pops the next one (caller controls order)."""
+    calls = {"n": 0}
+
+    async def runner(filename: str, content: bytes, pp):
+        idx = calls["n"]
+        calls["n"] += 1
+        cls = classifications[min(idx, len(classifications) - 1)]
+        return {
+            "classification": cls,
+            "reason": f"call_{idx}",
+            "model": "stub",
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cost_usd": 0.001,
+            "duration_ms": 50,
+            "error": None,
+        }
+
+    return runner, calls
+
+
+@pytest.mark.asyncio
+async def test_confirm_clean_non_clean_passes_through_unchanged() -> None:
+    """v15.8 Gap 3: when the first call returns LOW or HIGH, the wrapper
+    does NOT make a second call — those are already conservative."""
+    base, calls = _make_scripted_triage_runner(["LOW"])
+    wrapped = with_confirm_clean(base)
+    out = await wrapped("x.py", b"x", None)
+    assert out["classification"] == "LOW"
+    assert calls["n"] == 1
+    assert out["triage_runs"] == 1
+    assert out["triage_classifications_all"] == ["LOW"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_clean_high_passes_through_unchanged() -> None:
+    base, calls = _make_scripted_triage_runner(["HIGH"])
+    wrapped = with_confirm_clean(base)
+    out = await wrapped("x.py", b"x", None)
+    assert out["classification"] == "HIGH"
+    assert calls["n"] == 1
+    assert out["triage_runs"] == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_clean_clean_then_clean_stays_clean() -> None:
+    """Both calls returned CLEAN — confidence is real, ship CLEAN."""
+    base, calls = _make_scripted_triage_runner(["CLEAN", "CLEAN"])
+    wrapped = with_confirm_clean(base)
+    out = await wrapped("x.py", b"x", None)
+    assert out["classification"] == "CLEAN"
+    assert calls["n"] == 2
+    assert out["triage_runs"] == 2
+    assert out["triage_classifications_all"] == ["CLEAN", "CLEAN"]
+    # Cost / token telemetry sum both runs
+    assert out["cost_usd"] == pytest.approx(0.002)
+    assert out["input_tokens"] == 200
+
+
+@pytest.mark.asyncio
+async def test_confirm_clean_clean_then_high_takes_high() -> None:
+    """v15.8 Gap 3 core case: the wrapper catches a CLEAN-flip and
+    promotes to HIGH so the cascade runs."""
+    base, calls = _make_scripted_triage_runner(["CLEAN", "HIGH"])
+    wrapped = with_confirm_clean(base)
+    out = await wrapped("x.py", b"x", None)
+    assert out["classification"] == "HIGH"
+    assert calls["n"] == 2
+    assert out["triage_runs"] == 2
+    assert out["triage_classifications_all"] == ["CLEAN", "HIGH"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_clean_clean_then_low_takes_low() -> None:
+    """LOW is more conservative than CLEAN — wrapper picks the more
+    conservative classification."""
+    base, calls = _make_scripted_triage_runner(["CLEAN", "LOW"])
+    wrapped = with_confirm_clean(base)
+    out = await wrapped("x.py", b"x", None)
+    assert out["classification"] == "LOW"
+    assert out["triage_runs"] == 2

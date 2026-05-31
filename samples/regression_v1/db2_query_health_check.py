@@ -17,6 +17,7 @@ and 12.1.0 through 12.1.3.
 import argparse
 import logging
 import sys
+import os
 
 try:
     import ibm_db
@@ -70,7 +71,6 @@ def connect(dsn: str):
 # Diagnostic queries
 # ---------------------------------------------------------------------------
 
-
 def get_db_version(conn) -> str:
     """Return the Db2 server version string."""
     sql = "SELECT SERVICE_LEVEL FROM TABLE(SYSPROC.ENV_GET_INST_INFO()) AS T"
@@ -110,7 +110,7 @@ def get_table_stats(conn, schema: str, table_name: str) -> dict:
         f"SELECT CARD, STATS_TIME "
         f"FROM SYSCAT.TABLES "
         f"WHERE TABSCHEMA = '{schema}' "
-        f"AND TABNAME = '{table_name}'"  # <-- unsanitized interpolation
+        f"AND TABNAME = '{table_name}'"   # <-- unsanitized interpolation
     )
 
     logger.debug("Executing stats query: %s", sql)
@@ -155,13 +155,16 @@ def get_active_connections(conn) -> list:
 # Safe alternative (parameterized)
 # ---------------------------------------------------------------------------
 
-
 def get_table_stats_safe(conn, schema: str, table_name: str) -> dict:
     """
     Hardened version of get_table_stats() using parameterized queries.
     Avoids the injection/DoS path described in CVE-2025-36353.
     """
-    sql = "SELECT CARD, STATS_TIME FROM SYSCAT.TABLES WHERE TABSCHEMA = ? AND TABNAME = ?"
+    sql = (
+        "SELECT CARD, STATS_TIME "
+        "FROM SYSCAT.TABLES "
+        "WHERE TABSCHEMA = ? AND TABNAME = ?"
+    )
     if conn is None:
         logger.info("[SIMULATION] Safe parameterized query: %s | %s | %s", sql, schema, table_name)
         return {"CARD": -1, "STATS_TIME": None}
@@ -180,7 +183,6 @@ def get_table_stats_safe(conn, schema: str, table_name: str) -> dict:
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
-
 
 def run_health_report(host, database, uid, pwd, schema, table_name, port, safe_mode):
     dsn = build_dsn(host, port, database, uid, pwd)
@@ -216,18 +218,17 @@ def run_health_report(host, database, uid, pwd, schema, table_name, port, safe_m
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="IBM Db2 Health Check Utility (CVE-2025-36353 demo)"
     )
-    parser.add_argument("--host", default="localhost", help="Db2 hostname")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--db", default="SAMPLE", help="Database name")
-    parser.add_argument("--uid", default="db2inst1", help="Username")
-    parser.add_argument("--pwd", default="DEMO_PLACEHOLDER_TOKEN", help="Password")
-    parser.add_argument("--schema", default="DB2INST1", help="Table schema")
-    parser.add_argument("--table", required=True, help="Table name to inspect")
+    parser.add_argument("--host",     default="localhost",        help="Db2 hostname")
+    parser.add_argument("--port",     type=int, default=DEFAULT_PORT)
+    parser.add_argument("--db",       default="SAMPLE",           help="Database name")
+    parser.add_argument("--uid",      default="db2inst1",         help="Username")
+    parser.add_argument("--pwd",      default="DEMO_PLACEHOLDER_TOKEN", help="Password")
+    parser.add_argument("--schema",   default="DB2INST1",         help="Table schema")
+    parser.add_argument("--table",    required=True,              help="Table name to inspect")
     parser.add_argument(
         "--safe",
         action="store_true",

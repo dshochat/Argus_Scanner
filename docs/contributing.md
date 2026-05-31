@@ -1,12 +1,12 @@
 # Contributing
 
-The full contribution guide lives at [CONTRIBUTING.md](https://github.com/dshochat/Argus_Scanner/blob/main/CONTRIBUTING.md) in the repo root. Short version below.
+The full contribution guide lives at [CONTRIBUTING.md](https://github.com/dshochat/Argus/blob/main/CONTRIBUTING.md) in the repo root. Short version below.
 
 ## Quick start
 
 ```bash
-git clone git@github.com:dshochat/Argus_Scanner.git
-cd Argus_Scanner
+git clone git@github.com:dshochat/Argus.git
+cd Argus
 uv sync --extra dev
 cp .env.example .env   # add ANTHROPIC_API_KEY + GEMINI_API_KEY
 uv run pytest tests/unit -v
@@ -24,7 +24,7 @@ uv run ruff check . && uv run ruff format .
 uv run mypy --strict .
 ```
 
-CI runs both on every PR (see [`.github/workflows/ci.yml`](https://github.com/dshochat/Argus_Scanner/blob/main/.github/workflows/ci.yml)).
+CI runs both on every PR (see [`.github/workflows/ci.yml`](https://github.com/dshochat/Argus/blob/main/.github/workflows/ci.yml)).
 
 ## Tests
 
@@ -59,8 +59,8 @@ See [Architecture](architecture.md) for the full list.
 
 ## Security disclosures
 
-Don't file public issues for security vulnerabilities. See [SECURITY.md](https://github.com/dshochat/Argus_Scanner/blob/main/SECURITY.md).
+Don't file public issues for security vulnerabilities. See [SECURITY.md](https://github.com/dshochat/Argus/blob/main/SECURITY.md).
 
 ## License
 
-By contributing you agree that your contributions will be licensed under [Apache 2.0](https://github.com/dshochat/Argus_Scanner/blob/main/LICENSE).
+By contributing you agree that your contributions will be licensed under [Apache 2.0](https://github.com/dshochat/Argus/blob/main/LICENSE).

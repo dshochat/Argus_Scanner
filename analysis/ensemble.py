@@ -102,7 +102,8 @@ def _select_winner(
             "ensemble_size": len(samples),
             "verdict_distribution": {},
             "selected_seed": seeds[0] if seeds else 0,
-            "selected_verdict": samples[0].verdict_label if samples else "suspicious",
+            "selected_verdict": samples[0].verdict_label
+            if samples else "suspicious",
             "was_unanimous": False,
             "had_tie": False,
             "all_seeds": list(seeds),
@@ -121,7 +122,10 @@ def _select_winner(
     selected_label = winners[0]
 
     # Among samples carrying the selected label, pick the FIRST (deterministic).
-    chosen_idx = next(i for i in successful_indices if samples[i].verdict_label == selected_label)
+    chosen_idx = next(
+        i for i in successful_indices
+        if samples[i].verdict_label == selected_label
+    )
 
     telemetry = {
         "ensemble_size": len(samples),

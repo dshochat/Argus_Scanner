@@ -184,7 +184,8 @@ def main() -> int:
     total_cost = sum(r.cost_usd for r in records)
     n_errors = sum(1 for r in records if r.error)
     print(
-        f"\n  done: {len(records)} records, ${total_cost:.4f}, errors={n_errors}, output={args.output}",
+        f"\n  done: {len(records)} records, ${total_cost:.4f}, "
+        f"errors={n_errors}, output={args.output}",
         flush=True,
     )
     return 0

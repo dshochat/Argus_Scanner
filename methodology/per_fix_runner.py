@@ -133,7 +133,11 @@ def evaluate_fix(
             if fn not in per_file_oracle and isinstance(r.get("oracle_verdict"), str):
                 per_file_oracle[fn] = r["oracle_verdict"]
             base = r.get("baseline") or {}
-            if fn not in per_file_tier and isinstance(base, dict) and isinstance(base.get("tracking"), str):
+            if (
+                fn not in per_file_tier
+                and isinstance(base, dict)
+                and isinstance(base.get("tracking"), str)
+            ):
                 per_file_tier[fn] = base["tracking"]
 
     for run in after_rows:
@@ -169,7 +173,10 @@ def evaluate_fix(
         #                 distribution + so same mean)
         #   "unknown"   — oracle missing on either side
         change_status: str
-        if before_band.mean_distance_to_oracle is None or after_band.mean_distance_to_oracle is None:
+        if (
+            before_band.mean_distance_to_oracle is None
+            or after_band.mean_distance_to_oracle is None
+        ):
             change_status = "unknown"
         elif after_band.mean_distance_to_oracle < before_band.mean_distance_to_oracle:
             change_status = "improved"
@@ -230,7 +237,9 @@ def evaluate_fix(
 
 def _print_report(report: dict) -> None:
     """Print a console-friendly summary of the lift assessment."""
-    print(f"\n=== Per-fix evaluation (N_before={report['n_before']}, N_after={report['n_after']}) ===")
+    print(
+        f"\n=== Per-fix evaluation (N_before={report['n_before']}, N_after={report['n_after']}) ==="
+    )
     print(
         f"  Verdict-exact: {report['before_mean_exact_pct']:.2f}% ->"
         f"{report['after_mean_exact_pct']:.2f}% "
@@ -264,12 +273,15 @@ def _print_report(report: dict) -> None:
         improved.sort(
             key=lambda x: (
                 x[1]["before_mean_distance"] - x[1]["after_mean_distance"]
-                if (x[1]["before_mean_distance"] is not None and x[1]["after_mean_distance"] is not None)
+                if (
+                    x[1]["before_mean_distance"] is not None
+                    and x[1]["after_mean_distance"] is not None
+                )
                 else 0
             ),
             reverse=True,
         )
-        print("\n  Files that improved (mean distance dropped):")
+        print(f"\n  Files that improved (mean distance dropped):")
         for fn, c in improved[:10]:
             print(
                 f"    {fn:42s}  oracle={c['oracle']}  "
@@ -278,7 +290,7 @@ def _print_report(report: dict) -> None:
             )
 
     if regressed:
-        print("\n  Files that regressed (mean distance grew):")
+        print(f"\n  Files that regressed (mean distance grew):")
         for fn, c in regressed[:10]:
             print(
                 f"    {fn:42s}  oracle={c['oracle']}  "

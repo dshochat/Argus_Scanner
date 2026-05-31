@@ -1,0 +1,115 @@
+# Sandbox image for Argus DAST — `rich_python` tier (v1.8 P2b, renamed
+# from `networked`).
+#
+# Strict superset of `lean`. Adds extra Python packages for AI-fixture
+# and data-adjacent code that imports beyond the lean default set
+# (which already covers requests, flask, fastapi, sqlalchemy, pandas,
+# numpy, boto3, paramiko, redis, pymongo, mcp, etc.). The v1.8
+# additions target gaps surfaced by the 2026-05 zero-day hunting
+# campaign:
+#
+#   * scipy / scikit-learn — numerical computing adjacent to ML loaders
+#     but cheaper than the full ml_tools tier
+#   * openai / anthropic / langchain-core — AI-tooling fixtures that
+#     import LLM client SDKs; many tampered tool descriptions live in
+#     code that imports these
+#   * aiohttp / aiofiles — async HTTP + filesystem; common in modern
+#     network code
+#   * psutil — system introspection; malicious recon code often uses it
+#   * psycopg2-binary — Postgres binary driver; pure-Python psycopg2
+#     isn't in lean
+#
+# Image size delta vs lean: ~150 MB compressed (~480 MB → ~630 MB).
+# Boot time delta: ~2-3 seconds extra (more imports to JIT).
+
+FROM python:3.13-slim
+
+# Same apt set as lean (Dockerfile.lean) — self-contained build so each
+# image can be built independently without needing the lean image
+# cached locally. Network tools (curl/wget/nc/dnsutils/openssl) are
+# already in lean as of v1.8 P2b.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        coreutils \
+        inotify-tools \
+        nodejs \
+        npm \
+        default-jre-headless \
+        curl \
+        wget \
+        netcat-openbsd \
+        dnsutils \
+        openssl \
+        util-linux \
+        git \
+        && rm -rf /var/lib/apt/lists/*
+
+# Python deps — lean tier's full set PLUS the rich_python extras (after
+# the empty line). Lean must be kept in lockstep so plans that route to
+# either tier have the same baseline import surface.
+RUN pip install --no-cache-dir --quiet \
+      requests \
+      flask \
+      fastapi \
+      click \
+      jinja2 \
+      pyyaml \
+      lxml \
+      cryptography \
+      pyjwt \
+      sqlalchemy \
+      pillow \
+      gunicorn \
+      python-dateutil \
+      urllib3 \
+      packaging \
+      typing-extensions \
+      pandas \
+      numpy \
+      boto3 \
+      botocore \
+      beautifulsoup4 \
+      paramiko \
+      redis \
+      pymongo \
+      python-magic \
+      pytz \
+      tzdata \
+      mcp \
+      gitpython \
+      httpx \
+      markdownify \
+      readabilipy \
+      protego \
+      pydantic \
+      tzlocal \
+      \
+      scipy \
+      scikit-learn \
+      openai \
+      anthropic \
+      langchain-core \
+      aiohttp \
+      aiofiles \
+      psutil \
+      psycopg2-binary
+
+# Non-root runner. Same as minimal — plans execute as `runner`, never
+# root. /workspace is the target directory; everything else is
+# read-only at runtime.
+RUN useradd -m -u 1000 -s /bin/bash runner && \
+    mkdir -p /workspace && \
+    chown runner:runner /workspace
+
+# Same entrypoint stack as minimal. The init script handles DNS-hijack
+# capture setup (needs root) then drops to `runner` for plan execution.
+COPY entrypoint.py /usr/local/bin/dast-entrypoint
+RUN chmod 755 /usr/local/bin/dast-entrypoint
+
+COPY dast-capture-server.py /usr/local/bin/dast-capture-server
+COPY dast-init.sh /usr/local/bin/dast-init.sh
+RUN chmod 755 /usr/local/bin/dast-capture-server /usr/local/bin/dast-init.sh
+
+WORKDIR /workspace
+ENTRYPOINT ["bash", "/usr/local/bin/dast-init.sh"]

@@ -237,6 +237,10 @@ class ObfuscationTechnique(str, Enum):
     ZLIB_COMPRESS = "zlib_compress"
     MARSHAL = "marshal"
     CUSTOM_ENCODING = "custom_encoding"
+    # PREP-014 (from public sync): obfuscator.io-style JS string-array
+    # obfuscation — top-level dynamic array of strings indexed via a
+    # shuffler function. Detected + unwrapped via webcrack in
+    # preprocessing.deobfuscation_js.
     JS_STRING_ARRAY = "js_string_array"
 
 

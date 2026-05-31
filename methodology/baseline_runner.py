@@ -85,6 +85,7 @@ if hasattr(sys.stdout, "reconfigure"):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from methodology.scoring import (  # noqa: E402
+    VERDICT_RANK,
     aggregate_run,
     characterize_file_variance,
 )
@@ -194,7 +195,9 @@ def aggregate_baseline_runs(run_paths: list[Path]) -> dict:
 
     # Aggregate-level rollups
     n_oracle_match = sum(
-        1 for f in files_out if f["oracle_verdict"] and f["most_frequent_verdict"] == f["oracle_verdict"]
+        1
+        for f in files_out
+        if f["oracle_verdict"] and f["most_frequent_verdict"] == f["oracle_verdict"]
     )
     n_stable = sum(1 for f in files_out if f["is_stable"])
     n_unstable = len(files_out) - n_stable
@@ -220,7 +223,9 @@ def aggregate_baseline_runs(run_paths: list[Path]) -> dict:
         tracking_breakdown[f["tracking"]] += 1
 
     # Mean across runs for the headline number
-    mean_exact = (sum(s["verdict_exact_pct"] for s in per_run_summaries) / n_runs) if n_runs else 0.0
+    mean_exact = (
+        (sum(s["verdict_exact_pct"] for s in per_run_summaries) / n_runs) if n_runs else 0.0
+    )
     mean_dist = (sum(s["mean_distance"] for s in per_run_summaries) / n_runs) if n_runs else 0.0
 
     return {
@@ -294,14 +299,17 @@ def main() -> int:
         f"  Stable files (all N runs agree): {stability['stable_files']} / "
         f"{doc['n_files']} ({100 - stability['unstable_pct']}%)"
     )
-    print(f"  Unstable files (any disagreement): {stability['unstable_files']} ({stability['unstable_pct']}%)")
+    print(
+        f"  Unstable files (any disagreement): {stability['unstable_files']} "
+        f"({stability['unstable_pct']}%)"
+    )
     print(f"  Wrote: {args.output}")
 
     # List the most unstable files (highest flip_rate)
     unstable = [f for f in doc["files"] if not f["is_stable"]]
     if unstable:
         unstable.sort(key=lambda f: f["flip_rate"], reverse=True)
-        print("\n  Highest-variance files (verdict flips across runs):")
+        print(f"\n  Highest-variance files (verdict flips across runs):")
         for f in unstable[:10]:
             dist_summary = ", ".join(f"{lbl}={n}" for lbl, n in f["verdict_distribution"].items())
             print(

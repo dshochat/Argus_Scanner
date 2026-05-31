@@ -107,7 +107,9 @@ def _has_dangerous_call(tree: ast.AST) -> list[str]:
             module, _, attr = path.rpartition(".")
             for mod_key, attrs in _DANGEROUS_CALL_TARGETS.items():
                 if (
-                    module == mod_key or module.startswith(f"{mod_key}.") or module.endswith(mod_key)
+                    module == mod_key
+                    or module.startswith(f"{mod_key}.")
+                    or module.endswith(mod_key)
                 ) and attr in attrs:
                     hits.append(f"{module}.{attr}")
                     break

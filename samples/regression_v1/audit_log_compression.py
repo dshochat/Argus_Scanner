@@ -22,9 +22,9 @@ import csv
 import hashlib
 import logging
 import zlib
-from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator, Sequence
 
 log = logging.getLogger("auditlog.compression")
 
@@ -45,7 +45,6 @@ COMPRESSION_LEVELS = range(-1, 10)
 
 # ── Core data model ──────────────────────────────────────────────────────
 
-
 @dataclass(frozen=True)
 class AuditRecord:
     """One audit-log entry as it lands in the retention pipeline.
@@ -55,7 +54,6 @@ class AuditRecord:
     round-trips through cold-storage systems that may require text-safe
     bytes (base64) but want cheap verification (checksum).
     """
-
     tenant_id: str
     event_time: str
     category: str
@@ -78,7 +76,9 @@ def compress_record(payload: bytes, *, level: int = 6) -> tuple[str, str]:
     if level not in COMPRESSION_LEVELS:
         raise ValueError(f"invalid compression level: {level}")
     if len(payload) > MAX_RECORD_BYTES:
-        raise ValueError(f"payload {len(payload)} exceeds MAX_RECORD_BYTES {MAX_RECORD_BYTES}")
+        raise ValueError(
+            f"payload {len(payload)} exceeds MAX_RECORD_BYTES {MAX_RECORD_BYTES}"
+        )
     compressed = zlib.compress(payload, level)
     return base64.b64encode(compressed).decode("ascii"), _sha256(payload)
 
@@ -97,7 +97,9 @@ def decompress_record(encoded: str, expected_checksum: str) -> bytes:
         raise ValueError("record decompression exceeded safety cap")
     observed = _sha256(decoded)
     if observed != expected_checksum:
-        raise ValueError(f"checksum mismatch: expected {expected_checksum}, got {observed}")
+        raise ValueError(
+            f"checksum mismatch: expected {expected_checksum}, got {observed}"
+        )
     return decoded
 
 
@@ -112,7 +114,6 @@ def validate_checksum(record: AuditRecord) -> bool:
 
 
 # ── CSV ingest (streaming) ───────────────────────────────────────────────
-
 
 def iter_records(csv_path: Path) -> Iterator[AuditRecord]:
     """Stream records from a CSV shard. One AuditRecord per row."""
@@ -141,15 +142,13 @@ def batch_write(records: Sequence[AuditRecord], out_path: Path) -> int:
         )
         writer.writeheader()
         for r in records:
-            writer.writerow(
-                {
-                    "tenant_id": r.tenant_id,
-                    "event_time": r.event_time,
-                    "category": r.category,
-                    "checksum": r.checksum,
-                    "encoded": r.encoded,
-                }
-            )
+            writer.writerow({
+                "tenant_id": r.tenant_id,
+                "event_time": r.event_time,
+                "category": r.category,
+                "checksum": r.checksum,
+                "encoded": r.encoded,
+            })
             total += len(r.encoded)
     return total
 

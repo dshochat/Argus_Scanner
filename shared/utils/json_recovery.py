@@ -78,7 +78,9 @@ def _repair(raw: str) -> str | None:
 
         # Safe state: between tokens, not in a string, stack represents
         # currently-open containers. Record the boundary.
-        if ch in ",}]" or ch.isspace() and not stack:
+        if ch in ",}]":
+            last_safe = i
+        elif ch.isspace() and not stack:
             last_safe = i
 
     if last_safe < 0:

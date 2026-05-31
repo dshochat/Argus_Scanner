@@ -526,6 +526,8 @@ async def scan_repo(
     triage_runner: Any = None,
     sonnet_runner: Any = None,
     opus_runner: Any = None,
+    sonnet_runner_split: Any = None,
+    opus_runner_split: Any = None,
     dast_runner: Any = None,
     progress_cb: Callable[[int, int, Path, ScanResult | None, str | None], None] | None = None,
 ) -> RepoScanReport:
@@ -541,6 +543,18 @@ async def scan_repo(
     """
     started = time.time()
     report = RepoScanReport(root=cfg.root, started_at=started)
+
+    # v1.9 SCAN-007: if the caller didn't set ``max_cost_run_usd``
+    # explicitly, inherit the dangling ``ScanConfig.max_cost_per_scan_usd``
+    # field that previously had no enforcement. Default 50.00 USD.
+    # Without this wiring, multi-file scans had NO aggregate cost cap
+    # even though the field existed — a 100-file scan-repo could burn
+    # $100+ silently. Now: explicit cfg.max_cost_run_usd wins; otherwise
+    # the per-scan cap from the per-file ScanConfig propagates up.
+    if cfg.max_cost_run_usd is None and cfg.scan_config is not None:
+        inherited = getattr(cfg.scan_config, "max_cost_per_scan_usd", None)
+        if isinstance(inherited, (int, float)) and inherited > 0:
+            cfg.max_cost_run_usd = float(inherited)
 
     # First pass — enumerate everything so we can show "i/N" progress.
     enumerated = list(walk_files(cfg))
@@ -563,6 +577,8 @@ async def scan_repo(
             triage_runner=triage_runner,
             sonnet_runner=sonnet_runner,
             opus_runner=opus_runner,
+            sonnet_runner_split=sonnet_runner_split,
+            opus_runner_split=opus_runner_split,
             dast_runner=dast_runner,
             progress_cb=progress_cb,
         )
@@ -587,7 +603,9 @@ async def scan_repo(
                 FileSkip(
                     path=path,
                     reason="cost_cap_reached",
-                    detail=(f"cumulative ${report.total_cost_usd:.4f} >= cap ${cfg.max_cost_run_usd:.2f}"),
+                    detail=(
+                        f"cumulative ${report.total_cost_usd:.4f} >= cap ${cfg.max_cost_run_usd:.2f}"
+                    ),
                 )
             )
             if progress_cb:
@@ -605,6 +623,16 @@ async def scan_repo(
                 break
             continue
 
+        # SCAN-010: only forward split-runner kwargs when populated.
+        # Keeps back-compat for test stubs whose signature pre-dates
+        # the new kwargs (any scan_fn that doesn't accept these names
+        # would otherwise raise TypeError).
+        extra_kwargs: dict[str, Any] = {}
+        if sonnet_runner_split is not None:
+            extra_kwargs["sonnet_runner_split"] = sonnet_runner_split
+        if opus_runner_split is not None:
+            extra_kwargs["opus_runner_split"] = opus_runner_split
+
         try:
             result = await scan_fn(
                 filename=str(path.relative_to(cfg.root.resolve())),
@@ -614,6 +642,7 @@ async def scan_repo(
                 sonnet_runner=sonnet_runner,
                 opus_runner=opus_runner,
                 dast_runner=dast_runner,
+                **extra_kwargs,
             )
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
@@ -650,6 +679,8 @@ async def _scan_repo_parallel(
     triage_runner: Any,
     sonnet_runner: Any,
     opus_runner: Any,
+    sonnet_runner_split: Any = None,
+    opus_runner_split: Any = None,
     dast_runner: Any,
     progress_cb: Callable[[int, int, Path, ScanResult | None, str | None], None] | None,
 ) -> None:
@@ -687,7 +718,9 @@ async def _scan_repo_parallel(
                 FileSkip(
                     path=path,
                     reason="cost_cap_reached",
-                    detail=(f"cumulative ${report.total_cost_usd:.4f} >= cap ${cfg.max_cost_run_usd:.2f}"),
+                    detail=(
+                        f"cumulative ${report.total_cost_usd:.4f} >= cap ${cfg.max_cost_run_usd:.2f}"
+                    ),
                 )
             )
             if progress_cb:
@@ -702,6 +735,14 @@ async def _scan_repo_parallel(
                 progress_cb(idx, total, path, None, "read_error")
             return
 
+        # SCAN-010: see notes above — forward split kwargs only when
+        # populated so back-compat with older scan_fn stubs is preserved.
+        extra_kwargs: dict[str, Any] = {}
+        if sonnet_runner_split is not None:
+            extra_kwargs["sonnet_runner_split"] = sonnet_runner_split
+        if opus_runner_split is not None:
+            extra_kwargs["opus_runner_split"] = opus_runner_split
+
         async with sem:
             try:
                 result = await scan_fn(
@@ -712,6 +753,7 @@ async def _scan_repo_parallel(
                     sonnet_runner=sonnet_runner,
                     opus_runner=opus_runner,
                     dast_runner=dast_runner,
+                    **extra_kwargs,
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise

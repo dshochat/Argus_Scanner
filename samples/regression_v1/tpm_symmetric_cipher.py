@@ -24,12 +24,15 @@ WARNING: The `legacy_iv_mode` flag re-enables the vulnerable behaviour
 for regression-testing purposes only.  Do NOT use in production.
 """
 
+import os
 import logging
+import hashlib
+import struct
+from typing import Tuple, Optional
 
 try:
-    from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
+    from cryptography.hazmat.backends import default_backend
     _CRYPTOGRAPHY_AVAILABLE = True
 except ImportError:
     _CRYPTOGRAPHY_AVAILABLE = False
@@ -40,15 +43,15 @@ log = logging.getLogger(__name__)
 # Constants mirroring libtpms tpm_to_ossl_symmetric.h
 # ---------------------------------------------------------------------------
 
-AES_BLOCK_SIZE = 16  # bytes
-TDES_BLOCK_SIZE = 8  # bytes
-SM4_BLOCK_SIZE = 16  # bytes
+AES_BLOCK_SIZE = 16          # bytes
+TDES_BLOCK_SIZE = 8          # bytes
+SM4_BLOCK_SIZE  = 16         # bytes
 
-LIBTPMS_PATCHED_VERSION = (0, 10, 2)
+LIBTPMS_PATCHED_VERSION  = (0, 10, 2)
 LIBTPMS_AFFECTED_VERSIONS = [(0, 10, 0), (0, 10, 1)]
 
 
-def _libtpms_version() -> tuple[int, int, int]:
+def _libtpms_version() -> Tuple[int, int, int]:
     """Return a hard-coded version tuple representing the installed libtpms.
 
     In a real deployment this would call into the native library.
@@ -56,10 +59,10 @@ def _libtpms_version() -> tuple[int, int, int]:
     the regression path.
     """
     # TODO: replace with ctypes binding to Tss2_TpmProfile_GetLibraryVersionInfo
-    return (0, 10, 1)  # Simulate affected version
+    return (0, 10, 1)   # Simulate affected version
 
 
-def is_affected_version(version: tuple[int, int, int] | None = None) -> bool:
+def is_affected_version(version: Optional[Tuple[int, int, int]] = None) -> bool:
     """Return True if the given (or detected) version exhibits CVE-2026-21444."""
     if version is None:
         version = _libtpms_version()
@@ -69,7 +72,6 @@ def is_affected_version(version: tuple[int, int, int] | None = None) -> bool:
 # ---------------------------------------------------------------------------
 # Core cipher wrapper
 # ---------------------------------------------------------------------------
-
 
 class TpmSymmetricCipher:
     """
@@ -100,7 +102,9 @@ class TpmSymmetricCipher:
             )
 
         if not _CRYPTOGRAPHY_AVAILABLE:
-            raise RuntimeError("The 'cryptography' package is required for TpmSymmetricCipher.")
+            raise RuntimeError(
+                "The 'cryptography' package is required for TpmSymmetricCipher."
+            )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -171,7 +175,7 @@ class TpmSymmetricCipher:
                 "[CVE-2026-21444 regression mode] Returning initial IV "
                 "instead of last-block IV — this is the vulnerable behaviour."
             )
-            return initial_iv  # <-- BUG: should be ciphertext[-block_size:]
+            return initial_iv   # <-- BUG: should be ciphertext[-block_size:]
 
         # PATCHED PATH: return the last ciphertext block as the next IV.
         return ciphertext[-block_size:]
@@ -185,7 +189,7 @@ class TpmSymmetricCipher:
         key: bytes,
         iv: bytes,
         plaintext: bytes,
-    ) -> tuple[bytes, bytes]:
+    ) -> Tuple[bytes, bytes]:
         """
         Encrypt *plaintext* and return ``(ciphertext, next_iv)``.
 
@@ -221,7 +225,7 @@ class TpmSymmetricCipher:
         key: bytes,
         iv: bytes,
         ciphertext: bytes,
-    ) -> tuple[bytes, bytes]:
+    ) -> Tuple[bytes, bytes]:
         """
         Decrypt *ciphertext* and return ``(plaintext, next_iv)``.
 
@@ -243,7 +247,7 @@ class TpmSymmetricCipher:
         key: bytes,
         iv: bytes,
         chunks: list,
-    ) -> tuple[list, bytes]:
+    ) -> Tuple[list, bytes]:
         """
         Encrypt a list of plaintext chunks, threading the IV between calls.
 
@@ -270,7 +274,6 @@ class TpmSymmetricCipher:
 # Utility: IV correctness audit
 # ---------------------------------------------------------------------------
 
-
 def audit_iv_propagation(key: bytes, iv: bytes, chunks: list) -> dict:
     """
     Run side-by-side encrypt passes in patched vs. legacy mode and report
@@ -282,7 +285,7 @@ def audit_iv_propagation(key: bytes, iv: bytes, chunks: list) -> dict:
         - ``diverges``        : True if the sequences differ (bug present)
     """
     vulnerable_cipher = TpmSymmetricCipher(legacy_iv_mode=True)
-    patched_cipher = TpmSymmetricCipher(legacy_iv_mode=False)
+    patched_cipher    = TpmSymmetricCipher(legacy_iv_mode=False)
 
     v_ivs: list = []
     p_ivs: list = []
@@ -297,8 +300,8 @@ def audit_iv_propagation(key: bytes, iv: bytes, chunks: list) -> dict:
     diverges = v_ivs != p_ivs
     return {
         "vulnerable_ivs": v_ivs,
-        "patched_ivs": p_ivs,
-        "diverges": diverges,
+        "patched_ivs":    p_ivs,
+        "diverges":       diverges,
     }
 
 
@@ -309,8 +312,8 @@ def audit_iv_propagation(key: bytes, iv: bytes, chunks: list) -> dict:
 if __name__ == "__main__":
     import secrets
 
-    KEY = secrets.token_bytes(32)  # AES-256
-    IV = secrets.token_bytes(AES_BLOCK_SIZE)
+    KEY  = secrets.token_bytes(32)   # AES-256
+    IV   = secrets.token_bytes(AES_BLOCK_SIZE)
     DATA = [b"block-one-payload", b"block-two-payload", b"block-three-data"]
 
     print("=== libtpms CVE-2026-21444 IV propagation regression test ===")

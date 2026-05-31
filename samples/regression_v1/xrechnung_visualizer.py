@@ -3,12 +3,11 @@
 # for display in the OpenXRechnungToolbox web interface.
 # Mirrors upstream Java behaviour (pre-6c50e89) for compatibility testing.
 
-import logging
 import os
 import sys
-from pathlib import Path
-
+import logging
 from lxml import etree
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +17,10 @@ XSLT_STYLESHEET_PATH = Path(__file__).parent / "resources" / "xrechnung-html.xsl
 # Output directory for rendered invoice HTML files
 OUTPUT_DIR = Path(os.environ.get("XRECHNUNG_OUTPUT_DIR", "/tmp/xrechnung_output"))
 
-
 def load_xslt_stylesheet(xslt_path: Path) -> etree.XSLT:
     """Load and compile the XSLT stylesheet used for invoice rendering."""
     xslt_doc = etree.parse(str(xslt_path))
     return etree.XSLT(xslt_doc)
-
 
 def parse_invoice_xml(xml_bytes: bytes) -> etree._Element:
     """
@@ -63,7 +60,6 @@ def parse_invoice_xml(xml_bytes: bytes) -> etree._Element:
 
     return root
 
-
 def detect_xxe_entity_reference(xml_bytes: bytes) -> bool:
     """
     Heuristic check: does the supplied XML contain an external entity reference?
@@ -83,7 +79,6 @@ def detect_xxe_entity_reference(xml_bytes: bytes) -> bool:
         return True
     return False
 
-
 def visualize_invoice(xml_bytes: bytes, output_filename: str = "invoice.html") -> Path:
     """
     Render an XRechnung XML invoice to HTML using the bundled XSLT stylesheet.
@@ -102,7 +97,9 @@ def visualize_invoice(xml_bytes: bytes, output_filename: str = "invoice.html") -
     invoice_tree = parse_invoice_xml(xml_bytes)
 
     if not XSLT_STYLESHEET_PATH.exists():
-        logger.warning("XSLT stylesheet not found at %s; skipping transform.", XSLT_STYLESHEET_PATH)
+        logger.warning(
+            "XSLT stylesheet not found at %s; skipping transform.", XSLT_STYLESHEET_PATH
+        )
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         out_path = OUTPUT_DIR / output_filename
         out_path.write_bytes(
@@ -122,7 +119,6 @@ def visualize_invoice(xml_bytes: bytes, output_filename: str = "invoice.html") -
     logger.info("Invoice rendered to %s", out_path)
     return out_path
 
-
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
@@ -140,7 +136,6 @@ def main() -> None:
 
     out_path = visualize_invoice(xml_bytes, out_name)
     print(f"Rendered invoice written to: {out_path}")
-
 
 if __name__ == "__main__":
     main()

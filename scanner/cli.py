@@ -20,11 +20,12 @@ import json
 import logging
 import os
 import sys
+from dataclasses import replace
 from datetime import UTC
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from dast.runner import make_dast_runner_from_env
 from methodology.bench import (
@@ -38,12 +39,69 @@ from methodology.bench import (
 )
 from scanner.engine import ScanConfig, ScanResult, scan_file
 from scanner.runners import (
+    make_anthropic_hunter_runner_from_adapter,
     make_gemini_triage_runner,
+    make_sonnet_triage_runner,
+    with_confirm_clean,
     make_opus_runner,
+    make_opus_runner_hunter,
+    make_opus_runner_split,
     make_sonnet_runner,
+    make_sonnet_runner_hunter,
+    make_sonnet_runner_split,
 )
 
 log = logging.getLogger("argus.cli")
+
+
+# ── .env auto-loading (v1.8 quick win) ─────────────────────────────────────
+
+
+def _load_argus_env() -> Path | None:
+    """Find and load the right ``.env`` for this invocation of Argus.
+
+    Search order (first hit wins, all calls use ``override=True``):
+
+      1. Walk up from CWD looking for ``.env`` (python-dotenv's
+         ``find_dotenv(usecwd=True)``). Lets users run
+         ``argus scan ~/work/customer-repo/file.py`` from any project
+         directory that has its own ``.env`` (or any parent that does).
+      2. Fall back to the Argus install directory's ``.env``
+         (resolved via ``__file__``). Lets users run ``argus`` from
+         anywhere on the filesystem as long as they did the standard
+         clone-and-cp-.env-example setup.
+      3. Skip — env vars must come from the OS environment directly.
+
+    Returns the loaded path (or ``None`` if no ``.env`` was found —
+    callers shouldn't rely on this since OS-env vars are still picked
+    up downstream).
+
+    v1.7 and earlier called ``load_dotenv(override=True)`` directly, which
+    only checked CWD. Users had to ``cd`` back to the Argus repo before
+    every scan or copy ``.env`` to every target project (a security
+    antipattern). This helper eliminates that friction.
+    """
+    # Step 1: walk up from CWD
+    local = find_dotenv(usecwd=True)
+    if local:
+        load_dotenv(local, override=True)
+        log.debug("Loaded .env from CWD walk-up: %s", local)
+        return Path(local)
+
+    # Step 2: Argus install directory's .env
+    # scanner/cli.py → scanner/ → repo root
+    install_env = Path(__file__).resolve().parent.parent / ".env"
+    if install_env.exists():
+        load_dotenv(install_env, override=True)
+        log.debug("Loaded .env from Argus install dir: %s", install_env)
+        return install_env
+
+    # Step 3: no .env found — OS env vars must carry the keys.
+    log.debug(
+        "No .env found via CWD walk-up or Argus install dir; "
+        "relying on OS environment for API keys."
+    )
+    return None
 
 
 # ── Output formatters ──────────────────────────────────────────────────────
@@ -68,16 +126,53 @@ def format_markdown(result: ScanResult) -> str:
         f"**Scan path:** {' → '.join(result.scan_path) or '(empty)'}",
         "",
     ]
-    if result.vulnerabilities:
-        lines.append(f"## Vulnerabilities ({len(result.vulnerabilities)})")
+    # Partition L1 findings by their DAST disposition. The
+    # ``per_finding_validation`` list (Tier 1.5, v1.1) carries one entry
+    # per L1 vulnerability indicating whether DAST CONFIRMED, BLOCKED,
+    # UNREACHED, or didn't test it. Customer reports surface the live
+    # (CONFIRMED + UNTESTED) findings under the main heading and move
+    # BLOCKED findings to a sub-section so the report doesn't read as
+    # noise on hardened code. Falls back to "all live" when no DAST
+    # validation ran.
+    _validation = result.per_finding_validation or []
+    _blocked_keys = {
+        (v.get("cwe"), v.get("line"))
+        for v in _validation
+        if (v.get("status") or "").upper() == "BLOCKED"
+    }
+
+    def _vuln_key(v: dict) -> tuple:
+        return (v.get("cwe"), v.get("line"))
+
+    live_vulns = [v for v in result.vulnerabilities if _vuln_key(v) not in _blocked_keys]
+    blocked_vulns = [v for v in result.vulnerabilities if _vuln_key(v) in _blocked_keys]
+
+    if live_vulns:
+        lines.append(f"## Vulnerabilities ({len(live_vulns)})")
         lines.append("")
-        for v in result.vulnerabilities:
+        for v in live_vulns:
             line = v.get("line", "?")
-            lines.append(f"- **{v.get('type', '?')}** (severity: {v.get('severity', '?')}, line {line})")
+            lines.append(
+                f"- **{v.get('type', '?')}** (severity: {v.get('severity', '?')}, line {line})"
+            )
             if v.get("explanation"):
                 lines.append(f"  - {v['explanation']}")
             if v.get("fix"):
                 lines.append(f"  - **Fix:** {v['fix']}")
+        lines.append("")
+    if blocked_vulns:
+        # Application defended against these in the sandbox. Surface
+        # for transparency (operators may still want to know L1 saw a
+        # pattern), but visually downranked.
+        lines.append(f"## Defended by application ({len(blocked_vulns)})")
+        lines.append("")
+        lines.append(
+            "L1 flagged these patterns, but Finding Validation (sandbox runtime) confirmed the application correctly rejects the attack input. Listed for transparency; **not actionable** for the customer."
+        )
+        lines.append("")
+        for v in blocked_vulns:
+            line = v.get("line", "?")
+            lines.append(f"- ~~**{v.get('type', '?')}** (line {line})~~ — defended")
         lines.append("")
     if result.attack_chains:
         lines.append(f"## Attack chains ({len(result.attack_chains)})")
@@ -100,7 +195,8 @@ def format_markdown(result: ScanResult) -> str:
         lines.append("")
     if result.dast_attempted:
         lines.append(
-            f"## DAST: {len(result.dast_findings)} validated findings, {len(result.dast_iterations)} iterations"
+            f"## DAST: {len(result.dast_findings)} validated findings, "
+            f"{len(result.dast_iterations)} iterations"
         )
         lines.append("")
     if result.error:
@@ -116,15 +212,6 @@ def format_markdown(result: ScanResult) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="argus", description="AI-native code security scanner")
-    parser.add_argument(
-        "--no-deobfuscation",
-        action="store_true",
-        help="skip the JS string-array deobfuscation preprocessing stage "
-        "(webcrack). Use in environments that cannot install Node/webcrack "
-        "(airgapped, locked-down CI). Obfuscator.io-style JS payloads will "
-        "fall back to the model's fail-closed 'suspicious' verdict instead "
-        "of receiving full semantic analysis.",
-    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     scan = sub.add_parser("scan", help="Scan a single file")
@@ -141,24 +228,75 @@ def _build_parser() -> argparse.ArgumentParser:
         help="skip DAST verification (no-op until Phase 3 / DAST-102)",
     )
     scan.add_argument(
-        "--no-remediation",
+        "--enable-remediation",
+        action=argparse.BooleanOptionalAction,
+        default=None,  # None = use ScanConfig default (v1.11: True)
+        help="Remediation (fix-and-verify; aka 'Phase C' in internal "
+        "code/JSON). When ON, DAST generates a patched source for "
+        "CONFIRMED findings and replays the original exploit against "
+        "the patched code to confirm the fix actually closes the bug. "
+        "**Default ON as of v1.11** — runtime-grade FP reduction + "
+        "verified remediation is Argus's headline pitch. Adds "
+        "~$0.05/file in patch-generation token cost. Compliance / CI / "
+        "read-only audit users opt out via --no-enable-remediation.",
+    )
+    scan.add_argument(
+        "--enable-phase-d",
         action="store_true",
-        help="skip Phase C (fix-and-verify). DAST still runs A+B "
-        "(verify L1 findings + discover new ones), but Argus will not "
-        "generate a patched source or replay exploits against it. Use "
-        "for compliance scans, CI gates that don't allow source "
-        "modification suggestions, read-only audits, or to save "
-        "~$0.05/file in patch-generation token cost.",
+        help="enable Phase D variant analysis (DAST-301 v1.0 same-file + "
+        "DAST-302 v1.1 cross-file). When Finding Validation confirms a "
+        "finding, Phase D extracts a semantic signature, hunts for "
+        "variants of the same flaw across the project (Python-only in "
+        "v1.1; TS/JS is v1.2 work), retargets the seed harness, and "
+        "verifies each variant in the sandbox. Confirmed variants "
+        "surface as L1+Validation-shaped findings that flow into "
+        "Remediation. "
+        "Cost-gated at $0.50/seed (PHASE_D_MAX_COST_PER_SEED_USD). "
+        "Default OFF for v1 MVP — flip to ON in v1.2 after measurement "
+        "on real-world scans. See docs/dast_301_variant_analysis.md.",
+    )
+    scan.add_argument(
+        "--l1-mode",
+        choices=("auto", "split", "combined"),
+        default="auto",
+        help="SCAN-010: L1 analysis mode. ``auto`` (default) = ``split``. "
+        "``split`` fans out three specialized prompts "
+        "(VULNS / BEHAVIORAL / CHAINS) in parallel on HIGH-triage files — "
+        "less hedged findings, ~16% fewer output tokens, 2.6× faster "
+        "wall-clock from the fan-out. LOW + CLEAN paths keep the combined "
+        "prompt regardless of this flag (cost preservation on the cheap "
+        "path). ``combined`` reverts to v1.0's single-call behavior — "
+        "useful for A/B regression checks or if cost telemetry shows "
+        "split mode regressing on your workload.",
+    )
+    scan.add_argument(
+        "--l1-hunters",
+        default=None,
+        help="SCAN-011: enable per-attack-class hunter fan-out on "
+        "HIGH-triage files. Layered on top of --l1-mode split: the VULNS "
+        "slot is replaced by N specialized hunters in parallel. "
+        "``all`` enables the full 10-hunter taxonomy "
+        "(injection / ssrf / malicious_intent / path_traversal / "
+        "deserialization / prompt_injection / credentials / authz / "
+        "crypto / exfiltration). Or pass a comma-list to opt into a "
+        "subset (e.g. ``ssrf,injection``). Default OFF — cost increase "
+        "is ~2× SCAN-010 baseline (~$0.32/HIGH-file). See "
+        "docs/scan_011_attack_class_hunters_design.md.",
     )
     scan.add_argument(
         "--enable-runtime-probe",
-        action="store_true",
-        help="enable Phase B+ runtime exploit probing (v1.5). Sonnet "
-        "generates concrete attack inputs for probe-attractive "
-        "functions; the sandbox executes each in a Firecracker microVM; "
-        "findings come from observed runtime evidence rather than "
-        "static analysis. Python-only in v1.5. Adds ~$0.20-0.50/file "
-        "in API cost on top of Phase A. Requires DAST configured (Fly).",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Exploit Discovery (v1.5; aka 'Phase B+' in internal code/"
+        "JSON). Sonnet generates concrete attack inputs for probe-"
+        "attractive functions; the sandbox executes each in a "
+        "Firecracker microVM; findings come from observed runtime "
+        "evidence rather than static analysis. Python-only. Adds "
+        "~$0.20-0.50/file in API cost on top of Finding Validation. "
+        "Requires DAST configured (Fly). **Default OFF as of v1.11** "
+        "— opt in to add zero-day hunting on top of the default "
+        "Validation + Remediation cascade. Pass --enable-runtime-probe "
+        "to enable.",
     )
     scan.add_argument(
         "--enable-runtime-probe-mutation",
@@ -183,6 +321,62 @@ def _build_parser() -> argparse.ArgumentParser:
         "Implies --enable-runtime-probe.",
     )
     scan.add_argument(
+        "--enable-runtime-probe-chains",
+        action="store_true",
+        help="enable cross-function exploit-chain probing. Sonnet "
+        "nominates 2-3 step call sequences where each step's args may "
+        "reference prior steps' return values (parse->eval, store->load, "
+        "sanitize->render). Catches chains where no single call is "
+        "exploitable but the sequence is. Adds ~$0.15-0.35/file when "
+        "chains land. Independent of mutation and iterative. Implies "
+        "--enable-runtime-probe.",
+    )
+    scan.add_argument(
+        "--enable-phase-3-discovery",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Behavioral Profiling (aka 'Phase 3 Stage 1' in internal "
+        "code/JSON). Sandbox introspects the module, exercises every "
+        "public callable with deterministic benign inputs, captures "
+        "runtime observations (eval/exec/subprocess/pickle reach, "
+        "file opens, network attempts) into a structured behavioral "
+        "profile. Non-destructive: doesn't generate findings, just "
+        "surfaces the profile in scan JSON; Adversarial Reasoning "
+        "consumes the profile to design attack hypotheses. Adds "
+        "~$0.05-0.10/file. **Default OFF as of v1.11** — opt in "
+        "alongside --enable-phase-3-loop when you want zero-day "
+        "hunting beyond the default Validation + Remediation cascade.",
+    )
+    scan.add_argument(
+        "--enable-phase-3-loop",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Adversarial Reasoning (aka 'Phase 3 Stage 2' in internal "
+        "code/JSON). After Behavioral Profiling produces a runtime "
+        "profile, the model designs 1-3 attack hypotheses anchored on "
+        "observed behavior (rather than static reading) and the sandbox "
+        "tests them. Confirmed exploits surface as findings; clean "
+        "sandbox execution authoritatively refutes model speculation. "
+        "Strategy C (post-trace LLM judge, shipped v1.8) gates FP risk "
+        "on CONFIRMED outcomes. Default max_turns=1. Adds ~$0.05/file "
+        "+ 3 sandbox runs. **Default OFF as of v1.11** — opt in for "
+        "deeper zero-day hunting (also enable "
+        "--enable-phase-3-discovery for the Behavioral Profile and "
+        "--enable-runtime-probe for the sandbox-probe machinery this "
+        "stage dispatches into).",
+    )
+    scan.add_argument(
+        "--phase-3-max-turns",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Adversarial Reasoning loop turn cap (default 1). Bump to "
+        "2-3 when Exploit Discovery surfaced findings but turn-1 returned "
+        "0 hypotheses — gives Opus a second pass to either refute the "
+        "existing findings or design adversarial inputs explicitly. Each "
+        "extra turn adds ~$0.05-0.10/file.",
+    )
+    scan.add_argument(
         "--max-cost",
         type=float,
         default=None,
@@ -190,6 +384,51 @@ def _build_parser() -> argparse.ArgumentParser:
         help="abort the scan if cumulative API spend on this file exceeds "
         "USD (overrides ScanConfig.max_cost_per_file_usd default of 1.00). "
         "Pass 0 to disable.",
+    )
+    scan.add_argument(
+        "--enable-per-scan-dep-install",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="P2a v0.1 (v1.8): parse the target file's imports and "
+        "pip-install missing packages inside the sandbox before plan "
+        "execution. Approach A — imports-only, --no-deps (refuses "
+        "transitive installs). Only fires when the orchestrator "
+        "routes a plan to rich_python or ml_tools tier (lean stays "
+        "minimal). Cuts the most common Exploit Discovery / "
+        "Behavioral Profiling failure mode (NOT_TESTED:infra_stub from "
+        "missing modules). Adds "
+        "~5-30s sandbox time per scan when packages need install. "
+        "**Default ON as of v1.8.** Pass --no-enable-per-scan-dep-install "
+        "to disable per scan.",
+    )
+    scan.add_argument(
+        "--force-dast-through-clean",
+        action="store_true",
+        default=False,
+        help="v15 debug: when triage returns CLEAN, treat as LOW for "
+        "routing so the full L1 + DAST cascade runs anyway. The "
+        "triage_classification field still reports CLEAN. Use to "
+        "exercise sandbox infrastructure end-to-end on a known-"
+        "uninteresting file (DAST integration smokes, multi-file "
+        "staging validation, etc.). Wastes ~$0.05-0.50 per file vs "
+        "the normal short-circuit's $0.001 — NOT for production runs.",
+    )
+    scan.add_argument(
+        "--enable-coverage-dedupe",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="v1.9.1: dedupe Exploit Discovery / Adversarial Reasoning "
+        "candidate probes against L1-claimed and earlier-stage-confirmed "
+        "(function, attack_class) pairs. Default ON — Exploit Discovery's "
+        "fixed budget redirects to NEW exploits / NEW callables instead "
+        "of re-confirming what L1 already claimed at conf >= 0.6. "
+        "Confirmed runtime findings from Exploit Discovery feed back into "
+        "the tracker so Adversarial Reasoning + Finding Validation can "
+        "dedupe against them too. Each suppression is logged with "
+        "rationale citing the source finding. Pass "
+        "--no-enable-coverage-dedupe to restore v1.9.0 behavior where "
+        "every stage runs unconstrained — useful for investigating a "
+        "suspected dedupe false-positive.",
     )
     scan.add_argument(
         "--enable-discovery",
@@ -206,11 +445,78 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="LIST",
         help="comma-separated list of L1 verdict labels that trigger DAST "
-        "validation. Default: 'malicious,critical_malicious'. Use "
-        "'suspicious,malicious,critical_malicious' to also DAST suspicious "
-        "files (broader coverage, ~30-50%% more API cost). Use "
+        "validation. Default: 'suspicious,malicious,critical_malicious'. "
+        "Use 'malicious,critical_malicious' to skip DAST on suspicious files "
+        "(saves ~30-50%% API cost; raises FN risk). Use "
         "'critical_malicious' for the strictest cost-controlled mode. "
         "Allowed labels: clean, suspicious, malicious, critical_malicious.",
+    )
+    scan.add_argument(
+        "--dast-trigger-on-finding-confidence",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="v1.9: also trigger DAST when ANY L1 vulnerability has "
+        "confidence >= this threshold, regardless of the rolled-up "
+        "verdict. Use when verdict aggregation rolls down to clean / "
+        "suspicious but you want runtime confirmation of a high-"
+        "confidence finding anyway (manual audits, DAST-303 cross-"
+        "repo candidate validation). Typical value: 0.6. Pass 0.0 to "
+        "fire DAST whenever ANY finding exists. Default disabled — "
+        "preserves v1.8 verdict-only behavior.",
+    )
+    scan.add_argument(
+        "--triage-model",
+        choices=("gemini-flash-lite", "sonnet-4-6"),
+        default="sonnet-4-6",
+        help="v15.9 (2026-05-20): which model serves the triage stage. "
+        "Default 'sonnet-4-6' switched from Flash-Lite. Rationale: the "
+        "WCtesting campaign found Flash-Lite variance flipped CLEAN ↔ "
+        "HIGH on identical input for borderline files; Sonnet 4.6 at "
+        "thinking_budget=0 is far more deterministic at ~20x the per-"
+        "file triage cost (~$0.001 -> ~$0.02). Cascade economy is "
+        "preserved overall — triage is still <5%% of a typical full "
+        "scan's cost. Pass --triage-model gemini-flash-lite to "
+        "explicitly opt back to the v1.8-era default; pairs well with "
+        "--triage-confirm-clean if so.",
+    )
+    scan.add_argument(
+        "--triage-confirm-clean",
+        action="store_true",
+        default=False,
+        help="v15.8 Gap 3 (2026-05-20): when the first triage call "
+        "returns CLEAN, run a SECOND triage call and take the more "
+        "conservative (higher-rank) classification. Cuts the "
+        "Gemini-Flash-Lite variance flip rate geometrically: a 30%% "
+        "single-call CLEAN-flip becomes 9%% with two calls, 2.7%% "
+        "with three (not yet exposed). Doubles triage cost on CLEAN "
+        "files only (~$0.001 extra per CLEAN file, negligible). "
+        "Non-CLEAN first results pass through unchanged. Recommended "
+        "for campaign runs where a single CLEAN short-circuit can "
+        "skip the full L1+DAST cascade on a real exploit. Adds "
+        "triage_runs + triage_classifications_all telemetry to the "
+        "scan output so operators can audit which files had a flip "
+        "caught by the wrapper.",
+    )
+    scan.add_argument(
+        "--dast-required-policy",
+        type=str,
+        choices=("downgrade_cap", "strict"),
+        default=None,
+        help="P3a (v1.8): how Finding Validation per-finding evidence is "
+        "mapped onto the published verdict. 'downgrade_cap' (default) "
+        "downgrades L1's verdict by at most 1 tier when DAST proposes a "
+        "lower verdict (legacy v1.1-v1.7 behavior). 'strict' preserves "
+        "L1's verdict unconditionally — never downgrades — and suppresses "
+        "only findings that Finding Validation actively tested AND proved "
+        "non-exploitable (BLOCKED, UNREACHED, REJECTED). Findings the "
+        "sandbox couldn't "
+        "reach (NOT_TESTED, including infra failures and non-Python "
+        "files) are NEVER suppressed in strict mode. Use 'strict' when "
+        "you trust L1's static analysis more than sandbox reachability "
+        "and want to avoid DAST infra limitations downgrading real "
+        "exploits (e.g. SSRF that needs a real internal endpoint to "
+        "demonstrate).",
     )
 
     bench = sub.add_parser(
@@ -349,12 +655,39 @@ def _build_parser() -> argparse.ArgumentParser:
         help="skip DAST verification on every file in the run.",
     )
     repo.add_argument(
-        "--no-remediation",
+        "--enable-remediation",
+        action=argparse.BooleanOptionalAction,
+        default=None,  # None = use ScanConfig default (v1.11: True)
+        help="Remediation (fix-and-verify; aka 'Phase C' in internal "
+        "code/JSON) on every file in the run. **Default ON as of "
+        "v1.11.** Compliance / CI / read-only audit users opt out "
+        "via --no-enable-remediation. See `argus scan --help` for full "
+        "rationale.",
+    )
+    repo.add_argument(
+        "--enable-phase-d",
         action="store_true",
-        help="skip Phase C (fix-and-verify) on every file. DAST still "
-        "runs A+B (verify + discover); Argus will not generate patches "
-        "or replay exploits against patched code. For compliance / CI "
-        "gate / read-only audit / cost-saving use cases.",
+        help="enable Phase D variant analysis (DAST-301 + DAST-302) on every "
+        "file in the run. When Finding Validation confirms a finding, "
+        "Phase D hunts for variants across the project + verifies them "
+        "in the sandbox. "
+        "Adds ~$0.50/seed in inference + sandbox cost. Off by default "
+        "for v1 MVP. See `argus scan --help` for the full description.",
+    )
+    repo.add_argument(
+        "--l1-mode",
+        choices=("auto", "split", "combined"),
+        default="auto",
+        help="SCAN-010: L1 analysis mode. See `argus scan --help` for the "
+        "full description. ``auto`` (default) = split. ``combined`` "
+        "explicitly reverts to v1.0's single-call behavior for this scan.",
+    )
+    repo.add_argument(
+        "--l1-hunters",
+        default=None,
+        help="SCAN-011: enable per-attack-class hunter fan-out on every "
+        "HIGH-triage file in the run. See `argus scan --help` for the "
+        "full description. Default OFF.",
     )
     repo.add_argument(
         "--enable-discovery",
@@ -364,11 +697,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     repo.add_argument(
         "--enable-runtime-probe",
-        action="store_true",
-        help="enable Phase B+ runtime exploit probing on every DAST-"
-        "eligible Python / JS / shell file. Sonnet generates concrete "
-        "attack inputs; the sandbox executes each; findings come from "
-        "runtime evidence. Adds ~$0.20-0.50/file on top of Phase A.",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Exploit Discovery on every DAST-eligible Python / JS / "
+        "shell file (aka 'Phase B+' in internal code/JSON). Adds "
+        "~$0.20-0.50/file on top of Finding Validation. **Default OFF "
+        "as of v1.11** — opt in to add zero-day hunting on top of "
+        "the default Validation + Remediation cascade.",
     )
     repo.add_argument(
         "--enable-runtime-probe-mutation",
@@ -388,12 +723,63 @@ def _build_parser() -> argparse.ArgumentParser:
         "fires. Implies --enable-runtime-probe.",
     )
     repo.add_argument(
+        "--enable-runtime-probe-chains",
+        action="store_true",
+        help="enable cross-function exploit-chain probing (Phase 2). "
+        "Sonnet nominates 2-3 step call sequences where each step's "
+        "args may reference prior steps' return values. Adds "
+        "~$0.15-0.35/file when chains land. Implies --enable-runtime-probe.",
+    )
+    repo.add_argument(
+        "--enable-phase-3-discovery",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Behavioral Profiling (aka 'Phase 3 Stage 1' in internal "
+        "code/JSON). Surfaces a runtime behavioral profile in the scan "
+        "output. **Default OFF as of v1.11** — opt in alongside "
+        "--enable-phase-3-loop for zero-day hunting.",
+    )
+    repo.add_argument(
+        "--enable-phase-3-loop",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Adversarial Reasoning (aka 'Phase 3 Stage 2' in internal "
+        "code/JSON). Model designs attack hypotheses anchored on "
+        "Behavioral Profiling's runtime profile and sandbox tests "
+        "them. **Default OFF as of v1.11** — opt in for deeper "
+        "zero-day hunting beyond the default Validation + Remediation "
+        "cascade. See `argus scan --help` for full semantics.",
+    )
+    repo.add_argument(
+        "--enable-per-scan-dep-install",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="P2a v0.1: pip-install the target file's imports inside "
+        "the sandbox before plan execution (approach A — imports-only, "
+        "--no-deps). Only fires for rich_python/ml_tools tiers. "
+        "**Default ON as of v1.8.** See `argus scan --help` for the "
+        "full security contract.",
+    )
+    repo.add_argument(
         "--dast-trigger-verdicts",
         type=str,
         default=None,
         metavar="LIST",
         help="comma-separated list of L1 verdict labels that trigger DAST "
-        "validation (default: 'malicious,critical_malicious').",
+        "validation (default: 'suspicious,malicious,critical_malicious'). "
+        "Pass 'malicious,critical_malicious' to skip DAST on suspicious "
+        "files for the v1.8-era cost-controlled mode.",
+    )
+    repo.add_argument(
+        "--dast-required-policy",
+        type=str,
+        choices=("downgrade_cap", "strict"),
+        default=None,
+        help="P3a (v1.8): 'downgrade_cap' (default) or 'strict'. Strict "
+        "preserves L1's verdict unconditionally and suppresses only "
+        "findings Finding Validation actively proved non-exploitable "
+        "(BLOCKED, UNREACHED, REJECTED) — never on infra/NOT_TESTED. See "
+        "`argus scan --help` for details.",
     )
     repo.add_argument(
         "--continue-on-error",
@@ -413,10 +799,11 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "Stage a package via `pip download` (no setup.py execution), "
             "scan every wheel/sdist in the dependency closure with the "
-            "Argus cascade harness (and DAST Phase A+B if Fly is "
+            "Argus cascade harness (and DAST Finding Validation + "
+            "Exploit Discovery if Fly is "
             "configured), then either install or block based on the "
-            "worst verdict found. Phase C (remediation) is always off "
-            "on the install path — for a not-yet-installed package, "
+            "worst verdict found. Remediation (aka 'Phase C') is always "
+            "off on the install path — for a not-yet-installed package, "
             "the right action is 'don't install', not 'patch'."
         ),
     )
@@ -433,7 +820,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="PATH",
-        help="install from a requirements.txt file. Argus scans every wheel in the resolved closure.",
+        help="install from a requirements.txt file. Argus scans every wheel "
+        "in the resolved closure.",
     )
     install.add_argument(
         "--block-on",
@@ -515,13 +903,13 @@ def _build_parser() -> argparse.ArgumentParser:
     install.add_argument(
         "--enable-runtime-probe",
         action="store_true",
-        help="enable Phase B+ runtime exploit probing (v1.5). Sonnet "
-        "generates concrete attack inputs for probe-attractive "
-        "functions inside each wheel; the sandbox executes each in a "
-        "Firecracker microVM; findings come from runtime evidence "
-        "rather than static analysis. Python-only in v1.5. Adds "
-        "~$0.20-0.50/file in API cost on top of Phase A. Requires "
-        "DAST configured (Fly) and --no-dast NOT set.",
+        help="enable Exploit Discovery (v1.5; aka 'Phase B+' in internal "
+        "code/JSON). Sonnet generates concrete attack inputs for "
+        "probe-attractive functions inside each wheel; the sandbox "
+        "executes each in a Firecracker microVM; findings come from "
+        "runtime evidence rather than static analysis. Python-only in "
+        "v1.5. Adds ~$0.20-0.50/file in API cost on top of Finding "
+        "Validation. Requires DAST configured (Fly) and --no-dast NOT set.",
     )
     install.add_argument(
         "--enable-runtime-probe-mutation",
@@ -537,6 +925,26 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="enable iterative refinement on BLOCKED probes (Phase 1b). "
         "Implies --enable-runtime-probe. See `argus scan` for details.",
+    )
+    install.add_argument(
+        "--enable-runtime-probe-chains",
+        action="store_true",
+        help="enable cross-function exploit-chain probing (Phase 2). "
+        "Implies --enable-runtime-probe. See `argus scan` for details.",
+    )
+    install.add_argument(
+        "--enable-phase-3-discovery",
+        action="store_true",
+        help="enable Behavioral Profiling (aka 'Phase 3 Stage 1' in "
+        "internal code/JSON). Implies --enable-runtime-probe. See "
+        "`argus scan` for details.",
+    )
+    install.add_argument(
+        "--enable-phase-3-loop",
+        action="store_true",
+        help="enable Adversarial Reasoning (aka 'Phase 3 Stage 2' in "
+        "internal code/JSON). Implies --enable-phase-3-discovery and "
+        "--enable-runtime-probe. See `argus scan` for details.",
     )
     install.add_argument(
         "--max-cost",
@@ -565,13 +973,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         metavar="N",
-        help="max number of artifacts scanned concurrently (default: 4). Lower if you hit API rate limits.",
+        help="max number of artifacts scanned concurrently (default: 4). "
+        "Lower if you hit API rate limits.",
     )
     return parser
 
 
 async def _run_scan(args: argparse.Namespace) -> int:
-    load_dotenv(override=True)
+    _load_argus_env()
 
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
@@ -581,9 +990,13 @@ async def _run_scan(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    if not gemini_key:
+    # v15.9: GEMINI_API_KEY only required when --triage-model is
+    # gemini-flash-lite. Default Sonnet triage runs on Anthropic alone.
+    if getattr(args, "triage_model", "sonnet-4-6") == "gemini-flash-lite" and not gemini_key:
         print(
-            "error: GEMINI_API_KEY not set in environment or .env",
+            "error: GEMINI_API_KEY required when --triage-model=gemini-flash-lite. "
+            "Either set GEMINI_API_KEY in .env or drop the flag to use the default "
+            "Sonnet 4.6 triage (runs on ANTHROPIC_API_KEY alone).",
             file=sys.stderr,
         )
         return 2
@@ -598,9 +1011,56 @@ async def _run_scan(args: argparse.Namespace) -> int:
 
     content = file_path.read_bytes()
 
-    triage = make_gemini_triage_runner(gemini_key)
+    # v15.9 (2026-05-20): triage model is selectable. Default is
+    # Sonnet 4.6 (higher determinism, ~$0.02/file) per the v15.9
+    # switch; Flash-Lite is the explicit opt-back option.
+    _triage_model = getattr(args, "triage_model", "sonnet-4-6")
+    if _triage_model == "gemini-flash-lite":
+        triage = make_gemini_triage_runner(gemini_key)
+    else:
+        triage = make_sonnet_triage_runner(anthropic_key)
+    # v15.8 Gap 3: optional confirm-clean wrapper. Opt-in via
+    # --triage-confirm-clean so default behavior stays unchanged.
+    if getattr(args, "triage_confirm_clean", False):
+        triage = with_confirm_clean(triage)
     sonnet = make_sonnet_runner(anthropic_key)
     opus = make_opus_runner(anthropic_key)
+    # SCAN-010 (v1.1, default-enabled 2026-05-18): build split-mode
+    # runners when --l1-mode is split OR auto. ``auto`` was a
+    # placeholder during the validation period that resolved to
+    # combined; post-Gate-1 it resolves to split (the new default
+    # behavior). ``combined`` is the explicit opt-out for operators
+    # who want v1.0's single-call behavior.
+    l1_mode = getattr(args, "l1_mode", "auto") or "auto"
+    use_split = l1_mode in ("split", "auto")
+    if use_split:
+        sonnet_split = make_sonnet_runner_split(anthropic_key)
+        opus_split = make_opus_runner_split(anthropic_key)
+    else:
+        sonnet_split = None
+        opus_split = None
+
+    # SCAN-011 — hunter runners built only when --l1-hunters is passed.
+    # Value is ``all`` (full taxonomy) or a comma-list of hunter keys
+    # (e.g., ``ssrf,injection``). None / empty → hunter mode off.
+    l1_hunters_arg = getattr(args, "l1_hunters", None)
+    if l1_hunters_arg:
+        hunter_set: tuple[str, ...] | None
+        if l1_hunters_arg == "all":
+            hunter_set = None  # None means all in ATTACK_CLASS_HUNTERS
+        else:
+            hunter_set = tuple(
+                k.strip() for k in l1_hunters_arg.split(",") if k.strip()
+            )
+        sonnet_hunter = make_sonnet_runner_hunter(
+            anthropic_key, hunter_set=hunter_set
+        )
+        opus_hunter = make_opus_runner_hunter(
+            anthropic_key, hunter_set=hunter_set
+        )
+    else:
+        sonnet_hunter = None
+        opus_hunter = None
     # DAST: build from env if FLY_API_TOKEN + image vars are set.
     # --no-dast forces it off even when the env is configured.
     if args.no_dast:
@@ -608,7 +1068,10 @@ async def _run_scan(args: argparse.Namespace) -> int:
     else:
         dast_runner = make_dast_runner_from_env(api_key=anthropic_key)
         if dast_runner is None:
-            log.info("DAST disabled: missing Fly config (FLY_API_TOKEN / ECHO_DAST_IMAGE_*); running L1-only")
+            log.info(
+                "DAST disabled: missing Fly config "
+                "(FLY_API_TOKEN / ECHO_DAST_IMAGE_*); running L1-only"
+            )
 
     # Build per-scan config — only override the cost cap if the user
     # passed --max-cost (None means "use ScanConfig default of $1.00").
@@ -619,20 +1082,70 @@ async def _run_scan(args: argparse.Namespace) -> int:
         config_kwargs["max_cost_per_file_usd"] = args.max_cost
     if getattr(args, "enable_discovery", False):
         config_kwargs["enable_discovery"] = True
-    if getattr(args, "no_remediation", False):
-        config_kwargs["enable_phase_c"] = False
-    if getattr(args, "enable_runtime_probe", False):
-        config_kwargs["enable_runtime_probe"] = True
+    # v1.11: Remediation default flipped to ON. The CLI flag is now
+    # BooleanOptionalAction(default=None) so we can distinguish:
+    #   * None  → user didn't pass the flag → use ScanConfig default (True)
+    #   * True  → --enable-remediation passed → force ON
+    #   * False → --no-enable-remediation passed → force OFF
+    _rem_flag = getattr(args, "enable_remediation", None)
+    if _rem_flag is not None:
+        config_kwargs["enable_phase_c"] = bool(_rem_flag)
+    # DAST-301/302 v1.0/v1.1: Phase D variant analysis opt-in.
+    if getattr(args, "enable_phase_d", False):
+        config_kwargs["enable_phase_d"] = True
+    # SCAN-010 (default-enabled 2026-05-18): split mode is the
+    # new default. ``--l1-mode combined`` explicitly disables it for
+    # this scan; everything else (split / auto / unset) keeps the
+    # ScanConfig default of True. Don't override when the user
+    # passed combined — let the dataclass default handle the True
+    # case so we don't double-set.
+    if l1_mode == "combined":
+        config_kwargs["l1_split_enabled"] = False
+    # SCAN-011 — hunter mode is opt-in. ``--l1-hunters`` sets the
+    # flag; absence keeps the ScanConfig default (False).
+    if l1_hunters_arg:
+        config_kwargs["l1_hunter_enabled"] = True
+    # v1.8: --enable-runtime-probe / --enable-phase-3-discovery /
+    # --enable-phase-3-loop are BooleanOptionalAction with default=True.
+    # args.X is always a bool; propagate directly so --no-enable-X
+    # actually disables.
+    config_kwargs["enable_runtime_probe"] = bool(getattr(args, "enable_runtime_probe", True))
+    config_kwargs["enable_phase_3_discovery"] = bool(
+        getattr(args, "enable_phase_3_discovery", True)
+    )
+    config_kwargs["enable_phase_3_loop"] = bool(getattr(args, "enable_phase_3_loop", True))
+    p3_turns = getattr(args, "phase_3_max_turns", None)
+    if p3_turns is not None:
+        config_kwargs["phase_3_loop_max_turns"] = int(p3_turns)
+    # P2a v0.1: per-scan dep installer. Default ON; orchestrator further
+    # gates by image tier (only rich_python / ml_tools actually install).
+    config_kwargs["enable_per_scan_dep_install"] = bool(
+        getattr(args, "enable_per_scan_dep_install", True)
+    )
+    # v15 debug bypass — treat CLEAN as LOW for routing purposes only.
+    # Wastes API spend on uninteresting files; use for sandbox-path
+    # validation only.
+    config_kwargs["force_dast_through_clean"] = bool(
+        getattr(args, "force_dast_through_clean", False)
+    )
+    # Variants stay opt-in store_true. They still imply the base probe
+    # — defend against `--no-enable-runtime-probe --enable-runtime-probe-mutation`.
     if getattr(args, "enable_runtime_probe_mutation", False):
-        # Mutation implies probing — turn both on so users can pass
-        # only --enable-runtime-probe-mutation without needing the
-        # parent flag too.
         config_kwargs["enable_runtime_probe"] = True
         config_kwargs["enable_runtime_probe_mutation"] = True
     if getattr(args, "enable_runtime_probe_iterative", False):
-        # Iterative refinement implies probing — same convenience rule.
         config_kwargs["enable_runtime_probe"] = True
         config_kwargs["enable_runtime_probe_iterative"] = True
+    if getattr(args, "enable_runtime_probe_chains", False):
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_runtime_probe_chains"] = True
+    # Stage 2 requires Stage 1 + runtime probe machinery. Defend
+    # against contradictory opt-out combos.
+    if config_kwargs.get("enable_phase_3_loop"):
+        config_kwargs["enable_phase_3_discovery"] = True
+        config_kwargs["enable_runtime_probe"] = True
+    elif config_kwargs.get("enable_phase_3_discovery"):
+        config_kwargs["enable_runtime_probe"] = True
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -640,7 +1153,8 @@ async def _run_scan(args: argparse.Namespace) -> int:
         invalid = [v for v in verdicts if v not in valid]
         if invalid:
             print(
-                f"ERROR: invalid --dast-trigger-verdicts entries: {invalid}. Allowed: {sorted(valid)}",
+                f"ERROR: invalid --dast-trigger-verdicts entries: {invalid}. "
+                f"Allowed: {sorted(valid)}",
                 file=sys.stderr,
             )
             return 2
@@ -655,6 +1169,23 @@ async def _run_scan(args: argparse.Namespace) -> int:
         # Discovery's default gate mirrors DAST's default — keep them aligned
         # when the user customises DAST trigger.
         config_kwargs["discovery_trigger_verdicts"] = verdicts
+    # v1.9: finding-based DAST trigger override. None = disabled
+    # (verdict-only gate, the v1.8 default).
+    finding_threshold = getattr(args, "dast_trigger_on_finding_confidence", None)
+    if finding_threshold is not None:
+        if not (0.0 <= finding_threshold <= 1.0):
+            print(
+                f"ERROR: --dast-trigger-on-finding-confidence must be in "
+                f"[0.0, 1.0], got {finding_threshold}",
+                file=sys.stderr,
+            )
+            return 2
+        config_kwargs["dast_trigger_on_finding_confidence"] = finding_threshold
+    # P3a (v1.8): report-layer DAST policy. Default is None on argparse so
+    # we only override ScanConfig when the user explicitly passed the flag.
+    policy = getattr(args, "dast_required_policy", None)
+    if policy is not None:
+        config_kwargs["dast_required_policy"] = policy
     config = ScanConfig(**config_kwargs) if config_kwargs else None
 
     result = await scan_file(
@@ -664,7 +1195,17 @@ async def _run_scan(args: argparse.Namespace) -> int:
         triage_runner=triage,
         sonnet_runner=sonnet,
         opus_runner=opus,
+        sonnet_runner_split=sonnet_split,
+        opus_runner_split=opus_split,
+        sonnet_runner_hunter=sonnet_hunter,
+        opus_runner_hunter=opus_hunter,
         dast_runner=dast_runner,
+        # v11 (2026-05-17): full host path threaded through so the
+        # DAST runner can resolve sibling project files for multi-
+        # file TS/JS/Python targets (relative ``./foo`` imports).
+        # ``filename`` stays as basename for back-compat (result
+        # display + sandbox staging path).
+        host_path=str(file_path),
     )
 
     if args.output == "json":
@@ -679,7 +1220,7 @@ async def _run_bench(args: argparse.Namespace) -> int:
     """argus bench — N=2 runs of raw Opus baseline + Argus full pipeline
     over the regression suite. Saves per-run JSONs and prints the
     BENCH-005 pass-criteria gate result."""
-    load_dotenv(override=True)
+    _load_argus_env()
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     if not anthropic_key or not gemini_key:
@@ -757,7 +1298,18 @@ async def _run_bench(args: argparse.Namespace) -> int:
     # Build runners ONCE; reuse across all N runs.
     raw_opus_runner = make_raw_opus_baseline_runner(anthropic_key)
 
-    triage = make_gemini_triage_runner(gemini_key)
+    # v15.9 (2026-05-20): triage model is selectable. Default is
+    # Sonnet 4.6 (higher determinism, ~$0.02/file) per the v15.9
+    # switch; Flash-Lite is the explicit opt-back option.
+    _triage_model = getattr(args, "triage_model", "sonnet-4-6")
+    if _triage_model == "gemini-flash-lite":
+        triage = make_gemini_triage_runner(gemini_key)
+    else:
+        triage = make_sonnet_triage_runner(anthropic_key)
+    # v15.8 Gap 3: optional confirm-clean wrapper. Opt-in via
+    # --triage-confirm-clean so default behavior stays unchanged.
+    if getattr(args, "triage_confirm_clean", False):
+        triage = with_confirm_clean(triage)
     sonnet = make_sonnet_runner(anthropic_key)
     opus = make_opus_runner(anthropic_key)
     if args.no_dast:
@@ -923,7 +1475,7 @@ async def _run_bench(args: argparse.Namespace) -> int:
 
 async def _run_scan_repo(args: argparse.Namespace) -> int:
     """argus scan-repo PATH — walk a directory, scan every supported file."""
-    load_dotenv(override=True)
+    _load_argus_env()
 
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
@@ -951,20 +1503,58 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         pass
     if getattr(args, "enable_discovery", False):
         config_kwargs["enable_discovery"] = True
-    if getattr(args, "no_remediation", False):
-        config_kwargs["enable_phase_c"] = False
-    if getattr(args, "enable_runtime_probe", False):
-        config_kwargs["enable_runtime_probe"] = True
+    # v1.11: Remediation default flipped to ON. The CLI flag is now
+    # BooleanOptionalAction(default=None) so we can distinguish:
+    #   * None  → user didn't pass the flag → use ScanConfig default (True)
+    #   * True  → --enable-remediation passed → force ON
+    #   * False → --no-enable-remediation passed → force OFF
+    _rem_flag = getattr(args, "enable_remediation", None)
+    if _rem_flag is not None:
+        config_kwargs["enable_phase_c"] = bool(_rem_flag)
+    # DAST-301/302 v1.0/v1.1: Phase D variant analysis opt-in.
+    if getattr(args, "enable_phase_d", False):
+        config_kwargs["enable_phase_d"] = True
+    # v1.8: --enable-runtime-probe / --enable-phase-3-discovery /
+    # --enable-phase-3-loop are BooleanOptionalAction with default=True.
+    # args.X is always a bool; propagate directly so --no-enable-X
+    # actually disables.
+    config_kwargs["enable_runtime_probe"] = bool(getattr(args, "enable_runtime_probe", True))
+    config_kwargs["enable_phase_3_discovery"] = bool(
+        getattr(args, "enable_phase_3_discovery", True)
+    )
+    config_kwargs["enable_phase_3_loop"] = bool(getattr(args, "enable_phase_3_loop", True))
+    p3_turns = getattr(args, "phase_3_max_turns", None)
+    if p3_turns is not None:
+        config_kwargs["phase_3_loop_max_turns"] = int(p3_turns)
+    # P2a v0.1: per-scan dep installer. Default ON; orchestrator further
+    # gates by image tier (only rich_python / ml_tools actually install).
+    config_kwargs["enable_per_scan_dep_install"] = bool(
+        getattr(args, "enable_per_scan_dep_install", True)
+    )
+    # v15 debug bypass — treat CLEAN as LOW for routing purposes only.
+    # Wastes API spend on uninteresting files; use for sandbox-path
+    # validation only.
+    config_kwargs["force_dast_through_clean"] = bool(
+        getattr(args, "force_dast_through_clean", False)
+    )
+    # Variants stay opt-in store_true. They still imply the base probe
+    # — defend against `--no-enable-runtime-probe --enable-runtime-probe-mutation`.
     if getattr(args, "enable_runtime_probe_mutation", False):
-        # Mutation implies probing — turn both on so users can pass
-        # only --enable-runtime-probe-mutation without needing the
-        # parent flag too.
         config_kwargs["enable_runtime_probe"] = True
         config_kwargs["enable_runtime_probe_mutation"] = True
     if getattr(args, "enable_runtime_probe_iterative", False):
-        # Iterative refinement implies probing — same convenience rule.
         config_kwargs["enable_runtime_probe"] = True
         config_kwargs["enable_runtime_probe_iterative"] = True
+    if getattr(args, "enable_runtime_probe_chains", False):
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_runtime_probe_chains"] = True
+    # Stage 2 requires Stage 1 + runtime probe machinery. Defend
+    # against contradictory opt-out combos.
+    if config_kwargs.get("enable_phase_3_loop"):
+        config_kwargs["enable_phase_3_discovery"] = True
+        config_kwargs["enable_runtime_probe"] = True
+    elif config_kwargs.get("enable_phase_3_discovery"):
+        config_kwargs["enable_runtime_probe"] = True
     trigger_str = getattr(args, "dast_trigger_verdicts", None)
     if trigger_str:
         verdicts = tuple(v.strip() for v in trigger_str.split(",") if v.strip())
@@ -972,7 +1562,8 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         invalid = [v for v in verdicts if v not in valid]
         if invalid:
             print(
-                f"error: invalid --dast-trigger-verdicts entries: {invalid}. Allowed: {sorted(valid)}",
+                f"error: invalid --dast-trigger-verdicts entries: {invalid}. "
+                f"Allowed: {sorted(valid)}",
                 file=sys.stderr,
             )
             return 2
@@ -984,19 +1575,59 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
             return 2
         config_kwargs["dast_trigger_verdicts"] = verdicts
         config_kwargs["discovery_trigger_verdicts"] = verdicts
+    # P3a (v1.8): see `_run_scan` for rationale.
+    policy = getattr(args, "dast_required_policy", None)
+    if policy is not None:
+        config_kwargs["dast_required_policy"] = policy
     scan_config = ScanConfig(**config_kwargs) if config_kwargs else None
 
     # Build runners (same wiring as `argus scan`).
-    triage = make_gemini_triage_runner(gemini_key)
+    # v15.9 (2026-05-20): triage model is selectable. Default is
+    # Sonnet 4.6 (higher determinism, ~$0.02/file) per the v15.9
+    # switch; Flash-Lite is the explicit opt-back option.
+    _triage_model = getattr(args, "triage_model", "sonnet-4-6")
+    if _triage_model == "gemini-flash-lite":
+        triage = make_gemini_triage_runner(gemini_key)
+    else:
+        triage = make_sonnet_triage_runner(anthropic_key)
+    # v15.8 Gap 3: optional confirm-clean wrapper. Opt-in via
+    # --triage-confirm-clean so default behavior stays unchanged.
+    if getattr(args, "triage_confirm_clean", False):
+        triage = with_confirm_clean(triage)
     sonnet = make_sonnet_runner(anthropic_key)
     opus = make_opus_runner(anthropic_key)
+    # SCAN-010 (default-enabled 2026-05-18) — split runs by default
+    # (l1_mode auto / split). ``combined`` is the opt-out.
+    l1_mode = getattr(args, "l1_mode", "auto") or "auto"
+    use_split = l1_mode in ("split", "auto")
+    if use_split:
+        sonnet_split = make_sonnet_runner_split(anthropic_key)
+        opus_split = make_opus_runner_split(anthropic_key)
+        # scan_config default already has l1_split_enabled=True; no
+        # mutation needed in the auto case. Force it on for explicit
+        # ``--l1-mode split`` in case the caller built a ScanConfig
+        # with the flag overridden False.
+        if l1_mode == "split":
+            if scan_config is None:
+                scan_config = ScanConfig(l1_split_enabled=True)
+            else:
+                scan_config = replace(scan_config, l1_split_enabled=True)
+    else:
+        sonnet_split = None
+        opus_split = None
+        # Explicit opt-out: combined mode means flag off for this scan.
+        if scan_config is None:
+            scan_config = ScanConfig(l1_split_enabled=False)
+        else:
+            scan_config = replace(scan_config, l1_split_enabled=False)
     if args.no_dast:
         dast_runner = None
     else:
         dast_runner = make_dast_runner_from_env(api_key=anthropic_key)
         if dast_runner is None:
             log.info(
-                "DAST disabled: missing Fly config (FLY_API_TOKEN / ECHO_DAST_IMAGE_*); running L1-only on every file"
+                "DAST disabled: missing Fly config (FLY_API_TOKEN / "
+                "ECHO_DAST_IMAGE_*); running L1-only on every file"
             )
 
     # Build RepoScanConfig.
@@ -1029,7 +1660,8 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         n_vulns = len(result.vulnerabilities) if result and result.vulnerabilities else 0
         cost = result.total_cost_usd if result else 0.0
         print(
-            f"  [{idx:>3}/{total}] {str(rel)[:60]:<60}  {verdict:<20} vulns={n_vulns:<2} ${cost:.4f}",
+            f"  [{idx:>3}/{total}] {str(rel)[:60]:<60}  {verdict:<20} "
+            f"vulns={n_vulns:<2} ${cost:.4f}",
             file=sys.stderr,
             flush=True,
         )
@@ -1045,6 +1677,8 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         triage_runner=triage,
         sonnet_runner=sonnet,
         opus_runner=opus,
+        sonnet_runner_split=sonnet_split,
+        opus_runner_split=opus_split,
         dast_runner=dast_runner,
         progress_cb=_progress,
     )
@@ -1061,7 +1695,8 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
     )
     if report.cost_cap_hit:
         print(
-            f"  WARNING: aggregate cost cap (${args.max_cost:.2f}) hit — some files were not scanned.",
+            f"  WARNING: aggregate cost cap (${args.max_cost:.2f}) hit — "
+            f"some files were not scanned.",
             file=sys.stderr,
             flush=True,
         )
@@ -1097,7 +1732,10 @@ def _render_repo_output(report: Any, fmt: str) -> str:
                 "cost_cap_hit": report.cost_cap_hit,
                 "verdict_counts": report.verdict_counts,
                 "results": [r.to_dict() for r in report.results],
-                "skips": [{"path": str(s.path), "reason": s.reason, "detail": s.detail} for s in report.skips],
+                "skips": [
+                    {"path": str(s.path), "reason": s.reason, "detail": s.detail}
+                    for s in report.skips
+                ],
                 "errors": [
                     {
                         "path": str(e.path),
@@ -1136,7 +1774,11 @@ def _render_repo_markdown(report: Any) -> str:
         lines.append("")
 
     # Notable findings — anything not clean / low_concern.
-    notable = [r for r in report.results if r.final_verdict and r.final_verdict not in ("clean", "low_concern")]
+    notable = [
+        r
+        for r in report.results
+        if r.final_verdict and r.final_verdict not in ("clean", "low_concern")
+    ]
     if notable:
         lines.append(f"## Notable findings ({len(notable)})")
         lines.append("")
@@ -1150,7 +1792,9 @@ def _render_repo_markdown(report: Any) -> str:
             for v in (r.vulnerabilities or [])[:5]:
                 line_no = v.get("line", "?")
                 cwe = v.get("cwe", "?")
-                lines.append(f"  - [{cwe}] {v.get('type', '?')} ({v.get('severity', '?')}, line {line_no})")
+                lines.append(
+                    f"  - [{cwe}] {v.get('type', '?')} ({v.get('severity', '?')}, line {line_no})"
+                )
                 if v.get("status"):
                     lines.append(f"    - status: `{v['status']}`")
         lines.append("")
@@ -1169,7 +1813,9 @@ def _render_repo_markdown(report: Any) -> str:
 # ── argus install handler ─────────────────────────────────────────────────
 
 
-_VALID_VERDICT_TIERS: frozenset[str] = frozenset({"clean", "suspicious", "malicious", "critical_malicious"})
+_VALID_VERDICT_TIERS: frozenset[str] = frozenset(
+    {"clean", "suspicious", "malicious", "critical_malicious"}
+)
 
 
 def _format_install_text(report: Any) -> str:
@@ -1230,10 +1876,13 @@ def _format_install_text(report: Any) -> str:
     low_coverage = [w for w in report.wheels if w.coverage_ratio < 0.7 and w.n_files_unscanned >= 2]
     if low_coverage:
         lines.append("")
-        lines.append("   ⚠ Coverage warning — these artifacts contain files Argus could not statically analyze:")
+        lines.append(
+            "   ⚠ Coverage warning — these artifacts contain files Argus could not statically analyze:"
+        )
         for w in low_coverage:
             ext_summary = ", ".join(
-                f"{ext}×{n}" for ext, n in sorted(w.unscanned_extensions.items(), key=lambda kv: -kv[1])[:5]
+                f"{ext}×{n}"
+                for ext, n in sorted(w.unscanned_extensions.items(), key=lambda kv: -kv[1])[:5]
             )
             lines.append(
                 f"     {w.artifact_name}: "
@@ -1273,6 +1922,7 @@ def _format_install_text(report: Any) -> str:
 
 async def _run_install(args: argparse.Namespace) -> int:
     """Handler for ``argus install <pkg>``."""
+    _load_argus_env()
     from scanner.install import (  # noqa: PLC0415
         CACHE_DIR_DEFAULT,
     )
@@ -1283,7 +1933,8 @@ async def _run_install(args: argparse.Namespace) -> int:
     # Validate exactly-one of target / -r
     if args.target is None and args.requirement is None:
         print(
-            "ERROR: provide either a package spec (e.g. 'argus install requests') or -r requirements.txt",
+            "ERROR: provide either a package spec (e.g. 'argus install requests') "
+            "or -r requirements.txt",
             file=sys.stderr,
         )
         return 2
@@ -1299,7 +1950,8 @@ async def _run_install(args: argparse.Namespace) -> int:
     invalid = [t for t in block_on if t not in _VALID_VERDICT_TIERS]
     if invalid:
         print(
-            f"ERROR: invalid --block-on entries: {invalid}. Allowed: {sorted(_VALID_VERDICT_TIERS)}",
+            f"ERROR: invalid --block-on entries: {invalid}. "
+            f"Allowed: {sorted(_VALID_VERDICT_TIERS)}",
             file=sys.stderr,
         )
         return 2
@@ -1340,7 +1992,18 @@ async def _run_install(args: argparse.Namespace) -> int:
     file_concurrency = 1 if args.deep else 4
     parallel_scans = 4 if args.deep else max(1, args.parallel)
 
-    triage = make_gemini_triage_runner(gemini_key)
+    # v15.9 (2026-05-20): triage model is selectable. Default is
+    # Sonnet 4.6 (higher determinism, ~$0.02/file) per the v15.9
+    # switch; Flash-Lite is the explicit opt-back option.
+    _triage_model = getattr(args, "triage_model", "sonnet-4-6")
+    if _triage_model == "gemini-flash-lite":
+        triage = make_gemini_triage_runner(gemini_key)
+    else:
+        triage = make_sonnet_triage_runner(anthropic_key)
+    # v15.8 Gap 3: optional confirm-clean wrapper. Opt-in via
+    # --triage-confirm-clean so default behavior stays unchanged.
+    if getattr(args, "triage_confirm_clean", False):
+        triage = with_confirm_clean(triage)
     sonnet = make_sonnet_runner(anthropic_key, thinking_budget=thinking_budget)
     opus = make_opus_runner(anthropic_key, thinking_budget=thinking_budget)
     dast_runner = None if args.no_dast else make_dast_runner_from_env(api_key=anthropic_key)
@@ -1349,7 +2012,20 @@ async def _run_install(args: argparse.Namespace) -> int:
 
     # Build a per-file ScanConfig — install path always disables Phase C
     # (handled inside scanner.install.scan_one_artifact, defensive in caller too).
-    config_kwargs: dict[str, Any] = {"enable_phase_c": False}
+    #
+    # v1.8: scan defaults flipped Phase 3 (Stage 1+2+runtime probe) ON
+    # globally, but the install path scans every wheel in a dep closure
+    # — Phase 3 on every wheel would be a ~10x cost blowout. Force the
+    # 3 phase-3 flags off here unless the user explicitly opts in via
+    # the install-path --enable-* flags (those stay store_true, default
+    # False — i.e., install is the one place that didn't get the
+    # BooleanOptionalAction treatment, intentionally).
+    config_kwargs: dict[str, Any] = {
+        "enable_phase_c": False,
+        "enable_runtime_probe": False,
+        "enable_phase_3_discovery": False,
+        "enable_phase_3_loop": False,
+    }
     if args.max_cost is not None:
         config_kwargs["max_cost_per_file_usd"] = args.max_cost
     if getattr(args, "enable_runtime_probe", False):
@@ -1364,6 +2040,23 @@ async def _run_install(args: argparse.Namespace) -> int:
         # Iterative refinement implies probing — same convenience rule.
         config_kwargs["enable_runtime_probe"] = True
         config_kwargs["enable_runtime_probe_iterative"] = True
+    if getattr(args, "enable_runtime_probe_chains", False):
+        # Chain probing implies probing — same convenience rule.
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_runtime_probe_chains"] = True
+    if getattr(args, "enable_phase_3_discovery", False):
+        # Phase 3 behavioral probe needs the sandbox machinery that
+        # enable_runtime_probe brings up. Imply it so users don't have
+        # to set both flags.
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_phase_3_discovery"] = True
+    if getattr(args, "enable_phase_3_loop", False):
+        # Phase 3 Stage 2 adversarial loop consumes Stage 1's behavioral
+        # profile and the sandbox machinery. Imply both parent flags so
+        # users only need --enable-phase-3-loop on the command line.
+        config_kwargs["enable_runtime_probe"] = True
+        config_kwargs["enable_phase_3_discovery"] = True
+        config_kwargs["enable_phase_3_loop"] = True
     scan_cfg = ScanConfig(**config_kwargs)
 
     cache_dir = args.cache_dir or CACHE_DIR_DEFAULT
@@ -1408,44 +2101,6 @@ async def _run_install(args: argparse.Namespace) -> int:
     return 0
 
 
-def _check_deobfuscation_dependency(disabled: bool) -> int | None:
-    """Verify the JS deobfuscation dependency (webcrack) is installed.
-
-    Returns an exit code if the check fails and the user has not
-    opted out; ``None`` otherwise. Argus relies on webcrack to handle
-    obfuscator.io-style JS payloads that overflow model context
-    windows (1.5 M+ tokens). Without it, modern JS supply-chain
-    malware reports as ``suspicious vulns=0`` instead of a real
-    verdict — silently lossy. Fail fast at startup so the operator
-    can install once and move on.
-    """
-    if disabled:
-        os.environ["ARGUS_NO_DEOBFUSCATION"] = "1"
-        return None
-    from preprocessing.deobfuscation_js import is_available  # noqa: PLC0415
-
-    if is_available():
-        return None
-    print(
-        "error: webcrack not found on PATH. Argus uses webcrack to "
-        "deobfuscate JS string-array payloads before they hit the model — "
-        "this is a hard requirement so modern npm supply-chain malware "
-        "doesn't silently downgrade to a 'suspicious' verdict.\n"
-        "\n"
-        "Install:\n"
-        "  macOS:   brew install node@22 && npm install -g webcrack\n"
-        "  Debian:  curl -fsSL https://deb.nodesource.com/setup_22.x | "
-        "sudo bash - && sudo apt install -y nodejs && sudo npm install -g webcrack\n"
-        "  Docker:  use node:22-slim as the base, RUN npm install -g webcrack\n"
-        "\n"
-        "If you cannot install Node/webcrack in this environment, re-run "
-        "with --no-deobfuscation to accept the reduced detection on "
-        "obfuscated JS files.",
-        file=sys.stderr,
-    )
-    return 2
-
-
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
     # Force UTF-8 stdout so Windows cp1252 consoles don't choke on
@@ -1454,9 +2109,6 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     parser = _build_parser()
     args = parser.parse_args(argv)
-    dep_check = _check_deobfuscation_dependency(getattr(args, "no_deobfuscation", False))
-    if dep_check is not None:
-        return dep_check
     if args.command == "scan":
         return asyncio.run(_run_scan(args))
     if args.command == "bench":

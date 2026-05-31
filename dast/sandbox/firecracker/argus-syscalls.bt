@@ -1,0 +1,246 @@
+#!/usr/bin/env bpftrace
+/*
+ * Argus DAST sandbox — kernel-level syscall observability.
+ * Phase 2 of sandbox-observability-plan (Phase 2 v0.4 — pt_regs args).
+ *
+ * Architecture
+ * ============
+ *
+ * Runs as a root sidecar (launched by dast-init.sh BEFORE the
+ * privilege drop to runner). Observes ALL syscalls made by uid 1000
+ * (the runner user) from the kernel side, regardless of how the
+ * syscall was invoked (Python audit hook, JS monkey patch, ctypes,
+ * raw libc, native addon — all observed identically).
+ *
+ * History on Fly Firecracker
+ * ==========================
+ *
+ *   v0.1 (tracepoint:syscalls:sys_enter_*)
+ *     → tracepoint not found. CONFIG_FTRACE_SYSCALLS missing.
+ *   v0.2 (tracepoint:raw_syscalls:sys_enter)
+ *     → tracepoint not found. Tracepoint registration mechanism stripped.
+ *   v0.3 (kprobe:__x64_sys_*, no arg dereferencing)
+ *     → WORKS. kprobes attach. Counts captured. BUT: openat sample
+ *       filenames empty (no arg deref); socket/connect 0 events
+ *       (the synthetic target didn't actually exercise network code,
+ *       not a kprobe issue).
+ *   v0.4 (this version):
+ *     * Adds pt_regs-based argument extraction. On x86_64 Linux
+ *       4.17+, __x64_sys_* wrappers receive `struct pt_regs *regs`
+ *       as their single argument. Syscall args are then in
+ *       regs->di, regs->si, regs->dx, regs->r10, regs->r8, regs->r9
+ *       (System V AMD64 ABI).
+ *     * Extracts openat filename via str(uptr(regs->si)). Closes
+ *       Gap 2 properly — Stage 2 sees what paths the target tried
+ *       to open (incl. EACCES failures since kprobe fires before
+ *       permission check).
+ *     * Extracts socket family/type/protocol from regs->di/si/dx.
+ *       Closes Gap 3 partially (we know what kind of socket; full
+ *       sockaddr deref for connect() is v0.5 work).
+ *     * Extracts connect's sockfd from regs->di.
+ *
+ * pt_regs field reference (x86_64)
+ * ================================
+ *
+ *   regs->di  = syscall arg 0  (e.g., dirfd for openat)
+ *   regs->si  = syscall arg 1  (e.g., filename for openat)
+ *   regs->dx  = syscall arg 2  (e.g., flags for openat)
+ *   regs->r10 = syscall arg 3  (e.g., mode for openat)
+ *   regs->r8  = syscall arg 4
+ *   regs->r9  = syscall arg 5
+ *
+ * `str(uptr(...))` is required for userspace pointers — bpftrace's
+ * bare `str()` reads kernel addresses; `uptr()` marks the pointer
+ * as userspace and `str()` then uses bpf_probe_read_user_str
+ * under the hood.
+ *
+ * Coverage (per gap in sandbox-observability-plan)
+ * ================================================
+ *
+ *   Gap 1: Raw-syscall exec → execve filename via pt_regs->di
+ *          (filename is the only execve arg we extract; argv/envp
+ *           are userspace pointer arrays, complex to follow)
+ *   Gap 2: Filesystem writes → openat filename via pt_regs->si
+ *          INCLUDES EACCES attempts (sys_enter fires before
+ *          permission check). KEY Gap-2 closure.
+ *   Gap 3: Network connects → socket family/type captured; connect
+ *          sockfd captured (full sockaddr deref deferred to v0.5)
+ *   Gap 4: Memory exec → mmap/mprotect prot bits via regs->dx
+ *          for mmap, regs->dx for mprotect (prot is arg 2 for both)
+ *   Gap 5: Process tree → kernel_clone + execve give pid+ppid
+ *   Gap 6: Capability ops → setuid arg, setgid arg, prctl option
+ *
+ * Self-termination
+ * ================
+ *
+ * Auto-exits after 180 seconds (runner-uid can't kill the root-
+ * owned bpftrace process; wall-clock self-destruct is the bound).
+ */
+
+config = {
+    max_map_keys=8192;
+}
+
+BEGIN {
+    @deadline_ns = nsecs + 180000000000;
+    printf("{\"ts\":%llu,\"kind\":\"bpftrace_start\",\"deadline_s\":180,\"variant\":\"kprobe_v0.4_ptregs\"}\n", nsecs);
+}
+
+interval:s:1 /nsecs >= @deadline_ns/ {
+    printf("{\"ts\":%llu,\"kind\":\"bpftrace_timeout\"}\n", nsecs);
+    exit();
+}
+
+// ── Gap 1: execve — extract filename arg ──────────────────────────────
+// execve(const char __user *filename, ...) — filename is arg 0 (regs->di)
+kprobe:__x64_sys_execve /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    printf("{\"ts\":%llu,\"pid\":%d,\"ppid\":%d,\"comm\":\"%s\",\"syscall\":\"execve\",\"filename\":\"%s\"}\n",
+        nsecs, pid, curtask->real_parent->tgid, comm, str(uptr($regs->di)));
+}
+
+kprobe:__x64_sys_execveat /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    // execveat(int dfd, const char __user *filename, ...) — filename is arg 1 (regs->si)
+    printf("{\"ts\":%llu,\"pid\":%d,\"ppid\":%d,\"comm\":\"%s\",\"syscall\":\"execveat\",\"filename\":\"%s\"}\n",
+        nsecs, pid, curtask->real_parent->tgid, comm, str(uptr($regs->si)));
+}
+
+// ── Gap 5: process tree ────────────────────────────────────────────────
+kprobe:kernel_clone /uid == 1000/ {
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"clone\"}\n",
+        nsecs, pid, comm);
+}
+
+// ── Gap 2: openat with filename arg ────────────────────────────────────
+// openat(int dfd, const char __user *filename, int flags, ...)
+//   regs->di = dfd
+//   regs->si = filename pointer
+//   regs->dx = flags
+// We also surface flags so Stage 2 can distinguish read-only from
+// write-attempt opens.
+kprobe:__x64_sys_openat /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"openat\",\"filename\":\"%s\",\"flags\":%lu}\n",
+        nsecs, pid, comm, str(uptr($regs->si)), $regs->dx);
+}
+
+// openat2 has the same arg layout for the first two args.
+kprobe:__x64_sys_openat2 /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"openat2\",\"filename\":\"%s\"}\n",
+        nsecs, pid, comm, str(uptr($regs->si)));
+}
+
+// ── Gap 3: socket() with family/type/protocol args ─────────────────────
+// socket(int family, int type, int protocol)
+//   regs->di = family  (AF_INET=2, AF_INET6=10, AF_UNIX=1)
+//   regs->si = type    (SOCK_STREAM=1, SOCK_DGRAM=2)
+//   regs->dx = protocol
+kprobe:__x64_sys_socket /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"socket\",\"family\":%lu,\"type\":%lu,\"protocol\":%lu}\n",
+        nsecs, pid, comm, $regs->di, $regs->si, $regs->dx);
+}
+
+// ── Gap 3: connect() with sockfd arg ───────────────────────────────────
+// connect(int sockfd, const struct sockaddr __user *addr, socklen_t addrlen)
+//   regs->di = sockfd
+//   regs->si = sockaddr pointer (would need struct deref for IP/port)
+// For v0.4 we surface only sockfd; full sockaddr deref needs BTF and
+// is v0.5 work. The capture-server's DNS hijack still catches HTTP/HTTPS
+// destinations; this kprobe adds "did the target call connect() at all?"
+// signal regardless of whether it landed at our capture server.
+kprobe:__x64_sys_connect /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"connect\",\"sockfd\":%lu}\n",
+        nsecs, pid, comm, $regs->di);
+}
+
+// ── Gap 4: memory operations with prot arg ─────────────────────────────
+// mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
+//   regs->dx = prot — PROT_EXEC = 4
+// mprotect(void *addr, size_t len, int prot)
+//   regs->dx = prot
+// We flag PROT_EXEC explicitly in the syscall name so Stage 2's prompt
+// can distinguish legitimate JIT compilation patterns (mostly seen in
+// node/V8) from suspicious post-allocation exec marks.
+kprobe:__x64_sys_mmap /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    $prot = $regs->dx;
+    if ($prot & 4) {
+        printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"mmap_exec\",\"prot\":%lu}\n",
+            nsecs, pid, comm, $prot);
+    } else {
+        printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"mmap\",\"prot\":%lu}\n",
+            nsecs, pid, comm, $prot);
+    }
+}
+
+kprobe:__x64_sys_mprotect /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    $prot = $regs->dx;
+    if ($prot & 4) {
+        printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"mprotect_exec\",\"prot\":%lu}\n",
+            nsecs, pid, comm, $prot);
+    } else {
+        printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"mprotect\",\"prot\":%lu}\n",
+            nsecs, pid, comm, $prot);
+    }
+}
+
+// ── Gap 6: capability / namespace ops ──────────────────────────────────
+// setuid(uid_t uid) — regs->di = target uid
+kprobe:__x64_sys_setuid /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"setuid\",\"target_uid\":%lu}\n",
+        nsecs, pid, comm, $regs->di);
+}
+
+// setgid(gid_t gid) — regs->di = target gid
+kprobe:__x64_sys_setgid /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"setgid\",\"target_gid\":%lu}\n",
+        nsecs, pid, comm, $regs->di);
+}
+
+kprobe:__x64_sys_capset /uid == 1000/ {
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"capset\"}\n",
+        nsecs, pid, comm);
+}
+
+// unshare(int flags) — regs->di = flags
+kprobe:__x64_sys_unshare /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"unshare\",\"flags\":%lu}\n",
+        nsecs, pid, comm, $regs->di);
+}
+
+// prctl(int option, ...) — regs->di = option
+kprobe:__x64_sys_prctl /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"prctl\",\"option\":%lu}\n",
+        nsecs, pid, comm, $regs->di);
+}
+
+// ptrace(long request, pid_t pid, void *addr, void *data)
+//   regs->di = request — PTRACE_ATTACH=16, PTRACE_TRACEME=0, etc.
+kprobe:__x64_sys_ptrace /uid == 1000/ {
+    $regs = (struct pt_regs *)arg0;
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"ptrace\",\"request\":%lu}\n",
+        nsecs, pid, comm, $regs->di);
+}
+
+kprobe:__x64_sys_init_module /uid == 1000/ {
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"init_module\"}\n",
+        nsecs, pid, comm);
+}
+
+kprobe:__x64_sys_finit_module /uid == 1000/ {
+    printf("{\"ts\":%llu,\"pid\":%d,\"comm\":\"%s\",\"syscall\":\"finit_module\"}\n",
+        nsecs, pid, comm);
+}
+
+END {
+    printf("{\"ts\":%llu,\"kind\":\"bpftrace_end\"}\n", nsecs);
+}

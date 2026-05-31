@@ -137,7 +137,9 @@ def _dast_evidence_count(rows: list[BenchRow]) -> dict[str, int]:
     """
     n_attempted = sum(1 for r in rows if r.dast_attempted or r.per_finding_validation)
     n_with_dast_stage = sum(
-        1 for r in rows if any(p.startswith("dast_") for p in (r.scan_path or [])) or r.per_finding_validation
+        1
+        for r in rows
+        if any(p.startswith("dast_") for p in (r.scan_path or [])) or r.per_finding_validation
     )
     return {
         "n_dast_attempted": n_attempted,
@@ -179,7 +181,7 @@ def _per_tier_accuracy(rows: list[BenchRow]) -> dict[str, dict[str, Any]]:
         out[tier]["n"] += 1
         if r.predicted_verdict == r.oracle_verdict:
             out[tier]["correct"] += 1
-    for _t, d in out.items():
+    for t, d in out.items():
         d["pct"] = round(d["correct"] / d["n"] * 100, 1) if d["n"] else 0.0
     return out
 
@@ -259,7 +261,7 @@ def _render_scoreboard_headline(
     lines.append("│  ARGUS v1 — REGRESSION BENCH                                             │")
     lines.append("│                                                                          │")
     label_w = max(len(name) for name, _, _ in stats)
-    for name, st, _rows in stats:
+    for name, st, rows in stats:
         bar = _bar(st["exact_pct"], max_value=100, width=20)
         lift = st["exact_pct"] - baseline_pct
         lift_str = f"{lift:+.1f}pp" if name != stats[-1][0] else "baseline"
@@ -274,7 +276,9 @@ def _render_scoreboard_headline(
     lines.append("│                                                                          │")
 
     # Gate is the BEST config's lift over baseline (typically Argus +DAST).
-    best_lift = max(st["exact_pct"] for _, st, _ in stats[:-1]) - baseline_pct if len(stats) > 1 else 0.0
+    best_lift = (
+        max(st["exact_pct"] for _, st, _ in stats[:-1]) - baseline_pct if len(stats) > 1 else 0.0
+    )
     gate_pass = best_lift >= 15.0
     if gate_pass:
         gate_line = f"│  Gate (≥15pp lift):   PASS  [actual: +{best_lift:.1f}pp]"
@@ -306,7 +310,9 @@ def _render_scoreboard_headline(
         jb = judge_summary["judge_picked_both"]
         jn = judge_summary["judge_picked_neither"]
         lines.append("│                                                                          │")
-        judge_line = f"│  Judge ({n_dis} disagreements):  Argus={ja}  Opus={jo}  both={jb}  neither={jn}"
+        judge_line = (
+            f"│  Judge ({n_dis} disagreements):  Argus={ja}  Opus={jo}  both={jb}  neither={jn}"
+        )
         judge_line = judge_line.ljust(75) + "│"
         lines.append(judge_line)
     lines.append("└──────────────────────────────────────────────────────────────────────────┘")
@@ -369,7 +375,11 @@ def _render_head_to_head(
     is_three_way = n_configs == 3
 
     lines: list[str] = []
-    title = "## Head-to-head (3-way comparison)" if is_three_way else "## Head-to-head (Argus vs raw Opus 4.6)"
+    title = (
+        "## Head-to-head (3-way comparison)"
+        if is_three_way
+        else "## Head-to-head (Argus vs raw Opus 4.6)"
+    )
     lines.append(title + "\n")
 
     # Table header
@@ -413,7 +423,11 @@ def _render_head_to_head(
             row = f"| CWE F1 (n={n_rich}) | {a_cwe_f1} | _(same as col 1)_ | {o_cwe_f1}"
         else:
             row = f"| CWE F1 (rich subset, n={n_rich}) | {a_cwe_f1} | {o_cwe_f1}"
-        winner_idx = 0 if (a_cwe_f1 is not None and o_cwe_f1 is not None and a_cwe_f1 > o_cwe_f1) else (n_configs - 1)
+        winner_idx = (
+            0
+            if (a_cwe_f1 is not None and o_cwe_f1 is not None and a_cwe_f1 > o_cwe_f1)
+            else (n_configs - 1)
+        )
         row += f" | **{configs[winner_idx][0]}** |"
         lines.append(row)
 
@@ -561,9 +575,13 @@ def _render_top_wins_losses(configs: list[tuple[str, list[BenchRow]]]) -> str:
             a_match = ar.predicted_verdict == ar.oracle_verdict
             b_match = br.predicted_verdict == br.oracle_verdict
             if a_match and not b_match:
-                wins.append((fn, ar.predicted_verdict or "", br.predicted_verdict or "", ar.oracle_verdict))
+                wins.append(
+                    (fn, ar.predicted_verdict or "", br.predicted_verdict or "", ar.oracle_verdict)
+                )
             elif b_match and not a_match:
-                losses.append((fn, ar.predicted_verdict or "", br.predicted_verdict or "", ar.oracle_verdict))
+                losses.append(
+                    (fn, ar.predicted_verdict or "", br.predicted_verdict or "", ar.oracle_verdict)
+                )
 
         if wins:
             any_wins = True
@@ -705,15 +723,20 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
     rows.append(_section_header("5. DAST runtime evidence (Argus only)"))
     counts = _dast_evidence_count(argus_rows)
     rows.append(f"- DAST attempted: **{counts['n_dast_attempted']}**/{len(argus_rows)} files")
-    rows.append(f"- DAST stages reached scan path: **{counts['n_with_dast_stage']}**/{len(argus_rows)} files")
+    rows.append(
+        f"- DAST stages reached scan path: "
+        f"**{counts['n_with_dast_stage']}**/{len(argus_rows)} files"
+    )
 
-    # Tier 1.5: per-finding validation aggregate (4-status breakdown)
+    # Tier 1.5: per-finding validation aggregate (5-status breakdown
+    # as of v1.6 Fix #1 — REJECTED split out from NOT_TESTED).
     rows_with_pf = [r for r in argus_rows if r.per_finding_validation]
     if rows_with_pf:
         total_findings = 0
         n_conf = 0
         n_blocked = 0
         n_unreached = 0
+        n_rejected = 0
         n_not_tested = 0
         for r in rows_with_pf:
             for pf in r.per_finding_validation:
@@ -725,6 +748,8 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
                     n_blocked += 1
                 elif s == "UNREACHED":
                     n_unreached += 1
+                elif s == "REJECTED":
+                    n_rejected += 1
                 else:
                     n_not_tested += 1
 
@@ -734,12 +759,15 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
         conf_pct = _pct(n_conf)
         blk_pct = _pct(n_blocked)
         unr_pct = _pct(n_unreached)
+        rej_pct = _pct(n_rejected)
         nt_pct = _pct(n_not_tested)
 
         rows.append("")
-        rows.append("### Per-finding validation (Tier 1.5, v1.1) — Argus only")
+        rows.append("### Per-finding validation (Tier 1.5, v1.6) — Argus only")
         rows.append("```")
-        rows.append(f"Across {len(rows_with_pf)} files with DAST validation, {total_findings} L1 findings:")
+        rows.append(
+            f"Across {len(rows_with_pf)} files with DAST validation, {total_findings} L1 findings:"
+        )
         rows.append("")
         rows.append(
             f"  CONFIRMED   {_bar(conf_pct, max_value=100, width=20)}  {conf_pct:>5.1f}%  ({n_conf})  runtime-confirmed exploitable"
@@ -751,7 +779,10 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
             f"  UNREACHED   {_bar(unr_pct, max_value=100, width=20)}  {unr_pct:>5.1f}%  ({n_unreached})  code path not reachable from tested input"
         )
         rows.append(
-            f"  NOT_TESTED  {_bar(nt_pct, max_value=100, width=20)}  {nt_pct:>5.1f}%  ({n_not_tested})  DAST didn't generate a test or rejection inconclusive"
+            f"  REJECTED    {_bar(rej_pct, max_value=100, width=20)}  {rej_pct:>5.1f}%  ({n_rejected})  DAST ran the exploit and it didn't fire (no defense-or-unreachable reason)"
+        )
+        rows.append(
+            f"  NOT_TESTED  {_bar(nt_pct, max_value=100, width=20)}  {nt_pct:>5.1f}%  ({n_not_tested})  DAST didn't get to test this finding (see breakdown below)"
         )
         rows.append("```")
         rows.append("")
@@ -759,58 +790,86 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
             "_CONFIRMED + BLOCKED = real vulnerabilities in the code (BLOCKED "
             "ones are defended by mitigations — still worth reviewing for "
             "defense-in-depth). UNREACHED = vulnerabilities present but not "
-            "exploitable from external input. NOT_TESTED = remaining "
-            "uncertainty. Status is derived heuristically from validator "
-            "rejection rationale; Tier 2 (future) will replace heuristics "
-            "with structured rejection categories from the validator._"
+            "exploitable from external input. REJECTED = DAST executed the "
+            "exploit and observed no signal — strongest \"this isn't a real "
+            'bug" signal Argus can give (v1.6 Fix #1). NOT_TESTED = DAST '
+            "didn't get to test the finding for one of several granular "
+            "reasons (v1.6 Fix #3 expanded the breakdown below)._"
         )
 
         # Per-file detail
         rows.append("")
         rows.append("### Per-file breakdown\n")
-        rows.append("| File | L1 | CONFIRMED | BLOCKED | UNREACHED | NOT_TESTED |")
-        rows.append("|---|---|---|---|---|---|")
+        rows.append("| File | L1 | CONFIRMED | BLOCKED | UNREACHED | REJECTED | NOT_TESTED |")
+        rows.append("|---|---|---|---|---|---|---|")
         for r in rows_with_pf:
             n = len(r.per_finding_validation)
             c = sum(1 for pf in r.per_finding_validation if pf.get("status") == "CONFIRMED")
             b = sum(1 for pf in r.per_finding_validation if pf.get("status") == "BLOCKED")
             u = sum(1 for pf in r.per_finding_validation if pf.get("status") == "UNREACHED")
-            nt = n - c - b - u
-            rows.append(f"| `{r.file_name}` | {n} | **{c}** | {b} | {u} | {nt} |")
+            rj = sum(1 for pf in r.per_finding_validation if pf.get("status") == "REJECTED")
+            nt = n - c - b - u - rj
+            rows.append(f"| `{r.file_name}` | {n} | **{c}** | {b} | {u} | {rj} | {nt} |")
 
-        # NOT_TESTED sub-reason breakdown (DAST-203 visibility).
-        nt_reasons: dict[str, int] = {"infra_stub": 0, "inconclusive": 0, "not_planned": 0}
+        # NOT_TESTED sub-reason breakdown (v1.6 Fix #3 — expanded from 3
+        # to 8 reasons; keep prose for every reason that actually fired).
+        _NT_REASON_PROSE: dict[str, str] = {
+            "not_planned": (
+                "orchestrator's plan didn't pick this finding (typically low "
+                "confidence or budget exhausted before reaching it)"
+            ),
+            "infra_stub": (
+                "sandbox returned stub trace — usually because the planner "
+                "generated a static-only hypothesis"
+            ),
+            "inconclusive": (
+                "validator rejected with reasoning that didn't classify as "
+                "BLOCKED, UNREACHED, REJECTED, or STUB. Treat as ambiguous"
+            ),
+            "unfireable_pattern_cwe": (
+                "CWE class (e.g., CWE-451 misleading-UI, CWE-506 backdoor, "
+                "CWE-532 sensitive-logging) is architecturally unfireable "
+                "as a runtime exploit — DAST correctly skipped (v1.6 Fix #3)"
+            ),
+            "budget_exceeded": (
+                "DAST budget cap reached before this finding could be tested "
+                "(MAX_CANDIDATES / MAX_INPUTS_PER_CANDIDATE / max_cost_per_file_usd)"
+            ),
+            "non_python_file": (
+                "file isn't Python — the runtime probe harness can't dispatch "
+                "into the function. Multi-language support is in Phase E"
+            ),
+            "unreachable_function": (
+                "the L1-flagged function isn't reachable from any sandbox "
+                "entrypoint Argus could synthesize"
+            ),
+            "dast_not_attempted": (
+                "scan didn't reach the DAST stage at all (typically because "
+                "L1 verdict didn't trip --dast-trigger-verdicts)"
+            ),
+        }
+        nt_reasons: dict[str, int] = {}
         for r in rows_with_pf:
             for pf in r.per_finding_validation:
                 if pf.get("status") == "NOT_TESTED":
                     rsn = pf.get("not_tested_reason") or "not_planned"
                     nt_reasons[rsn] = nt_reasons.get(rsn, 0) + 1
-        if any(nt_reasons.values()):
+        if nt_reasons:
             rows.append("")
-            rows.append("### NOT_TESTED breakdown (DAST-203 — why DAST didn't validate)\n")
-            rows.append(
-                f"- `not_planned` ({nt_reasons['not_planned']}): "
-                "orchestrator's plan didn't pick this finding (typically low "
-                "confidence or budget exhausted before reaching it)"
-            )
-            rows.append(
-                f"- `infra_stub` ({nt_reasons['infra_stub']}): "
-                "sandbox returned stub trace — usually because the planner "
-                "generated a static-only hypothesis. v1.2 DAST-203 will "
-                "filter these out pre-sandbox."
-            )
-            rows.append(
-                f"- `inconclusive` ({nt_reasons['inconclusive']}): "
-                "validator rejected with reasoning that didn't classify as "
-                "BLOCKED, UNREACHED, or STUB. Treat as ambiguous."
-            )
+            rows.append("### NOT_TESTED breakdown (v1.6 Fix #3 — why DAST didn't validate)\n")
+            # Render reasons by count descending so the biggest buckets surface first.
+            for rsn, cnt in sorted(nt_reasons.items(), key=lambda kv: -kv[1]):
+                prose = _NT_REASON_PROSE.get(rsn, "unrecognized reason — likely added post-report")
+                rows.append(f"- `{rsn}` ({cnt}): {prose}")
 
         # PoC export — show CONFIRMED findings with their exploit payload
         # and runtime evidence.
         confirmed_with_poc: list[tuple[str, dict[str, Any]]] = []
         for r in rows_with_pf:
             for pf in r.per_finding_validation:
-                if pf.get("status") == "CONFIRMED" and (pf.get("proof_of_concept") or pf.get("runtime_evidence")):
+                if pf.get("status") == "CONFIRMED" and (
+                    pf.get("proof_of_concept") or pf.get("runtime_evidence")
+                ):
                     confirmed_with_poc.append((r.file_name, pf))
 
         if confirmed_with_poc:
@@ -824,7 +883,9 @@ def _render_section_5_dast_evidence(argus_rows: list[BenchRow]) -> str:
                 "you they're actually exploitable._\n"
             )
             for fname, pf in confirmed_with_poc[:30]:  # cap to 30 to keep readable
-                rows.append(f"**`{fname}` — {pf.get('cwe')} / {pf.get('type')} (line {pf.get('line')})**")
+                rows.append(
+                    f"**`{fname}` — {pf.get('cwe')} / {pf.get('type')} (line {pf.get('line')})**"
+                )
                 poc = pf.get("proof_of_concept")
                 if poc:
                     rows.append(f"- Proof of concept: `{poc[:200]}`")
@@ -862,7 +923,11 @@ def _render_section_5b_effective_cwe_f1(argus_rows: list[BenchRow]) -> str:
     for r in argus_rows:
         seen_raw: set[str] = set()
         seen_eff: set[str] = set()
-        confirmed_ids = {pf.get("finding_id") for pf in r.per_finding_validation if pf.get("status") == "CONFIRMED"}
+        confirmed_ids = {
+            pf.get("finding_id")
+            for pf in r.per_finding_validation
+            if pf.get("status") == "CONFIRMED"
+        }
         for i, v in enumerate(r.vulnerabilities):
             if not isinstance(v, dict):
                 continue
@@ -887,7 +952,10 @@ def _render_section_5b_effective_cwe_f1(argus_rows: list[BenchRow]) -> str:
     lines.append(f"- Effective CWE count (CONFIRMED only): **{n_eff_cwes}**")
     if n_raw_cwes:
         retention = round(n_eff_cwes / n_raw_cwes * 100, 1)
-        lines.append(f"- Retention rate: {retention}% ({n_eff_cwes}/{n_raw_cwes} CWEs survived runtime validation)")
+        lines.append(
+            f"- Retention rate: {retention}% "
+            f"({n_eff_cwes}/{n_raw_cwes} CWEs survived runtime validation)"
+        )
     lines.append("")
     lines.append(
         "_Interpretation: The unconfirmed CWEs aren't necessarily false "
@@ -974,7 +1042,9 @@ def _render_section_8_sample_size(diff_records: list[dict[str, Any]]) -> str:
     n_total = len(diff_records)
     n_rich = sum(1 for r in diff_records if r.get("cwe_overlap") is not None)
     rows.append(f"- Verdict-match (Tier 1): **n={n_total}** files — primary signal.")
-    rows.append(f"- CWE / capability overlap (Tier 2): **n={n_rich}** files — directional signal only.")
+    rows.append(
+        f"- CWE / capability overlap (Tier 2): **n={n_rich}** files — directional signal only."
+    )
     rows.append(
         "- 18 of the 23 oracle labels are `variance_characterization` "
         "(reproduced via repeated runs); 5 are `opus_confirmed` (expert "
@@ -983,7 +1053,136 @@ def _render_section_8_sample_size(diff_records: list[dict[str, Any]]) -> str:
         "`opus_confirmed` labels."
     )
     rows.append(
-        "- The judge (Section 6) is the strongest tiebreaker — it reads the actual code and casts an independent vote."
+        "- The judge (Section 6) is the strongest tiebreaker — it reads "
+        "the actual code and casts an independent vote."
+    )
+    return "\n".join(rows) + "\n"
+
+
+def _render_section_8b_per_finding_tpfp(
+    configs: list[tuple[str, list[BenchRow]]],
+    rich_oracle_path: Path | None,
+) -> str:
+    """v1.3 panel — scanner-level TP / FP / F1 at the FINDING level
+    against the rich line-level oracle.
+
+    Comparable in *shape* to Praetorian Constantine's 61.2% TP rate
+    headline — modulo sample size (10 oracle files vs 34K) and domain
+    (adversarial regression fixtures vs production volume). The caveat
+    text under the table makes that explicit so a reader doesn't conflate
+    the two.
+
+    Falls back to "section skipped" when the rich oracle file is missing
+    or empty — the panel is opt-in by oracle availability.
+    """
+    rows: list[str] = []
+    rows.append(_section_header("8b. Per-finding TP/FP rate (rich-oracle subset, v1.3)"))
+    if not rich_oracle_path or not rich_oracle_path.exists():
+        rows.append(
+            "_Rich line-level oracle not provided — section skipped. "
+            "Pass `--rich-oracle samples/extras/eval_benchmark_v1_ground_truth_augmented_final.json` "
+            "to build_launch_report to populate this panel._"
+        )
+        return "\n".join(rows) + "\n"
+
+    # Local import to avoid an import cycle at module load (score_rich
+    # imports from oracle_builder which transitively imports bench).
+    from methodology.score_rich import (
+        LINE_TOLERANCE,
+        cost_per_critical_confirmed,
+        load_rich_oracle_findings,
+        score_per_finding,
+    )
+    from methodology.voters import VoterRecord
+
+    try:
+        oracle_findings = load_rich_oracle_findings(rich_oracle_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        rows.append(f"_Failed to load rich oracle ({exc}) — section skipped._")
+        return "\n".join(rows) + "\n"
+
+    n_oracle_findings = sum(len(v) for v in oracle_findings.values())
+
+    def _bench_to_voter(rows_in: list[BenchRow]) -> list[VoterRecord]:
+        out: list[VoterRecord] = []
+        for r in rows_in:
+            raw = r.raw_output or {
+                "vulnerabilities": list(r.vulnerabilities),
+                "behavioral_profile": dict(r.behavioral_profile),
+                "attack_chains": list(r.attack_chains),
+            }
+            if r.per_finding_validation:
+                raw = dict(raw)
+                raw["per_finding_validation"] = list(r.per_finding_validation)
+            out.append(
+                VoterRecord(
+                    file_name=r.file_name,
+                    voter_name=r.config or "unknown",
+                    predicted_verdict=r.predicted_verdict,
+                    composite_score=None,
+                    cost_usd=r.cost_usd,
+                    duration_ms=r.duration_ms,
+                    error=r.error,
+                    raw_findings=list(r.vulnerabilities),
+                    raw_output=raw,
+                )
+            )
+        return out
+
+    rows.append(
+        f"_Sample: rich oracle covers {len(oracle_findings)} of 23 regression files "
+        f"({n_oracle_findings} oracle findings, line tolerance ±{LINE_TOLERANCE}). "
+        "Match rule: scanner finding's CWE family equivalent to an oracle finding's "
+        "and scanner line within ±5 of oracle range._\n"
+    )
+    rows.append("| Scanner | Files scored | TP | FP | FN | Precision | Recall | F1 |")
+    rows.append("|---|---|---|---|---|---|---|---|")
+    for name, bench_rows in configs:
+        records = _bench_to_voter(bench_rows)
+        result = score_per_finding(records, oracle_findings)
+        rows.append(
+            f"| {name} | {result['n_files_scored']} "
+            f"| {result['tp']} | {result['fp']} | {result['fn']} "
+            f"| {result['precision'] * 100:.1f}% "
+            f"| {result['recall'] * 100:.1f}% "
+            f"| {result['f1']:.3f} |"
+        )
+
+    rows.append("")
+    rows.append("### Cost per (critical) confirmed finding\n")
+    rows.append(
+        "_Buyer-facing KPI from v1.3: total run cost divided by the count of findings "
+        "Argus marked CONFIRMED at high/critical severity. Voter / no-DAST configs "
+        "produce no per-finding validation and therefore can't compute this — the "
+        "metric is Argus +DAST-specific by construction._\n"
+    )
+    rows.append("| Scanner | Total cost | CONFIRMED | Critical CONFIRMED | $/critical-confirmed |")
+    rows.append("|---|---|---|---|---|")
+    any_confirmed = False
+    for name, bench_rows in configs:
+        records = _bench_to_voter(bench_rows)
+        c = cost_per_critical_confirmed(records)
+        if c["n_confirmed"] > 0:
+            any_confirmed = True
+        cpc = c["cost_per_critical_confirmed_usd"]
+        cpc_str = f"${cpc:.4f}" if cpc is not None else "n/a"
+        rows.append(
+            f"| {name} | ${c['total_cost_usd']:.4f} "
+            f"| {c['n_confirmed']} | {c['n_critical_confirmed']} | {cpc_str} |"
+        )
+    if not any_confirmed:
+        rows.append(
+            "\n_Note: no `per_finding_validation` data found in any of the supplied bench "
+            "rows. Cost-per-critical requires Argus +DAST runs saved with per-finding "
+            "statuses; re-run a fresh +DAST bench to populate this metric._"
+        )
+
+    rows.append(
+        "\n_Reference: Praetorian Constantine reports 61.2% TP at finding level on "
+        "34K production files (2,719 TP / 4,441 labeled). Argus's number above is on "
+        "the rich-oracle subset of an adversarial regression suite — directional "
+        "comparison only. Roadmap item #4 (extend rich oracle 10 → 23) brings the "
+        "denominator closer to a same-suite-shape number._"
     )
     return "\n".join(rows) + "\n"
 
@@ -1014,6 +1213,7 @@ def render_launch_report(
     argus_label: str = "Argus (no DAST)",
     argus_with_dast_label: str = "Argus (+DAST)",
     opus_label: str = "Raw Opus 4.6",
+    rich_oracle_path: Path | None = None,
 ) -> str:
     """Assemble the markdown launch report.
 
@@ -1023,6 +1223,11 @@ def render_launch_report(
     ``argus_rows`` argument is treated as Argus's "no-DAST" run by
     convention (matches Plan A's run order).
     """
+    argus_stats = _verdict_match_stats(argus_rows)
+    opus_stats = _verdict_match_stats(opus_rows)
+    lift = _gate_lift_pp(argus_stats["exact_pct"], opus_stats["exact_pct"])
+    gate_pass = lift >= 15.0
+
     # Build the configs list. Order matters: non-baseline first, baseline LAST.
     # Lift is computed against the last entry.
     configs: list[tuple[str, list[BenchRow]]] = [(argus_label, argus_rows)]
@@ -1039,7 +1244,9 @@ def render_launch_report(
         "`gpt5_judgments.json` (BENCH-011)._"
     )
     if argus_with_dast_rows is not None:
-        sources_note += "\n_Three-config mode: Argus no-DAST + Argus +DAST + Raw Opus side-by-side._"
+        sources_note += (
+            "\n_Three-config mode: Argus no-DAST + Argus +DAST + Raw Opus side-by-side._"
+        )
     parts.append(sources_note + "\n")
 
     # ── Top-of-report scoreboard panels (visual, scannable) ────────────────
@@ -1059,7 +1266,9 @@ def render_launch_report(
     # ``per_finding_validation`` and ``dast_*`` fields. Use the +DAST
     # rows when provided — the no-DAST run has no DAST artefacts to
     # report on.
-    dast_rows_for_section_5 = argus_with_dast_rows if argus_with_dast_rows is not None else argus_rows
+    dast_rows_for_section_5 = (
+        argus_with_dast_rows if argus_with_dast_rows is not None else argus_rows
+    )
     parts.append(_render_section_5_dast_evidence(dast_rows_for_section_5))
     eff_panel = _render_section_5b_effective_cwe_f1(dast_rows_for_section_5)
     if eff_panel:
@@ -1067,6 +1276,7 @@ def render_launch_report(
     parts.append(_render_section_6_judge(judgments))
     parts.append(_render_section_7_cost(argus_rows, opus_rows, judgments))
     parts.append(_render_section_8_sample_size(diff_records))
+    parts.append(_render_section_8b_per_finding_tpfp(configs, rich_oracle_path))
     parts.append(_render_section_9_mythos_footer())
     return "\n".join(parts)
 
@@ -1124,6 +1334,7 @@ def build_launch_report(
         diff_records,
         judgments,
         argus_with_dast_rows=argus_with_dast_rows,
+        rich_oracle_path=rich_oracle_path,
     )
     output_path.write_text(md, encoding="utf-8")
 
@@ -1142,7 +1353,9 @@ def build_launch_report(
     if argus_with_dast_rows is not None:
         with_dast_stats = _verdict_match_stats(argus_with_dast_rows)
         summary["argus_with_dast_exact_pct"] = with_dast_stats["exact_pct"]
-        summary["lift_with_dast_pp"] = _gate_lift_pp(with_dast_stats["exact_pct"], opus_stats["exact_pct"])
+        summary["lift_with_dast_pp"] = _gate_lift_pp(
+            with_dast_stats["exact_pct"], opus_stats["exact_pct"]
+        )
         summary["n_argus_with_dast_rows"] = len(argus_with_dast_rows)
     return summary
 

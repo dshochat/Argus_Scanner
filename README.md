@@ -1,153 +1,88 @@
 # Argus Scanner
 
-**We don't flag what we can't exploit.**
+**Verified vulnerability remediation at machine scale.** Argus runs every confirmed finding through a Firecracker sandbox, generates a patch, and replays the same exploit against the patched code — so you ship fixes that actually close the bug, not tickets that pile up.
 
-Argus is an AI-native code security scanner combining a cost-tiered LLM **harness** (Gemini Flash-Lite triage → Sonnet 4.6 → Opus 4.6 escalation) with runtime DAST detonation in a Firecracker microVM and sandbox-verified remediation. Whether the bug is in code your team wrote (SQL injection, auth bypass, deserialization, command injection, crypto misuse) or in code your stack quietly pulled in (a malicious package, a poisoned `CLAUDE.md`, a backdoored `setup.py`, a tampered ML checkpoint loader about to run on someone's machine) — Argus detonates it in the sandbox, captures the exploit firing, generates a patch, replays the same exploit against the patched source, and ships the result as a CI gate.
+Open source, BYOK, Apache 2.0.
 
-**Argus doesn't only verify what static analysis flagged — it finds new exploits by running the code.** Argus identifies probe-attractive functions, generates concrete attack inputs (path-traversal payloads, command-injection strings, deserialization gadgets), and executes each in the sandbox. Findings land from actual runtime behavior — the exfil bytes captured in the trace, the canary file that materialized in `/tmp`, the subshell that launched despite "safe" escaping. A function with a one-shot `../` strip that returns `/etc/passwd` content to an `../../etc/passwd` attacker input doesn't show up to pattern-matching SAST and doesn't survive manual review at scale; runtime evidence catches it cheaply and reliably.
+## The problem
 
-It targets the gap between *"this looks suspicious"* (pattern-matching SAST) and *"this actually exploits something"* (manual reverse engineering).
+Vulnerability throughput is up and to the right and it isn't slowing down. CVE counts, supply-chain advisories, AI-generated code, agent-authored PRs, agent-installed dependencies — the queue of "things to patch" grows every quarter while the team that has to patch them does not. CISOs aren't asking "can you find more bugs?" anymore. They're asking "**how do I close 10,000 open findings before next audit?**"
 
-**One scanner. Two threat models. Zero false-positive triage.**
+The bottleneck is not detection. It's two things:
 
-Open source. BYOK. Apache 2.0.
+1. **Triage paralysis.** Static scanners flag thousands of patterns that may or may not be real. Engineers spend 60-80% of their security time deciding which ones to fix instead of fixing them.
+2. **Patch validation.** Even when you write a fix, you don't know if it actually closes the hole until something else (a pen-tester, a customer, an attacker) tells you it didn't. Most teams ship patches blind.
 
-You pay your providers directly — Anthropic + Google for the cascade, Fly.io for the optional DAST sandbox. Argus collects nothing.
+Static scanners give you more findings. Argus closes them.
 
----
-
-## Quick Start
-
-Get from install to first scan in under 60 seconds:
-
-```bash
-# Node + webcrack are required so Argus can deobfuscate obfuscator.io-style
-# JS payloads before sending them to the model. Without this, modern npm
-# supply-chain malware (Shai-Hulud variants, etc.) overflows the model's
-# context window and silently downgrades to a "suspicious" verdict.
-brew install node@22                                # macOS — see "Dependencies" for Linux/Docker
-npm install -g webcrack
-
-pip install argus-ai-scanner
-export ANTHROPIC_API_KEY="your-anthropic-key"
-export GEMINI_API_KEY="your-gemini-key"
-
-# Single file
-argus scan path/to/suspicious.py
-
-# Whole repo (current directory)
-argus scan-repo .
-
-# CI mode — only files changed vs main, SARIF for GitHub Code Scanning
-argus scan-repo . --diff origin/main --output sarif --output-file findings.sarif
-
-# Pre-install supply-chain gate — scan a PyPI package + its dep closure
-# BEFORE pip installs anything. Blocks day-zero malware at the ingestion boundary.
-argus install requests
-argus install -r requirements.txt --dry-run        # CI gate without installing
-argus install litellm --strict-coverage             # extra-paranoid mode
-```
-
-Without DAST configured the CLI gracefully degrades to cascade-only verdicts. DAST mode (Firecracker sandbox) requires a Fly.io account — see [docs/dast-setup.md](./docs/dast-setup.md).
-
-### Dependencies
-
-Argus requires `webcrack` (Node 22 LTS+) at runtime for the JS string-array deobfuscation preprocessing stage. This is what lets Argus characterize obfuscator.io-style npm payloads instead of failing-closed on context-window overflow — see the [Mini Shai-Hulud TanStack case](./CHANGELOG.md) for what this catches.
-
-| Platform | Install |
-|---|---|
-| macOS | `brew install node@22 && npm install -g webcrack` |
-| Debian / Ubuntu | `curl -fsSL https://deb.nodesource.com/setup_22.x \| sudo bash - && sudo apt install -y nodejs && sudo npm install -g webcrack` |
-| RHEL / Fedora | NodeSource RPM setup, then `sudo npm install -g webcrack` |
-| Docker | Base image `node:22-slim`, then `RUN npm install -g webcrack` |
-
-Argus resolves the binary via `shutil.which("webcrack")` (the standard install path). For non-PATH installs (project-local `node_modules/.bin/webcrack`), set `ARGUS_WEBCRACK` to the absolute binary path.
-
-**Restricted environments:** If you cannot install Node/webcrack (airgapped CI, locked-down hosts), run with `argus --no-deobfuscation <subcommand>`. Obfuscated JS files will fall back to the model's fail-closed `suspicious` verdict instead of full semantic analysis.
-
-## Benchmark Performance
-
-Adversarial regression suite, labeled by a 4-LLM consensus oracle. Methodology, sample size, and per-file breakdown: [`bench_results/v1_1_launch/launch_report.md`](./bench_results/v1_1_launch/launch_report.md).
+## How Argus closes findings
 
 ```
-                       Verdict-exact (higher = better)
-Argus (cascade + DAST) ████████████████████  91.3%
-Gemini 3.1 Pro         █████████████████░░░  82.6%
-Grok 4.3               █████████████████░░░  82.6%
-Opus 4.6               █████████████████░░░  78.3%
-GPT 5.4                ████████████████░░░░  73.9%
+File → L1 (AI static analysis) → Finding Validation → Remediation
+                                  ────────────────    ──────────────
+                                  Sandbox replays     Auto-patch +
+                                  each finding to     replay same
+                                  confirm/refute      exploit against
+                                  with runtime        the patched
+                                  evidence            code to verify
 ```
 
-## How Argus works (the three pillars)
+Two stages, both **default ON as of v1.11**:
 
-Argus has three pillars. The capability matrix below shows exactly what each pillar does for each file type.
+* **Finding Validation** (the runtime FP killer). Every L1 finding is re-run against the file's real runtime in a Firecracker microVM. A "potential SSRF" the file's own validation rejects → `BLOCKED`. A path-traversal that never reaches `open()` → `UNREACHED`. A pattern that fires for real → `CONFIRMED` with sandbox-captured proof. Only what survives is real work.
+* **Remediation** (the headline). For each `CONFIRMED` finding, Argus generates a targeted patch, applies it to a clean copy of the source, and **re-runs the original exploit against the patched code in the same sandbox**. Per-finding post-patch verdict:
+  * `NEUTRALIZED` — sandbox replay shows the exploit no longer fires. Ship the patch.
+  * `STILL_EXPLOITABLE` — patch was insufficient; Argus tells you what still fires.
+  * `UNVERIFIABLE` — sandbox couldn't decisively replay; manual review.
 
-### Pillar 1 — Cascade harness (static + AI analysis)
+You get a tested fix, not a ticket. At scan-repo scale, you get hundreds of tested fixes in one run — fanned out across your codebase, ready to PR.
 
-Every recognized file flows through a cost-tiered model cascade. Deterministic preprocessing first (free, no models): SHA-256, multi-stage deobfuscation (base64 / hex / eval-chain), dependency graphing, attack-vector flagging, AI-file-pattern detection. Files with no outbound intent get dropped before a single token is spent.
+## Why machine-level remediation is the only credible answer
 
-Survivors route through a model cascade:
+CISOs in 2026 are choosing between three remediation postures:
 
-| Cascade stage | Model | Cost / file | Decides |
-|---|---|---|---|
-| Triage | **Gemini Flash-Lite** | ~$0.001 | `CLEAN` / `LOW` / `HIGH` routing |
-| Cheap analysis (LOW tier) | **Gemini Flash** | ~$0.02 | findings on low-priority files |
-| Default deep analysis (HIGH tier) | **Anthropic Claude Sonnet 4.6** | ~$0.07 | findings on high-priority files |
-| High-stakes / borderline escalation | **Anthropic Claude Opus 4.6** | ~$0.15 | ~20% of HIGH files |
+1. **Hire your way out.** Doesn't scale. Security engineers don't materialize.
+2. **AI-generate patches blind.** Cheap, fast, dangerous. Without runtime validation, every "fix" is a guess. You ship regressions or insufficient patches and find out the hard way.
+3. **Machine-validated remediation.** Sandbox proves the bug. AI writes the patch. Sandbox proves the patch. Repeat at scale. This is Argus.
 
-The harness emits structured findings: CWE, line, severity, code, explanation, suggested fix, proof-of-concept, behavioral profile, attack chains, composite risk score. Aggregate cost is ~$4.65 per 100-file scan on a realistic workload mix; hard per-file + per-scan cost caps abort runs that exceed your declared budget.
+Sandbox validation is the difference between a remediation pipeline and a patch-ticket pipeline.
 
-### Pillar 2 — DAST runtime detonation + exploit discovery
+## Coverage today
 
-When the harness flags suspicion at sufficient verdict tier, the file moves to a Firecracker microVM (`minimal-v2`, `networked-v2`, or `ml_tools-v2` image profile) for two phases:
+**Static + LLM cascade** (all listed formats):
 
-* **Phase A — exploit testing.** Plan an exploit per harness finding, run it in the sandbox, capture syscalls / egress / filesystem writes, classify each finding as `CONFIRMED` / `BLOCKED` / `UNREACHED` / `NOT_TESTED` based on what actually happened.
-* **Phase B — exploit discovery, runtime-driven.** Argus identifies probe-attractive functions in the file (those that take user input and call a sink — filesystem / network / process / interpreter) and generates concrete attack inputs for each: path-traversal payloads, command-injection strings, deserialization gadgets, base64-decoded subshells. Each input runs in a fresh microVM via the language-appropriate harness — `import` + getattr-walk for Python, `await import()` + dotted-path resolver for JavaScript (CJS + ESM), `bash <script> $args` with kwargs as env for shell scripts — and findings land when the runtime behavior is actually exploitable, with the exfil bytes or side-effects captured in the trace as proof. The model also iteratively proposes additional hypotheses from accumulated evidence; a deterministic validator gates them and survivors flow back into Phase A for runtime testing. Up to 3 iterations or until convergence.
+* **Code:** Python, JavaScript / TypeScript, shell, Java bytecode (`.class`, `.jar`)
+* **Supply-chain manifests:** `package.json`, `requirements.txt`, `Cargo.lock`, `go.mod`, `Gemfile`, `composer.json`, `pyproject.toml`, `Pipfile`, Dockerfile, Makefile, `.npmrc`, `.pypirc`
+* **AI-agent config sentinels:** `CLAUDE.md`, `mcp.json`, `.cursorrules`, `claude_desktop_config.json`, `AGENTS.md`, `devcontainer.json`
+* **Doc / web attack surface:** Markdown / RST / AsciiDoc (prompt-injection vectors), HTML / SVG / XML
 
-This is the layer that kills false positives — a "looks like SQL injection" pattern that the file's own escaping defends against gets `BLOCKED`, not flagged. And it's the layer that finds what static analysis can't see — a function with a one-shot `../` strip whose escape returns `/etc/passwd` content, a "safely" escaped shell argument that still launches a subshell, a `pickle.load()` that runs an attacker's `__reduce__`. The exfil bytes or side-effects captured in the trace ARE the finding's proof.
+**Sandbox detonation + Remediation** (executable formats only): Python, JavaScript / TypeScript, shell, Java bytecode. Non-executable formats stay cascade-only by definition.
 
-### Pillar 3 — Remediation (fix-and-verify)
+**Roadmap:** Go, Rust, .NET.
 
-When Phase A confirms an exploit on **text source** (Python, JS / TS, shell), Argus generates a patched version, replays the same exploit attempts against the patched code in the same sandbox, and emits per-finding `NEUTRALIZED` / `STILL_EXPLOITABLE` / `UNVERIFIABLE` with sandbox-grounded evidence. You don't get a remediation *suggestion*; you get a remediation that's been *tested*.
+## Optional: deeper coverage
 
-**Binary artifact policy.** For ML artifacts (`.pkl` / `.pt` / `.bin` / `.safetensors` / `.h5` / `.onnx`), Argus does NOT auto-patch the binary — the model can't emit valid bytecode-level patches and a corrupt patched pickle would mislead the replay. Instead, the remediation pillar emits structured guidance: regenerate the model from a clean training pipeline and serialize using `safetensors` (which is structurally incapable of carrying executable `__reduce__` payloads). Status is `UNVERIFIABLE` with the guidance in `fix_summary`.
+For zero-day hunting beyond Validation + Remediation, three opt-in stages are available:
 
-**Opt-out:** pass `--no-remediation` to skip this pillar entirely while keeping the harness + DAST active. Use for compliance scans, CI gates that don't allow source-modification suggestions, read-only audits, or to save ~$0.05/file in patch-generation tokens. The result still includes a structured `phase_c` block with `skipped_reason: "phase_c_disabled_by_config"` so downstream consumers can distinguish "remediation off" from "ran and found nothing to fix."
+| Stage | What it does | Flag |
+|---|---|---|
+| **Exploit Discovery** | Enumerates the file's callables, generates fresh attack inputs, hunts for exploits L1 didn't see | `--enable-runtime-probe` |
+| **Behavioral Profiling** | Imports the module with benign inputs, captures runtime behavior (syscalls, network, file IO) | `--enable-phase-3-discovery` |
+| **Adversarial Reasoning** | Model designs attack hypotheses anchored on the runtime profile, sandbox tests each | `--enable-phase-3-loop` |
 
----
+Enable all three with the three flags together. Typical added cost: ~$0.50-1.50/file. Most operators don't need these — the default Validation + Remediation cascade handles 90% of the actual remediation workload.
 
-## Coverage matrix
-
-What each pillar does, per file type. ✅ = supported, ⚠️ = supported with policy nuance, ⏳ = roadmap, ❌ N/A = not applicable to this format.
-
-"Runtime probing" = the exploit-discovery layer that **executes** generated attack inputs to surface vulnerabilities. "Hypothesis discovery" = model-driven proposal of new exploit candidates re-tested through Phase A.
-
-| File type | Harness analysis | DAST exploit testing | DAST hypothesis discovery | DAST runtime probing | Remediation |
-|---|:-:|:-:|:-:|:-:|:-:|
-| Python (`.py`, `.pyw`, `.pyi`, `.pth`) | ✅ | ✅ | ✅ | ✅ | ✅ patch + replay |
-| JavaScript (`.js`, `.mjs`, `.cjs`) | ✅ | ✅ | ✅ | ✅ | ✅ patch + replay |
-| TypeScript / JSX (`.ts`, `.tsx`, `.jsx`) | ✅ | ✅ (Node runs as JS for behavior) | ✅ | ⏳ needs `ts-node` in sandbox image | ✅ patch + replay |
-| Shell (`.sh`, `.bash`) | ✅ | ✅ | ✅ | ✅ (script-level — args as `$1..`, kwargs as env) | ✅ patch + replay |
-| Shell (`.zsh`) | ✅ | ✅ | ✅ | ⏳ (no zsh in sandbox image yet) | ✅ patch + replay |
-| Jupyter notebooks (`.ipynb`) | ✅ cell-by-cell decomposition | ⏳ roadmap | ⏳ roadmap | ⏳ roadmap | ⏳ roadmap |
-| ML model artifacts (`.pkl`, `.pickle`, `.pt`, `.bin`, `.safetensors`, `.h5`, `.hdf5`, `.keras`, `.onnx`) | ✅ pickletools disassembly | ✅ load-detonation in sandbox | ❌ (artifact bytes are fixed — no "attack input" to generate) | ❌ (covered by load-detonation in column 2) | ⚠️ guidance only (no auto-patch — see binary policy) |
-| GitHub Actions workflows (`.github/workflows/*.yml`) | ✅ deterministic CI-pattern sweep | ⏳ roadmap | ⏳ roadmap | ⏳ roadmap | ⏳ roadmap |
-| Supply-chain manifests (`package.json`, `requirements.txt`, `Cargo.lock`, `go.mod`, `Gemfile`, `Pipfile`, `setup.py`, `pyproject.toml`, `pom.xml`, `build.gradle`, `*.csproj`, etc.) | ✅ parsed for deps + lifecycle hooks | ❌ N/A (no runtime to detonate) | ❌ N/A | ❌ N/A | ❌ N/A |
-| AI-agent config sentinels (`CLAUDE.md`, `AGENTS.md`, `SKILL.md`, `.cursorrules`, `.clinerules`, `mcp.json`, `plugin.json`, `openapi.{yaml,json}`, `agent-config.{yaml,json,toml}`, etc.) | ✅ prompt-injection surface | ❌ N/A | ❌ N/A | ❌ N/A | ❌ N/A |
-| Other languages tagged for harness (Java, Kotlin, Scala, Go, Rust, Ruby, PHP, C#, C/C++, PowerShell, Lua, Perl, R, Swift, Terraform, HCL) | ✅ generic harness analysis | ⏳ roadmap | ⏳ roadmap | ⏳ roadmap | ⏳ roadmap |
-
-## Per-finding verdicts (where the FP kill happens)
-
-Every finding ships with one of these statuses:
+## Per-finding verdicts
 
 | Status | Meaning |
 |---|---|
-| `CONFIRMED` | Sandbox observed the exploit firing. PoC + event trace surfaced with the finding. |
-| `BLOCKED` | Attack was tested; the file's own code defended against it (sanitization, escaping, allowlist). |
+| `CONFIRMED` | Sandbox observed the exploit firing. Patch generated + re-validated by default. |
+| `BLOCKED` | Attack was tested; the file's own code defended (sanitization, escaping, allowlist). |
 | `UNREACHED` | Attack was tested; the code path is genuinely unreachable. |
 | `NOT_TESTED` | Sandbox couldn't execute the test. Sub-reason: `infra_stub` / `inconclusive` / `not_planned`. |
+| `SUPPRESSED` | Production-grade FP-defense oracle (structured assertion / downstream-cap / syscall-sink) refuted the static match. |
 
-A `CONFIRMED` finding looks like this:
+A typical `CONFIRMED` + `NEUTRALIZED` shipping bundle:
 
 ```json
 {
@@ -155,90 +90,80 @@ A `CONFIRMED` finding looks like this:
   "type": "data_exfiltration",
   "severity": "critical",
   "status": "CONFIRMED",
-  "confidence": 1.0,
-  "runtime_evidence": "Mock HTTP server at 127.0.0.1:8000 captured POST body containing 'FAKE_PRIVATE_KEY_CONTENT' and 'ssh-rsa AAAAFAKEKEY user@host'. The malware decoded its base64 payload and POSTed the contents of ~/.ssh/ to the rewritten C2 endpoint.",
-  "proof_of_concept": "On any Unix host with SSH keys present, execution sends the full contents of ~/.ssh/ to the remote C2 server over HTTPS."
+  "runtime_evidence": "Mock HTTP server at 127.0.0.1:8000 captured POST body containing 'FAKE_PRIVATE_KEY_CONTENT'. The function decoded its base64 payload and POSTed the contents of ~/.ssh/ to the C2 endpoint.",
+  "remediation": {
+    "status": "NEUTRALIZED",
+    "patch": "...unified diff...",
+    "verification": "Same exploit re-run against patched source: no HTTP POST observed, no /tmp/canary creation, exception raised at line 47 before any I/O."
+  }
 }
 ```
 
-DAST cuts three ways: it **confirms** exploits with sandbox-captured evidence, **refutes** false positives with proof of non-exploitability, and **verifies remediations** by replaying the same exploits against the patched source.
+This is what an SLA-grade remediation pipeline looks like.
 
-## Enterprise Invariants
-
-Anthropic's Claude Security and OpenAI's Codex Security are enterprise-tier and vendor-cloud-only. Argus is the open alternative.
+## Enterprise invariants
 
 * **BYOK.** You control LLM access; bills go to your API meter, not ours.
-* **Zero telemetry.** In cascade-only mode, nothing leaves your machine. In DAST mode, file content is sent only to a Fly.io app *you own and control* — never to Argus-operated infrastructure.
-* **Local execution.** Fully self-contained pipeline; no SaaS dependency.
+* **Zero telemetry.** Cascade-only mode: nothing leaves your machine. DAST mode: file content goes only to a Fly.io app *you own and control* — never to Argus-operated infrastructure.
+* **Local execution.** Self-contained pipeline; no SaaS dependency.
+* **Hardware isolation.** Detonation happens in Firecracker microVMs (KVM hardware virtualization), ephemeral per-run, strict egress control. Patch verification re-uses the same isolation primitives.
 
-## CLI Reference
+## Quick Start
+
+```bash
+pip install argus-ai-scanner
+export ANTHROPIC_API_KEY="your-anthropic-key"
+
+# Single file — Validation + Remediation by default
+argus scan path/to/suspicious.py
+
+# Whole repo — full remediation pipeline across every file
+argus scan-repo .
+
+# CI mode — only files changed vs main, SARIF for GitHub Code Scanning
+argus scan-repo . --diff origin/main --output sarif --output-file findings.sarif
+
+# Read-only audit (compliance scans / no source mods allowed)
+argus scan-repo . --no-enable-remediation
+
+# Full coverage including zero-day hunting
+argus scan path/to/file.py \
+  --enable-runtime-probe \
+  --enable-phase-3-discovery \
+  --enable-phase-3-loop
+```
+
+Without DAST configured (Fly.io app), Argus gracefully degrades to cascade-only verdicts — Remediation requires the sandbox.
+
+## CLI reference
 
 ### `argus scan <file>` — single-file scan
 
 | Flag | Purpose |
 |---|---|
 | `--output {json,markdown}` | Output format (default: `json`) |
-| `--no-dast` | Skip DAST verification (cascade-only) |
-| `--no-remediation` | Skip Phase C (fix-and-verify). Phase A + B still run; no patch is generated. Compliance / CI-gate / read-only-audit use cases. Saves ~$0.05/file. |
-| `--max-cost USD` | Abort this file's scan if **per-file** API spend exceeds USD (default: $1.00; pass `0` to disable) |
-| `--enable-discovery` | Proactive payload sweep — runs library of attack payloads against the file in sandbox; surfaces runtime-confirmed CWEs as new findings (+~$0.25/file) |
-| `--enable-runtime-probe` | **Phase B+ runtime exploit probing (v1.5).** Sonnet generates concrete attack inputs targeting probe-attractive functions; sandbox executes each; deterministic rules confirm exploits via runtime evidence (return value, side-effect canaries). Python only in v1.5; opt-in (~$0.20–0.50/file). |
-| `--dast-trigger-verdicts LIST` | Comma-separated L1 verdicts that trigger DAST. Default: `malicious,critical_malicious`. Allowed: `clean,suspicious,malicious,critical_malicious` |
+| `--no-dast` | Skip all sandbox stages (cascade-only) |
+| `--no-enable-remediation` | Skip patch generation (default ON) |
+| `--enable-runtime-probe` | Opt in to Exploit Discovery |
+| `--enable-phase-3-discovery` | Opt in to Behavioral Profiling |
+| `--enable-phase-3-loop` | Opt in to Adversarial Reasoning |
+| `--dast-trigger-verdicts LIST` | L1 verdicts that trigger DAST. Default: `suspicious,malicious,critical_malicious`. |
+| `--max-cost USD` | Abort if per-file API spend exceeds USD (default: $1.00; `0` disables) |
 
 ### `argus scan-repo <path>` — directory tree scan
+
+Same flags as `scan` plus:
 
 | Flag | Purpose |
 |---|---|
 | `--diff REF` | Only scan files differing vs git ref (e.g., `--diff origin/main` for PR/CI) |
-| `--output {markdown,json,sarif}` | Output format (default: `markdown`); `sarif` is SARIF v2.1.0 for GitHub Code Scanning |
-| `--output-file PATH` | Write to file instead of stdout |
-| `--max-cost USD` | Abort the run when **cumulative** API spend across all files exceeds USD; remaining files are marked `cost_cap_reached`. Pass `0` or omit to disable |
+| `--output {markdown,json,sarif}` | Output format (default: `markdown`); `sarif` for GitHub Code Scanning |
+| `--output-file PATH` | Write output to file instead of stdout |
+| `--max-cost USD` | Abort run when cumulative API spend exceeds USD; remaining files marked `cost_cap_reached` |
 | `--exclude GLOB` | Additional gitignore-style exclude pattern (repeatable) |
 | `--no-gitignore` | Ignore `.gitignore` during walk (default: respected) |
 | `--max-file-bytes BYTES` | Skip files larger than BYTES (default: 1 MiB) |
-| `--no-dast` | Skip DAST verification on every file |
-| `--no-remediation` | Skip Phase C on every file. Phase A + B still run; no patches generated. |
-| `--enable-discovery` | Proactive payload sweep on every DAST-eligible file |
-| `--enable-runtime-probe` | Phase B+ runtime exploit probing (v1.5) on every DAST-eligible Python file. See `argus scan` for description. |
-| `--dast-trigger-verdicts LIST` | Same as `scan` |
-| `--continue-on-error` / `--no-continue-on-error` | On per-file exception, record and continue (default) or abort run |
-
-### `argus install <pkg>` — pre-install supply-chain gate
-
-Stages the package via `pip download` (no `setup.py` execution), runs the full Argus pipeline on every wheel/sdist in the dependency closure, then either calls real `pip install` or blocks with the analysis printed. Catches day-zero supply-chain malware at the ingestion boundary — exactly the class advisory-based scanners (`pip-audit`, `safety`) miss.
-
-| Flag | Purpose |
-|---|---|
-| `<pkg>` | Package spec (e.g. `'requests'`, `'litellm==1.50.0'`, `'fastapi[all]'`). Mutually exclusive with `-r`. |
-| `-r PATH` / `--requirement PATH` | Install from a requirements.txt; Argus scans every wheel in the resolved closure. |
-| `--block-on LIST` | Comma-separated verdict tiers that block install. Default: `malicious,critical_malicious`. Use `suspicious,malicious,critical_malicious` for stricter gating. |
-| `--no-dast` | Cascade-only — skip DAST runtime detonation even if Fly is configured. Faster + cheaper, but leaves runtime-only exploits (load-time RCE in pickles, etc.) un-validated. |
-| `--no-cache` | Ignore the wheel-hash verdict cache. Re-scans every artifact from scratch. |
-| `--cache-dir PATH` | Override cache directory (default: `~/.cache/argus/install`). |
-| `--dry-run` | Run the scan + report verdict; do NOT call `pip install`. For CI gating without side effects. |
-| `--strict-coverage` | Escalate verdict to `suspicious` when Argus could only statically analyze <70% of files in a wheel (rest are typically native binaries: `.so`, `.pyd`, `.dll`, `.dylib`, `.exe`). For security-paranoid users / strict CI gates. |
-| `--max-cost USD` | Per-file cost cap (default: $1.00). |
-| `--max-total-cost USD` | Aggregate cost cap across the whole dependency-closure scan (default: **$10**). When tripped, remaining wheels are flagged `suspicious / unscanned-due-to-cost-cap` and the install fails closed. Pass `0` to disable. |
-| `--deep` | Full-fidelity scan — `thinking_budget=24000` on every Sonnet/Opus call, sequential per-file scan, 4 wheels concurrent. ~5–10× more expensive but catches subtle multi-step exploits the default mode might miss. |
-| `--no-thinking` | Explicit way to set `thinking_budget=0`. Already the install default; flag exists for script readability. Mutually exclusive with `--deep`. |
-| `--parallel N` | Max number of artifacts scanned concurrently (default: **8**). Pass lower if you hit API rate limits. |
-| `--enable-runtime-probe` | Phase B+ runtime exploit probing (v1.5) on every DAST-eligible Python file in the dependency closure. Adds ~$0.20–0.50/file. See `argus scan`. |
-| `--pip EXEC` | Pip executable. Default: `pip`. Pass `'uv pip'` for uv-managed envs. |
-| `--output {text,json}` | Output format. Default: text. JSON for CI consumption. |
-
-**Phase C is always disabled on the install path.** Remediation for a not-yet-installed package is "don't install", not "patch + replay." If the cascade flags a `malicious` verdict, the install is blocked; the user sees the analysis (CWE, runtime evidence, exfil destination) and decides.
-
-**Wheel-hash caching.** Verdicts are cached at `~/.cache/argus/install/<sha256>.json`. Wheel bytes are immutable on PyPI (re-uploads of the same name+version are rejected), so a verdict is permanently valid for that exact artifact. First-run cost is real; subsequent installs of the same wheel are free.
-
-**Coverage transparency.** A "clean" verdict on a wheel that's 50% native binaries (`.so`, `.pyd`) is honestly weaker evidence than a clean verdict on a wheel that's 100% Python — the report says so. Every artifact verdict reports `n_files_unscanned` + extension histogram. Native binaries are not silently scrubbed from the verdict — coverage warnings surface. `--strict-coverage` opt-in escalates the verdict on low-coverage artifacts.
-
-## Security & Isolation
-
-Argus deliberately detonates potentially malicious code. Host protection is non-negotiable.
-
-* **Hardware-level isolation.** Execution happens inside Firecracker microVMs using KVM hardware virtualization.
-* **Ephemeral state.** Every detonation spins up a pristine microVM and is destroyed post-execution. Zero persistence.
-* **Strict egress control.** Network profiles enforced at the hypervisor level prevent lateral movement during DAST verification.
+| `--continue-on-error` / `--no-continue-on-error` | On per-file exception, record and continue (default) or abort |
 
 ## Documentation
 

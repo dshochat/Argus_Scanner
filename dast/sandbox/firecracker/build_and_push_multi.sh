@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Argus DAST multi-image build + push — DAST-014.
+# Argus DAST multi-image build + push (v1.8 P2b — was DAST-014).
 #
-# Builds the three sandbox images (minimal / networked / ml_tools) and
+# Builds the three sandbox images (lean / rich_python / ml_tools) and
 # pushes them to the Fly.io registry under explicit tags. Idempotent —
 # safe to re-run; only re-pushes images whose Dockerfile changed.
+#
+# v1.8 P2b rebalance (was minimal/networked/ml_tools):
+#   * minimal  → lean         (now also bundles network CLI tools)
+#   * networked → rich_python  (now also bundles AI-fixture + data libs)
+#   * ml_tools → ml_tools     (unchanged tier name, inherits from rich_python)
 #
 # Each image is a separate `flyctl deploy` against the SAME Fly app
 # (`argus-dast-sandbox`). Different deploys produce different image
@@ -19,9 +24,9 @@
 #   * Tagging is the natural Fly-native versioning unit
 #
 # Usage:
-#   cd scripts/dast_prototype/firecracker
+#   cd dast/sandbox/firecracker
 #   bash build_and_push_multi.sh                # build + push all three
-#   bash build_and_push_multi.sh networked      # one image only
+#   bash build_and_push_multi.sh rich_python    # one image only
 #   bash build_and_push_multi.sh ml_tools       # heavier — ~30-60 min
 #   IMAGE_VERSION=v2 bash build_and_push_multi.sh   # override version suffix
 #
@@ -40,7 +45,11 @@
 
 set -euo pipefail
 
-APP_NAME="${APP_NAME:-argus-dast-sandbox}"
+# Read app name from env var (preferred) with a sensible fallback.
+# Self-hosters MUST set ARGUS_DAST_FLY_APP — the default is taken on
+# Fly's globally-unique namespace. ``APP_NAME`` is the legacy alias
+# kept for back-compat with operators who set it before v1.9.
+APP_NAME="${ARGUS_DAST_FLY_APP:-${APP_NAME:-argus-dast-sandbox}}"
 IMAGE_VERSION="${IMAGE_VERSION:-v1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -50,8 +59,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # config — the config wins. Per-image config files unambiguously
 # select the right Dockerfile.
 declare -A IMAGES=(
-    ["minimal"]="fly.toml"
-    ["networked"]="fly.networked.toml"
+    ["lean"]="fly.lean.toml"
+    ["rich_python"]="fly.rich_python.toml"
     ["ml_tools"]="fly.ml_tools.toml"
 )
 
@@ -60,15 +69,15 @@ if [ $# -gt 0 ]; then
     REQUESTED="$1"
     if [ -z "${IMAGES[$REQUESTED]:-}" ]; then
         echo "FAIL unknown image: $REQUESTED"
-        echo "    valid: minimal | networked | ml_tools"
+        echo "    valid: lean | rich_python | ml_tools"
         exit 2
     fi
     BUILD_LIST=("$REQUESTED")
 else
-    BUILD_LIST=("minimal" "networked" "ml_tools")
+    BUILD_LIST=("lean" "rich_python" "ml_tools")
 fi
 
-echo "=== Argus DAST multi-image build + push ==="
+echo "=== Argus DAST multi-image build + push (v1.8 P2b) ==="
 echo "App:     ${APP_NAME}"
 echo "Version: ${IMAGE_VERSION}"
 echo "Images:  ${BUILD_LIST[*]}"
@@ -140,7 +149,7 @@ for IMG in "${BUILD_LIST[@]}"; do
     echo "  ${REF_VAR}=${PUSHED_REFS[$IMG]}"
 done
 echo
-echo "Add to your Argus .env (or deployment env):"
+echo "Add to your Argus .env file (or deployment env):"
 echo
 for IMG in "${BUILD_LIST[@]}"; do
     REF_VAR="ECHO_DAST_IMAGE_$(echo "$IMG" | tr 'a-z' 'A-Z')"
@@ -151,7 +160,7 @@ echo "Smoke-test each image with a one-shot machine create+wait+destroy:"
 echo "  flyctl machines run \\"
 echo "    --app $APP_NAME \\"
 echo "    --rm \\"
-echo "    \"\${ECHO_DAST_IMAGE_NETWORKED}\" \\"
+echo "    \"\${ECHO_DAST_IMAGE_LEAN}\" \\"
 echo "    -- bash -c 'curl -V && nc -h 2>&1 | head -1'"
 echo
-echo "Done. Sandbox images built and pushed."
+echo "Done. Notify Claude that build_and_push_multi.sh completed."

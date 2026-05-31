@@ -42,12 +42,54 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 log = logging.getLogger("argus.dast.inference")
 
 InferenceFn = Callable[[str, dict[str, Any], dict[str, Any] | None], Awaitable[dict[str, Any]]]
+
+
+def validate_against_schema(
+    parsed: dict[str, Any], schema: dict[str, Any] | None
+) -> tuple[bool, str]:
+    """v1.9 SCAN-008: JSON schema validation for model responses.
+
+    Even when the model is forced into tool_use mode, the emitted
+    ``input`` dict can violate the schema — missing required fields,
+    wrong types, extra fields under ``additionalProperties: false``,
+    enum values outside the declared set. Without explicit validation,
+    those violations propagate into downstream code as silent
+    KeyErrors or wrong-shape data.
+
+    Returns ``(ok, error_msg)``. ``ok=True`` means valid (or no
+    schema supplied — skipped). ``error_msg`` is empty on success,
+    a short human-readable diagnostic on failure.
+
+    The validator is lenient on transitive failures: if jsonschema
+    itself can't import or the schema is malformed, we return
+    ``(True, "")`` rather than blocking the scan — schema validation
+    is defense-in-depth, not the primary correctness gate.
+    """
+    if not schema or not isinstance(schema, dict):
+        return True, ""
+    if not isinstance(parsed, dict):
+        return False, f"response is not a dict (got {type(parsed).__name__})"
+    try:
+        import jsonschema  # noqa: PLC0415
+    except ImportError:
+        return True, ""  # validation unavailable — fail open
+    try:
+        jsonschema.validate(instance=parsed, schema=schema)
+        return True, ""
+    except jsonschema.ValidationError as exc:
+        # Compact the error: path + message, no traceback.
+        path = ".".join(str(p) for p in exc.absolute_path) or "<root>"
+        msg = str(exc.message)[:200]
+        return False, f"schema violation at {path}: {msg}"
+    except jsonschema.SchemaError as exc:
+        # Malformed schema — log + skip rather than block.
+        log.warning("schema malformed, skipping validation: %s", exc)
+        return True, ""
 
 
 # ── Pure helpers (testable without a network) ──────────────────────────────
@@ -97,7 +139,8 @@ def build_anthropic_kwargs(
             {
                 "name": "emit_response",
                 "description": (
-                    "Emit the structured response. Required: input must conform to the supplied JSON schema exactly."
+                    "Emit the structured response. Required: input must "
+                    "conform to the supplied JSON schema exactly."
                 ),
                 "input_schema": schema,
             }
@@ -111,13 +154,25 @@ def build_anthropic_kwargs(
     return kwargs
 
 
-def parse_anthropic_response(response: Any, schema_provided: bool) -> dict[str, Any]:
+def parse_anthropic_response(
+    response: Any,
+    schema_provided: bool,
+    schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Convert an Anthropic ``Message`` to the orchestrator dict shape.
 
     When a schema was provided, the model returns a ``tool_use`` block
     whose ``input`` carries the structured response — we serialize it as
     JSON for the orchestrator's existing ``_parse_json_or_empty`` path.
     When no schema, we concatenate text blocks.
+
+    v1.9 SCAN-008: when ``schema`` is passed (alongside
+    ``schema_provided=True``), the extracted tool_input is validated
+    against the schema via :func:`validate_against_schema`. On
+    violation, the response dict surfaces ``schema_valid=False`` +
+    ``schema_error`` so the orchestrator can detect malformed
+    structured output explicitly rather than treating it as a silent
+    empty response.
     """
     text_parts: list[str] = []
     tool_input: dict[str, Any] | None = None
@@ -129,8 +184,20 @@ def parse_anthropic_response(response: Any, schema_provided: bool) -> dict[str, 
         elif block_type == "tool_use":
             tool_input = block.input
 
+    schema_valid = True
+    schema_error = ""
+
     if schema_provided and tool_input is not None:
         text = json.dumps(tool_input)
+        # v1.9 SCAN-008: validate the extracted tool_input against the
+        # caller-supplied schema. Failures surface in the response dict;
+        # we don't raise (preserves caller's exception handling).
+        schema_valid, schema_error = validate_against_schema(tool_input, schema)
+        if not schema_valid:
+            log.warning(
+                "DAST inference: tool_use response failed schema validation: %s",
+                schema_error,
+            )
     else:
         text = "\n".join(text_parts)
         if schema_provided and not tool_input:
@@ -139,6 +206,8 @@ def parse_anthropic_response(response: Any, schema_provided: bool) -> dict[str, 
                 "response; falling back to concatenated text (likely to "
                 "fail downstream JSON parse)"
             )
+            schema_valid = False
+            schema_error = "schema supplied but model emitted no tool_use block"
 
     usage = response.usage
     return {
@@ -148,6 +217,8 @@ def parse_anthropic_response(response: Any, schema_provided: bool) -> dict[str, 
             "completion_tokens": getattr(usage, "output_tokens", 0) if usage else 0,
         },
         "finish_reason": getattr(response, "stop_reason", None) or "unknown",
+        "schema_valid": schema_valid,
+        "schema_error": schema_error,
     }
 
 
@@ -173,10 +244,12 @@ def make_dast_sonnet_inference(api_key: str) -> InferenceFn:
         options: dict[str, Any],
         schema: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        kwargs = build_anthropic_kwargs(prompt, options, schema, model_id=model_id, thinking_budget=thinking_budget)
+        kwargs = build_anthropic_kwargs(
+            prompt, options, schema, model_id=model_id, thinking_budget=thinking_budget
+        )
         async with client.messages.stream(**kwargs) as stream:
             response = await stream.get_final_message()
-        return parse_anthropic_response(response, schema_provided=schema is not None)
+        return parse_anthropic_response(response, schema_provided=schema is not None, schema=schema)
 
     return infer
 
@@ -199,18 +272,114 @@ def make_dast_opus_inference(api_key: str) -> InferenceFn:
         options: dict[str, Any],
         schema: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        kwargs = build_anthropic_kwargs(prompt, options, schema, model_id=model_id, thinking_budget=thinking_budget)
+        kwargs = build_anthropic_kwargs(
+            prompt, options, schema, model_id=model_id, thinking_budget=thinking_budget
+        )
         async with client.messages.stream(**kwargs) as stream:
             response = await stream.get_final_message()
-        return parse_anthropic_response(response, schema_provided=schema is not None)
+        return parse_anthropic_response(response, schema_provided=schema is not None, schema=schema)
 
     return infer
+
+
+# ── v1.10 SCAN-009: Phase A schema-retry chokepoint hardening ──────────────
+
+
+async def infer_with_schema_retry(
+    inference: InferenceFn,
+    prompt: str,
+    options: dict[str, Any],
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    """Retry-once wrapper for Phase A inference calls.
+
+    Phase A is the cascade chokepoint: ``claim_verdicts`` populate
+    ``findings_validated``, which gates Phase D, DAST-304, Tier 1.5,
+    and adjudication. A single bad LLM response (Opus 4.6 occasionally
+    drops a required top-level key in tool_use mode) demotes a scan
+    from full coverage to near-zero coverage. SCAN-008's fail-open
+    behavior preserves the partial response but the silent degradation
+    is too high a blast radius for the disclosure surface.
+
+    On schema-validation failure, retries ONCE with a stricter preamble
+    that frames the retry as re-serialization (not re-analysis), so the
+    model fixes schema conformance without perturbing the verdict.
+
+    Contract
+    --------
+    * Exceptions from the FIRST call propagate (don't mask network/
+      API failures as schema drift).
+    * Exceptions from the RETRY call are caught — return the original
+      response with ``_schema_retry_error`` set so the caller can
+      surface the cascade explicitly.
+    * Token usage is summed across both calls so per-file/per-scan
+      cost caps catch the retry spend.
+    * Returns the retry's response if it fired; the model's latest
+      best-effort even when the retry also fails (existing orchestrator
+      fallback handles partial JSON).
+    * Hard cap = 1 retry. Subsequent retries on the same prompt return
+      the same drift empirically.
+
+    Diagnostic keys added to the response dict (prefixed ``_`` to mark
+    them as internal, not part of the ``InferenceFn`` public contract):
+      * ``_schema_retry_attempted``: bool
+      * ``_schema_retry_succeeded``: bool
+      * ``_schema_retry_error``: str (only when retry failed or raised)
+    """
+    first = await inference(prompt, options, schema)
+    if first.get("schema_valid", True):
+        first["_schema_retry_attempted"] = False
+        first["_schema_retry_succeeded"] = False
+        return first
+
+    schema_error = first.get("schema_error", "") or "schema validation failed"
+    log.warning(
+        "Phase A schema validation failed; retrying with stricter preamble: %s",
+        schema_error,
+    )
+
+    retry_preamble = (
+        "[SCHEMA VALIDATION RETRY] Your previous response was rejected by "
+        f"schema validation: {schema_error}. Re-emit the SAME analysis "
+        "using the emit_response tool, but ensure ALL required top-level "
+        "keys are present AND every nested required field is populated. "
+        "Do not change your verdict or rationale — only fix schema "
+        "conformance.\n\n"
+    )
+
+    try:
+        second = await inference(retry_preamble + prompt, options, schema)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Phase A schema retry raised %s; falling back to original response",
+            type(exc).__name__,
+        )
+        first["_schema_retry_attempted"] = True
+        first["_schema_retry_succeeded"] = False
+        first["_schema_retry_error"] = f"retry_call_raised: {type(exc).__name__}: {exc}"[:200]
+        return first
+
+    first_usage = first.get("usage") or {}
+    second_usage = second.get("usage") or {}
+    second["usage"] = {
+        "prompt_tokens": (first_usage.get("prompt_tokens") or 0)
+        + (second_usage.get("prompt_tokens") or 0),
+        "completion_tokens": (first_usage.get("completion_tokens") or 0)
+        + (second_usage.get("completion_tokens") or 0),
+    }
+    second["_schema_retry_attempted"] = True
+    second["_schema_retry_succeeded"] = bool(second.get("schema_valid", True))
+    if not second["_schema_retry_succeeded"]:
+        second["_schema_retry_error"] = second.get("schema_error", "") or schema_error
+    return second
 
 
 __all__ = [
     "InferenceFn",
     "build_anthropic_kwargs",
+    "infer_with_schema_retry",
     "make_dast_opus_inference",
     "make_dast_sonnet_inference",
     "parse_anthropic_response",
+    "validate_against_schema",
 ]
