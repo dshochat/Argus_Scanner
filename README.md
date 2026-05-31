@@ -1,6 +1,6 @@
 # Argus Scanner
 
-**Verified vulnerability remediation at machine scale.** An LLM designs the exploit, a Firecracker microVM proves it fires. The LLM writes the patch, the same sandbox replays the same exploit against the patched code. You ship fixes that are kernel-evidence-verified to close the hole — not tickets that pile up.
+**Verified vulnerability remediation at machine scale.** Static scanners give CISOs more findings to triage; Argus closes them. Argus stacks three layers — deterministic preprocessing, semantic LLM reasoning, runtime sandbox validation — each doing what it's fastest at, so a vulnerability goes from detection to verified, sandbox-tested patch in minutes instead of weeks. The LLM designs the exploit; a Firecracker microVM proves it fires. The LLM writes the patch; the same sandbox replays the same exploit against the patched code. You ship kernel-evidence-verified fixes, not tickets that pile up.
 
 Open source. BYOK. Apache 2.0.
 
@@ -40,18 +40,15 @@ H002  CWE-78 command_injection  critical  CONFIRMED
 
 Every CONFIRMED row has a kernel-level event trace. Every Remediation row has a generated patch + a sandbox-replay verdict on whether the patch actually closed the bug. Verbose output, JSON, and SARIF for GitHub Code Scanning all available via `--output`.
 
-## Why this exists
+## Architecture
 
-CVE counts, supply-chain advisories, AI-generated code, agent-installed dependencies — the queue of "things to patch" grows every quarter while the team that has to patch them doesn't. CISOs aren't asking *"can you find more bugs?"* anymore. They're asking *"how do I close 10,000 open findings before next audit?"*
+The composition is the engineering. Each layer is structurally best-in-class for one job; skipping work the other layers can absorb is what makes the pipeline both fast and verified.
 
-Two bottlenecks. Argus closes both:
+- **Deterministic preprocessing** — hash dedup, AST parsing, deobfuscation, known-malware hash lookup. Free, byte-deterministic. Argus never burns a token on what a hash match can decide.
+- **Semantic LLM** (Sonnet 4.6 / Opus 4.6) — reads intent, designs exploits, writes patches, judges sandbox traces. The only layer that can answer *"is this function supposed to take untrusted input?"*
+- **Runtime sandbox** (Firecracker microVM + kernel-syscall observation via bpftrace) — the ground-truth oracle. The only layer that can prove an exploit actually fired or a patch actually closed the hole.
 
-- **Triage paralysis** → Finding Validation re-runs every L1 finding in the sandbox. CONFIRMED, REFUTED, BLOCKED, UNREACHED, or NOT_TESTED with kernel-syscall evidence. Engineers stop guessing which findings are real.
-- **Patch validation** → Remediation auto-generates a patch and replays the original exploit against the patched code. NEUTRALIZED, STILL_EXPLOITABLE, or UNVERIFIABLE. No more shipping fixes blind.
-
-The combination — *LLM-in-the-loop for semantic reasoning + Firecracker microVM for ground truth* — is the cutting edge. Pure-SAST tools have no runtime. Classic DAST tools have no semantic reasoning. Pattern-based remediation tools generate patches without verification. Argus is the only stack that closes all three gaps in one pipeline.
-
-## The cascade
+Pure-SAST tools have no runtime. Classic DAST tools have no semantic reasoning. Pattern-based remediation tools generate patches without verification. Argus closes all three gaps in one pipeline.
 
 ```
 File
