@@ -2,10 +2,11 @@
 # Handles ffmpeg/exiftran path validation and media pipeline setup.
 # Used by the admin panel to persist transcoding preferences.
 
-import base64
-import logging
 import os
+import base64
+import subprocess
 import tempfile
+import logging
 from pathlib import Path
 
 logger = logging.getLogger("photoshow.media_config")
@@ -45,14 +46,10 @@ def build_thumbnail_command(ffmpeg_path: str, input_file: str, output_file: str)
     """
     return [
         ffmpeg_path,
-        "-i",
-        input_file,
-        "-ss",
-        "00:00:01.000",
-        "-vframes",
-        "1",
-        "-vf",
-        f"scale={THUMB_WIDTH}:{THUMB_HEIGHT}",
+        "-i", input_file,
+        "-ss", "00:00:01.000",
+        "-vframes", "1",
+        "-vf", f"scale={THUMB_WIDTH}:{THUMB_HEIGHT}",
         output_file,
     ]
 

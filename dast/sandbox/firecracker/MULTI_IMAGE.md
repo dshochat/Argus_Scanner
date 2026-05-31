@@ -1,7 +1,11 @@
-# Argus DAST sandbox deploy — runbook (DAST-106)
+# Argus DAST sandbox deploy — runbook (DAST-106, v1.8 P2b)
 
 Stand up the `argus-dast-sandbox` Fly app and push the three sandbox
-images (minimal / networked / ml_tools) for Phase 3 DAST verification.
+images (`lean` / `rich_python` / `ml_tools`) for Phase 3 DAST verification.
+
+> **v1.8 P2b note:** image tier names were renamed from
+> `minimal / networked / ml_tools` (hard rename, no aliases). See the
+> migration table in `docs/dast-setup.md` if you're upgrading from v1.7.
 
 **Wall clock:** ~30 min active hands-on for first-time install + app
 creation, plus ~50-90 minutes of unattended Fly remote-builder time
@@ -24,9 +28,9 @@ explicit tags:
 
 | Tag | Image | Size | Use cases |
 |---|---|---|---|
-| `:minimal-v1` | Python stdlib + nodejs/java + base shell utils | ~270 MB | Default. Already deployed; this rebuilds for parity. |
-| `:networked-v1` | minimal + curl/wget/nc/dnsutils/openssl | ~320 MB | Exfil-confirmation files (litellm_obfuscated, audit_log_compression, event_stream_flatmap, sandbox_runner) |
-| `:ml-tools-v1` | networked + torch CPU + transformers + safetensors | ~3 GB | ML-loader exploit confirmation (load_distributed_checkpoint, megatron_gpt2_loader, perceiver_model_loader) |
+| `:lean-v1` | Python stdlib + nodejs/java + base shell utils + network CLI (curl/wget/nc/dnsutils/openssl) + ~30 common pip pkgs | ~480 MB | Default. Floor tier — has everything most plans need. |
+| `:rich_python-v1` | lean + AI-fixture + data-adjacent libs (scipy, scikit-learn, openai, anthropic, langchain-core, aiohttp, aiofiles, psutil, psycopg2-binary) | ~630 MB | Files importing AI SDKs, numerical computing, async I/O. |
+| `:ml_tools-v1` | rich_python + torch CPU + transformers + safetensors + huggingface_hub | ~3 GB | ML-loader exploit confirmation (load_distributed_checkpoint, megatron_gpt2_loader, perceiver_model_loader) |
 
 The orchestrator picks the right image per plan via the `image_hint`
 field in each `SandboxPlan` (already plumbed in PR #52 — see
@@ -84,10 +88,10 @@ bash build_and_push_multi.sh
 
 This sequentially:
 
-1. Builds `Dockerfile` (minimal) on Fly's remote builder, pushes as
-   `registry.fly.io/argus-dast-sandbox:minimal-v1` (~5-10 min)
-2. Builds `Dockerfile.networked`, pushes as `:networked-v1` (~5-10 min)
-3. Builds `Dockerfile.ml_tools`, pushes as `:ml-tools-v1` (~30-60 min
+1. Builds `Dockerfile.lean` on Fly's remote builder, pushes as
+   `registry.fly.io/argus-dast-sandbox:lean-v1` (~5-10 min)
+2. Builds `Dockerfile.rich_python`, pushes as `:rich_python-v1` (~5-10 min)
+3. Builds `Dockerfile.ml_tools`, pushes as `:ml_tools-v1` (~30-60 min
    — torch CPU wheels are heavy)
 
 **Total wall-clock: ~50-90 min.** You can let it run unattended; the
@@ -118,9 +122,9 @@ The orchestrator reads three env vars (see
 `C:/WEB/argus/.env`:
 
 ```env
-ECHO_DAST_IMAGE_MINIMAL=registry.fly.io/argus-dast-sandbox:minimal-v1
-ECHO_DAST_IMAGE_NETWORKED=registry.fly.io/argus-dast-sandbox:networked-v1
-ECHO_DAST_IMAGE_ML_TOOLS=registry.fly.io/argus-dast-sandbox:ml-tools-v1
+ECHO_DAST_IMAGE_LEAN=registry.fly.io/argus-dast-sandbox:lean-v1
+ECHO_DAST_IMAGE_RICH_PYTHON=registry.fly.io/argus-dast-sandbox:rich_python-v1
+ECHO_DAST_IMAGE_ML_TOOLS=registry.fly.io/argus-dast-sandbox:ml_tools-v1
 ```
 
 Use the exact tags emitted by `build_and_push_multi.sh` in case the
@@ -133,19 +137,19 @@ Use the exact tags emitted by `build_and_push_multi.sh` in case the
 One-shot machine create + verify expected binaries exist + auto-destroy:
 
 ```bash
-# minimal — should see python + node + java
+# lean — should see python + node + java + curl + wget + nc + dig + openssl
 flyctl machines run \
   --app argus-dast-sandbox \
   --rm \
-  "$ECHO_DAST_IMAGE_MINIMAL" \
-  -- bash -c 'python --version && node --version && java -version 2>&1'
+  "$ECHO_DAST_IMAGE_LEAN" \
+  -- bash -c 'python --version && node --version && java -version 2>&1 && curl -V && wget -V && nc -h 2>&1 | head -1 && dig -v 2>&1 && openssl version'
 
-# networked — should additionally see curl, wget, nc, dig, openssl
+# rich_python — should additionally import scipy + sklearn + openai + anthropic
 flyctl machines run \
   --app argus-dast-sandbox \
   --rm \
-  "$ECHO_DAST_IMAGE_NETWORKED" \
-  -- bash -c 'curl -V && wget -V && nc -h 2>&1 | head -1 && dig -v 2>&1 && openssl version'
+  "$ECHO_DAST_IMAGE_RICH_PYTHON" \
+  -- python -c "import scipy, sklearn, openai, anthropic, langchain_core; print('OK rich_python')"
 
 # ml_tools — should additionally import torch + transformers + safetensors
 flyctl machines run \
@@ -203,15 +207,15 @@ the orchestrator uses — no orchestrator changes needed.
 After Steps 1-4 land, run the methodology N=3 evaluation:
 
 ```bash
-# Baseline N=3 with multi-image plumbing dormant (image_hint=minimal
-# default — same effective behavior as single-image)
+# Baseline N=3 with multi-image plumbing dormant (image_hint=lean default
+# — same effective behavior as single-image)
 for i in 1 2 3; do
   uv run python scripts/dast_prototype/_run_full_regression_fireworks.py
   mv scripts/dast_prototype/results/_full_regression_fireworks.json \
      scripts/dast_prototype/results/_eval_before_$i.json
 done
 
-# After-state N=3 with multi-image active (planner now emits non-minimal
+# After-state N=3 with multi-image active (planner now emits non-lean
 # image_hint values per the prompt rule §9)
 for i in 1 2 3; do
   uv run python scripts/dast_prototype/_run_full_regression_fireworks.py
@@ -228,7 +232,7 @@ uv run python scripts/dast_prototype/_run_per_fix_evaluation.py \
 
 Expected unlocks (per the path-to-80% projection in `ROADMAP.md`):
 
-- `litellm_obfuscated.py`     — exfil confirmation via networked
+- `litellm_obfuscated.py`     — exfil confirmation in `lean` (curl/wget/nc available)
 - `audit_log_compression.py`  — same
 - `event_stream_flatmap_compromise.js` — same
 - `sandbox_runner.js`         — same
@@ -247,11 +251,11 @@ If `ml_tools` causes per-call latency to spike unacceptably (cold
 boot of a 3 GB image is ~5-10 seconds extra):
 
 1. Set `ECHO_DAST_IMAGE_ML_TOOLS` to the same value as
-   `ECHO_DAST_IMAGE_NETWORKED`. Plans requesting `ml_tools` will route
-   to networked. Loses ML-loader confirmation but everything else
+   `ECHO_DAST_IMAGE_RICH_PYTHON`. Plans requesting `ml_tools` will route
+   to rich_python. Loses ML-loader confirmation but everything else
    works.
 2. Or unset `ECHO_DAST_IMAGE_ML_TOOLS` entirely. The wiring config
-   skips it; plans fall back to `minimal`.
+   skips it; plans fall back to `lean`.
 
 Either revert is configuration-only. No code change, no redeploy.
 

@@ -178,7 +178,9 @@ def randomize_positions(
     """
     positions = list(payload.get("positions") or [])
     if len(positions) != 2:
-        raise ValueError(f"expected 2 positions, got {len(positions)} for {payload.get('file_name')!r}")
+        raise ValueError(
+            f"expected 2 positions, got {len(positions)} for {payload.get('file_name')!r}"
+        )
     rng = random.Random(seed)
     indices = [0, 1]
     rng.shuffle(indices)

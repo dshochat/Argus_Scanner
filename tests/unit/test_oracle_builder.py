@@ -76,7 +76,9 @@ def test_median_3_three_way_split() -> None:
 def test_median_even_count_breaks_low() -> None:
     # 4 votes: clean, suspicious, malicious, critical_malicious
     # ranks: 0, 1, 2, 3 → middle pair is (1, 2) → take lower (1) = suspicious
-    assert median_verdict(["clean", "suspicious", "malicious", "critical_malicious"]) == "suspicious"
+    assert (
+        median_verdict(["clean", "suspicious", "malicious", "critical_malicious"]) == "suspicious"
+    )
 
 
 def test_median_drops_unknown_labels() -> None:

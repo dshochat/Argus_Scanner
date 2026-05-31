@@ -121,15 +121,21 @@ _FRAMEWORK_IMPORT_PATTERNS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] 
     ),
     (
         "gin",
-        (re.compile(r'"github\.com/gin-gonic/gin(?:/v\d+)?"'),),
+        (
+            re.compile(r'"github\.com/gin-gonic/gin(?:/v\d+)?"'),
+        ),
     ),
     (
         "echo",
-        (re.compile(r'"github\.com/labstack/echo(?:/v\d+)?"'),),
+        (
+            re.compile(r'"github\.com/labstack/echo(?:/v\d+)?"'),
+        ),
     ),
     (
         "fiber",
-        (re.compile(r'"github\.com/gofiber/fiber(?:/v\d+)?"'),),
+        (
+            re.compile(r'"github\.com/gofiber/fiber(?:/v\d+)?"'),
+        ),
     ),
     (
         "rails",

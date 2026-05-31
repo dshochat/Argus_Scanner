@@ -4,7 +4,79 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — JS string-array deobfuscation preprocessing
+## [1.11.0] — 2026-05-21 — Remediation-first repositioning + production-grade FP defense
+
+This release repositions Argus around **machine-scale verified remediation**: every CONFIRMED finding gets a patched source generated, then the original exploit is replayed against the patched code in the same sandbox. Finding Validation + Remediation are now the default cascade. Zero-day-hunting stages (Exploit Discovery, Behavioral Profiling, Adversarial Reasoning) become opt-in for users who want broader coverage.
+
+### Headline
+
+**Validated remediation is the answer to the modern vuln-throughput problem.** CISOs aren't asking for more findings — they're asking how to close 10,000 open findings before the next audit. Argus's pitch is: AI writes the patch, sandbox proves it works, repeat at scale. This release makes that the default behavior.
+
+### Default cascade flips
+
+| Stage | Default before (v1.5–v1.10) | Default now (v1.11) |
+|---|:---:|:---:|
+| Finding Validation (Phase A) | ON (intrinsic) | ON (intrinsic) |
+| **Remediation (Phase C)** | OFF | **ON** |
+| Exploit Discovery (Phase B+) | ON (since v1.8) | OFF (opt-in) |
+| Behavioral Profiling (Phase 3 Stage 1) | ON (since v1.8) | OFF (opt-in) |
+| Adversarial Reasoning (Phase 3 Stage 2) | ON (since v1.8) | OFF (opt-in) |
+
+`--no-enable-remediation` opts out (compliance / CI / read-only audits). `--enable-runtime-probe --enable-phase-3-discovery --enable-phase-3-loop` restores the v1.10 broad-coverage posture.
+
+### Cost impact
+
+* **Before (v1.10):** ~$0.50–$2.00 per suspicious file (cascade ran all stages by default).
+* **After (v1.11):** ~$0.10–$0.40 per suspicious file (Validation + Remediation only).
+
+Operators who want deeper coverage opt in stage-by-stage.
+
+### Production-grade FP-defense oracle stack (Phases 1+2+3)
+
+Three new precision layers gate every CONFIRMED finding before it lands in the report:
+
+1. **Structured assertions** (`dast/runtime_probe.py`) — model emits a Python predicate (`getattr(result, 'scheme', None) == 'file'`); sandbox evaluates against the live return value. Highest-precision oracle. Replaces the legacy substring-on-`repr()` keyword match for the file://-URL-scheme FP class.
+2. **Static downstream-cap detector** (`dast/downstream_cap.py`) — AST visitor finds same-file callers that bound a function's return below the attack-class threshold. Catches the FP class where the unit-level return is confirmed but the downstream consumer caps the value (the `_parse_retry_after_header → _calculate_retry_timeout(≤60)` pattern).
+3. **Sandbox-syscall sink observation** (`dast/sink_observation.py`) — consults the bpftrace per-probe `syscall_observations` to verify the expected dangerous sink (execve / network connect / openat) actually fired. Catches the FP class where the matcher's string oracle hits content the function didn't fresh-produce. Empirically suppressed 6 false positives on `openai-python/_base_client.py` during pre-release validation.
+
+Every SUPPRESSED finding carries a structured `rejection_reason` traceable to one of the three oracles.
+
+### Phase naming overhaul
+
+Operator-facing labels now use action-noun names that describe what each stage does. Internal Python identifiers + CLI flag names unchanged for back-compat.
+
+| Internal name (kept) | User-facing name (new) |
+|---|---|
+| Phase A | Finding Validation |
+| Phase B+ | Exploit Discovery |
+| Phase 3 Stage 1 | Behavioral Profiling |
+| Phase 3 Stage 2 | Adversarial Reasoning |
+| Phase C | Remediation |
+
+Each rename keeps an "aka 'Phase X' in internal code/JSON" parenthetical in `--help` so anyone digging into source / scan JSON still maps cleanly.
+
+### Other changes since v1.5.0
+
+* **DAST default trigger broadened** to `suspicious,malicious,critical_malicious` (was `malicious,critical_malicious`). Suspicious-verdict files now get runtime confirmation by default; the FP-defense oracle stack absorbs the noise that previously made this trade negative.
+* **SCAN-014 findings-floor invariant**: `final_verdict == "clean"` is now structurally impossible when L1 emitted active findings. Closes the openai-python `azure.py`-class "clean verdict + 3 NOT_TESTED findings" UX contradiction.
+* **SCAN-013 intent classification + cap**: legitimate library code can no longer land as `malicious` / `critical_malicious` regardless of L1's static-shape claims. Static-only findings on library code downgrade to `informational`.
+* **v15.28 tiktoken `<|endoftext|>` fix**: source files containing literal special-token strings (e.g., `openai-python/resources/completions.py`) no longer crash preprocessing with `ValueError: disallowed special token`.
+* **F-A1 Stage-1 silent-failure diagnostic**: when the behavioral probe's BEHAVIORAL_PROFILE_JSON marker is absent (sandbox SIGKILL on heavy-import file, etc.), the harness now surfaces a structured `harness_error: marker_missing:<reason>` instead of returning an indistinguishable-from-clean empty profile.
+* **F-B1 Phase 3 LIBRARY_CONSUMER prompt rewrite**: the adversarial-reasoning loop now correctly recognizes that library code consumes attacker-controllable DATA INPUTS (HTTP responses, parsed bodies, env vars) even when the function-call arguments are developer-controlled. Closes the "library trust boundary → decline to hypothesize" failure mode on SDK code.
+* **Per-finding `SUPPRESSED` status** added to the PFV enum (alongside CONFIRMED/REFUTED/BLOCKED/UNREACHED/NOT_TESTED). Used by the new FP-defense oracle stack to mark findings the matcher confirmed but the precision gates refuted.
+* **`jsonschema>=4.26.0`** added as a runtime dependency (prompt-schema validation paths require it).
+
+### Reverted
+
+* The v1.7-narrow default DAST trigger (`malicious,critical_malicious`) is restored as an opt-in via `--dast-trigger-verdicts "malicious,critical_malicious"` — pinned by `test_dast_narrow_trigger_skips_suspicious_v1_7_compat`.
+
+### Migration notes
+
+* **Operators on tight budgets** can restore the v1.10 default by passing `--no-enable-remediation` (most cost savings) or keeping defaults (Validation + Remediation only; biggest cost drop comes from the three opt-out zero-day-hunting stages).
+* **Compliance / CI / read-only audit workflows**: pass `--no-enable-remediation` so Argus doesn't generate patches you can't apply.
+* **Anyone scripting against `argus scan --help` output**: phase labels changed from "Phase A / B+ / 3" to descriptive names. Internal flag names (`--enable-runtime-probe`, `--enable-phase-3-loop`, `--enable-remediation`) are unchanged.
+
+## [1.11.0] — Also in this release: JS string-array deobfuscation preprocessing
 
 **Live-caught the Mini Shai-Hulud TanStack npm supply-chain attack (May 11, 2026).** The malicious `@tanstack/react-router@1.169.8` shipped a 2.3 MB obfuscator.io-encoded payload (`router_init.js`) at the package root — a deliberate evasion designed to overflow AI scanner context windows. At ~1.53 M tokens it was past every 1 M-context model's input cap; Argus fail-closed to `suspicious vulns=0` and the operator got no detail. This release introduces a preprocessing stage that deobfuscates obfuscator.io string-array payloads via `webcrack` BEFORE the model sees them. Token count on the same file: **1.53 M → 589 K**, fits with headroom. Re-scan verdict: `critical_malicious`, risk **95/100**, **8 enumerated CWEs** (data_exfiltration, code_injection, command_injection, prompt_injection, privilege_escalation, +3).
 

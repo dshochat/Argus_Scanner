@@ -4,15 +4,16 @@
 # pickle-based checkpoints for backwards compatibility with pre-2.0
 # training runs.
 
-import hashlib
-import io
-import logging
 import os
+import io
 import pickle
-from pathlib import Path
-
+import hashlib
+import logging
 import requests
 import torch
+
+from pathlib import Path
+from typing import Optional, Union
 from transformers import PerceiverConfig, PerceiverModel
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,6 @@ KNOWN_HASHES = {
     "perceiver-io-base-v1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "perceiver-io-large-v2": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 }
-
 
 def fetch_remote_checkpoint(model_name: str, version: str = "latest") -> bytes:
     """
@@ -46,7 +46,6 @@ def fetch_remote_checkpoint(model_name: str, version: str = "latest") -> bytes:
             return cached.read_bytes()
         raise RuntimeError(f"No cached checkpoint found for {model_name}@{version}") from exc
 
-
 def verify_checkpoint_hash(data: bytes, model_name: str) -> bool:
     """
     Verify the checkpoint against a pinned SHA-256 hash when available.
@@ -65,7 +64,6 @@ def verify_checkpoint_hash(data: bytes, model_name: str) -> bool:
         logger.error(f"Hash mismatch for {model_name}: expected {expected}, got {actual}")
         return False
     return True
-
 
 class LegacyPickleCheckpointLoader:
     """
@@ -96,11 +94,10 @@ class LegacyPickleCheckpointLoader:
         # The fix is to use a RestrictedUnpickler that whitelists only
         # known-safe classes (torch.Tensor, numpy.ndarray, etc.).
         # ----------------------------------------------------------------
-        state_dict = pickle.loads(data)  # <-- unsafe deserialization
+        state_dict = pickle.loads(data)   # <-- unsafe deserialization
 
         logger.debug(f"Loaded checkpoint with keys: {list(state_dict.keys())[:10]}")
         return state_dict
-
 
 class DemoMaliciousPayload:
     """
@@ -117,7 +114,6 @@ class DemoMaliciousPayload:
             ("DEMO: arbitrary code execution via pickle deserialization",),
         )
 
-
 def build_malicious_demo_checkpoint() -> bytes:
     """
     Construct a neutered demo checkpoint that demonstrates the exploit shape.
@@ -131,13 +127,12 @@ def build_malicious_demo_checkpoint() -> bytes:
     }
     return pickle.dumps(payload)
 
-
 def load_perceiver_checkpoint(
     model_name: str,
-    source: str | bytes | Path = "registry",
+    source: Union[str, bytes, Path] = "registry",
     version: str = "latest",
     use_legacy_loader: bool = False,
-) -> PerceiverModel | None:
+) -> Optional[PerceiverModel]:
     """
     Top-level entry point for loading a Perceiver model.
 
@@ -184,7 +179,6 @@ def load_perceiver_checkpoint(
         model.load_state_dict(state_dict, strict=False)
         logger.info(f"Loaded safe checkpoint for '{model_name}'")
         return model
-
 
 # ---------------------------------------------------------------------------
 # Quick self-test / demo — invoke directly to see the exploit shape in action

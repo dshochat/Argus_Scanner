@@ -26,6 +26,7 @@ wrapper that loops over runs; this module exposes the per-run pieces.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -76,6 +77,12 @@ class BenchRow:
     vulnerabilities: list[dict] = field(default_factory=list)
     behavioral_profile: dict = field(default_factory=dict)
     attack_chains: list[dict] = field(default_factory=list)
+    # v1.6 Fix #8a: L1's intent reasoning. Captured here so the bench
+    # output preserves it for adjudication + post-hoc analysis without
+    # re-scanning. Shape:
+    #   {"purpose": str, "deployment_context": str, "trust_boundary": str,
+    #    "powerful_by_design": list[str]}
+    file_intent_analysis: dict = field(default_factory=dict)
     # Full parsed JSON from the model — every schema field, including
     # ai_tool_analysis / composite_risk / shield_policy that the typed
     # fields above don't break out individually. Mirrors VoterRecord's
@@ -107,6 +114,7 @@ class BenchRow:
             "vulnerabilities": list(self.vulnerabilities),
             "behavioral_profile": dict(self.behavioral_profile),
             "attack_chains": list(self.attack_chains),
+            "file_intent_analysis": dict(self.file_intent_analysis),
             "raw_output": dict(self.raw_output),
             "per_finding_validation": list(self.per_finding_validation),
         }
@@ -201,11 +209,19 @@ async def run_argus_pipeline_one(
     sonnet_runner: Any,
     opus_runner: Any,
     dast_runner: Any,
+    config: Any = None,
 ) -> BenchRow:
-    """Run one file through the full Argus cascade and return a BenchRow."""
+    """Run one file through the full Argus cascade and return a BenchRow.
+
+    Optional ``config`` (a :class:`scanner.engine.ScanConfig`) lets
+    callers enable opt-in flags such as ``enable_phase_3_loop``,
+    ``enable_runtime_probe``, etc. Default ``None`` reproduces the
+    historical bench behavior (all opt-ins off).
+    """
     scan_result = await scan_file(
         filename=filename,
         content=content,
+        config=config,
         triage_runner=triage_runner,
         sonnet_runner=sonnet_runner,
         opus_runner=opus_runner,
@@ -228,6 +244,7 @@ async def run_argus_pipeline_one(
         vulnerabilities=list(scan_result.vulnerabilities),
         behavioral_profile=dict(scan_result.behavioral_profile),
         attack_chains=list(scan_result.attack_chains),
+        file_intent_analysis=dict(getattr(scan_result, "file_intent_analysis", {}) or {}),
         per_finding_validation=list(getattr(scan_result, "per_finding_validation", []) or []),
     )
 
@@ -287,6 +304,7 @@ def _load_existing_rows(output_path: Path) -> list[BenchRow]:
                 vulnerabilities=list(d.get("vulnerabilities") or []),
                 behavioral_profile=dict(d.get("behavioral_profile") or {}),
                 attack_chains=list(d.get("attack_chains") or []),
+                file_intent_analysis=dict(d.get("file_intent_analysis") or {}),
                 raw_output=dict(d.get("raw_output") or {}),
                 per_finding_validation=list(d.get("per_finding_validation") or []),
             )
@@ -386,7 +404,10 @@ async def run_suite(
 
         if row.error is not None:
             consecutive_errors += 1
-            if auto_abort_consecutive_errors is not None and consecutive_errors >= auto_abort_consecutive_errors:
+            if (
+                auto_abort_consecutive_errors is not None
+                and consecutive_errors >= auto_abort_consecutive_errors
+            ):
                 raise BenchAborted(
                     f"auto-aborted after {consecutive_errors} consecutive "
                     f"errors (last on {fn}: {row.error}). "
@@ -446,8 +467,12 @@ def compare_configs(
     return {
         "raw_opus": opus_metrics,
         "argus_full": argus_metrics,
-        "verdict_exact_pp_lift": (argus_metrics["verdict_exact_pct"] - opus_metrics["verdict_exact_pct"]),
-        "mean_distance_improvement": (opus_metrics["mean_distance"] - argus_metrics["mean_distance"]),
+        "verdict_exact_pp_lift": (
+            argus_metrics["verdict_exact_pct"] - opus_metrics["verdict_exact_pct"]
+        ),
+        "mean_distance_improvement": (
+            opus_metrics["mean_distance"] - argus_metrics["mean_distance"]
+        ),
         "cost_ratio": (
             argus_metrics["total_cost_usd"] / opus_metrics["total_cost_usd"]
             if opus_metrics["total_cost_usd"] > 0

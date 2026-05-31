@@ -13,6 +13,7 @@ Only redact self-identification patterns where the model reveals its own identit
 import json
 import logging
 import re
+from typing import Tuple, Optional
 
 log = logging.getLogger("ed-api")
 
@@ -78,7 +79,7 @@ _ALL_LEAK_LOWER = _IDENTITY_LOWER + _PROVIDER_LOWER
 _SANITIZE_PATTERNS = [re.compile(re.escape(s), re.IGNORECASE) for s in _PROVIDER_LOWER]
 
 
-def check_for_leaks(text: str) -> tuple[bool, str | None]:
+def check_for_leaks(text: str) -> Tuple[bool, Optional[str]]:
     """
     Check if text contains any identity or provider strings.
 
@@ -101,7 +102,7 @@ def sanitize_text(text: str) -> str:
     return text
 
 
-def sanitize_response(response_dict: dict) -> tuple[dict | None, bool]:
+def sanitize_response(response_dict: dict) -> Tuple[Optional[dict], bool]:
     """
     Check every string value in the response for forbidden strings.
 
@@ -158,7 +159,9 @@ def sanitize_response(response_dict: dict) -> tuple[dict | None, bool]:
         if isinstance(dva, dict):
             md = dva.get("mismatch_detail", "")
             if isinstance(md, str) and _has_identity_leak(md):
-                log.warning("IDENTITY_LEAK in behavioral_profile.declared_vs_actual.mismatch_detail")
+                log.warning(
+                    "IDENTITY_LEAK in behavioral_profile.declared_vs_actual.mismatch_detail"
+                )
                 return None, True
 
     # ── SOFT provider name matches ──

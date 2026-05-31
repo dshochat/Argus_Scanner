@@ -49,6 +49,8 @@ import httpx
 from inference.adapters import AnthropicAdapter, GoogleAdapter
 from prompts.scanner import SECURITY_SCAN_PROMPT
 from scanner.runners import (
+    GEMINI_FLASH_LITE_COST_IN,
+    GEMINI_FLASH_LITE_COST_OUT,
     OPUS_46_COST_IN,
     OPUS_46_COST_OUT,
     score_to_verdict,
@@ -180,7 +182,9 @@ def make_gemini_voter(
             },
         }
     )
-    return _make_anthropic_or_google_voter(adapter, "gemini_3_1_pro", GEMINI_31_PRO_COST_IN, GEMINI_31_PRO_COST_OUT)
+    return _make_anthropic_or_google_voter(
+        adapter, "gemini_3_1_pro", GEMINI_31_PRO_COST_IN, GEMINI_31_PRO_COST_OUT
+    )
 
 
 def _make_anthropic_or_google_voter(
@@ -263,7 +267,9 @@ def make_gpt5_voter(api_key: str, *, model: str = "gpt-5.4") -> VoterCallable:
 
     async def voter(filename: str, content: bytes) -> VoterRecord:
         text = content.decode("utf-8", errors="replace")
-        user_message = f"Filename: {filename}\nLanguage: {_detect_language(filename)}\n\n```\n{text}\n```"
+        user_message = (
+            f"Filename: {filename}\nLanguage: {_detect_language(filename)}\n\n```\n{text}\n```"
+        )
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -379,7 +385,9 @@ def make_grok_voter(api_key: str, *, model: str = "grok-4.3") -> VoterCallable:
 
     async def voter(filename: str, content: bytes) -> VoterRecord:
         text = content.decode("utf-8", errors="replace")
-        user_message = f"Filename: {filename}\nLanguage: {_detect_language(filename)}\n\n```\n{text}\n```"
+        user_message = (
+            f"Filename: {filename}\nLanguage: {_detect_language(filename)}\n\n```\n{text}\n```"
+        )
         payload: dict[str, Any] = {
             "model": model,
             "messages": [

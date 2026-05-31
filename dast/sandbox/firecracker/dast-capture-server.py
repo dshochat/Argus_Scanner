@@ -24,6 +24,7 @@ already logged the SNI from their ClientHello).
 from __future__ import annotations
 
 import json
+import os
 import socket
 import socketserver
 import struct
@@ -137,7 +138,7 @@ def handle_tcp(conn: socket.socket, addr: tuple, listen_port: int) -> None:
         while len(data) < MAX_READ_BYTES:
             try:
                 chunk = conn.recv(4096)
-            except TimeoutError:
+            except socket.timeout:
                 break
             except Exception:
                 break
@@ -167,7 +168,11 @@ def handle_tcp(conn: socket.socket, addr: tuple, listen_port: int) -> None:
 
         try:
             conn.sendall(
-                b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n{"status":"ok"}\n'
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: 16\r\n"
+                b"\r\n"
+                b'{"status":"ok"}\n'
             )
         except Exception:
             pass
@@ -294,6 +299,79 @@ def serve_dns() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _drop_privileges() -> None:
+    """v1.9 SCAN-009 (B7): drop root after binding privileged ports.
+
+    The capture server needs root to bind ports 80/443/53. After
+    binding, it only handles parsed TLS/HTTP/DNS traffic from sources
+    that the target file's own code triggers — so dropping to a low-
+    privilege user after binding closes a meaningful attack surface:
+    if any parser ever has a buffer-handling bug, the attacker gets
+    uid=nobody (or capture) instead of root.
+
+    Strategy:
+      1. Try ``nobody`` first (always present on Debian/Alpine).
+      2. Try ``capture`` (a dedicated user we could add in the
+         Dockerfile in v1.10).
+      3. Fall through with a warning if neither exists — running as
+         root is the documented v0 behavior, and the parsers ARE
+         bounds-checked at the Python level, so this is defense-in-
+         depth, not a hard requirement.
+
+    Defense-in-depth approach: even ``nobody`` can read /tmp logs and
+    bind unprivileged ports, which is all the capture server needs
+    post-init.
+    """
+    if os.geteuid() != 0:
+        return  # already non-root, nothing to drop
+    target_uids: list[tuple[str, int, int]] = []
+    try:
+        import pwd  # noqa: PLC0415
+        for username in ("capture", "nobody"):
+            try:
+                rec = pwd.getpwnam(username)
+                target_uids.append((username, rec.pw_uid, rec.pw_gid))
+            except KeyError:
+                continue
+    except Exception as exc:
+        log_capture(
+            {
+                "kind": "priv_drop_unavailable",
+                "reason": f"pwd module unavailable: {type(exc).__name__}",
+            }
+        )
+        return
+    for username, uid, gid in target_uids:
+        try:
+            os.setgroups([])  # drop supplementary groups
+            os.setgid(gid)
+            os.setuid(uid)
+            log_capture(
+                {
+                    "kind": "priv_drop_ok",
+                    "user": username,
+                    "uid": uid,
+                    "gid": gid,
+                }
+            )
+            return
+        except (OSError, PermissionError) as exc:
+            log_capture(
+                {
+                    "kind": "priv_drop_failed",
+                    "user": username,
+                    "error": f"{type(exc).__name__}: {exc!s}"[:200],
+                }
+            )
+            continue
+    log_capture(
+        {
+            "kind": "priv_drop_unavailable",
+            "reason": "no nobody/capture user available",
+        }
+    )
+
+
 def main() -> int:
     threads = [
         threading.Thread(target=serve_tcp, args=(HTTP_PORT,), daemon=True),
@@ -303,6 +381,13 @@ def main() -> int:
     for t in threads:
         t.start()
     log_capture({"kind": "server_start", "ports": [HTTP_PORT, HTTPS_PORT, DNS_PORT]})
+
+    # v1.9 SCAN-009 (B7): give the listen-sockets a moment to bind
+    # under root, then drop privileges. After this point the capture
+    # server runs as nobody (or stays root with a logged warning).
+    time.sleep(0.5)
+    _drop_privileges()
+
     # Block forever
     try:
         while True:

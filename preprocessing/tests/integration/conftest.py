@@ -22,7 +22,11 @@ except ImportError:
 
 
 def _db_url() -> str | None:
-    return os.environ.get("ECHO_DATA_URL") or os.environ.get("SUPABASE_DIRECT_URL") or os.environ.get("DATABASE_URL")
+    return (
+        os.environ.get("ECHO_DATA_URL")
+        or os.environ.get("SUPABASE_DIRECT_URL")
+        or os.environ.get("DATABASE_URL")
+    )
 
 
 @pytest.fixture(scope="session")

@@ -36,9 +36,8 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 # Anchors mirror ``shared.types.enums.VERDICT_ANCHORS`` but keyed by
 # label-string. Kept local so the prototype's scripts/ surface stays
@@ -52,7 +51,10 @@ VERDICT_ANCHORS: dict[str, int] = {
 }
 
 VERDICT_RANK: dict[str, int] = {
-    label: i for i, label in enumerate(["clean", "informational", "suspicious", "malicious", "critical_malicious"])
+    label: i
+    for i, label in enumerate(
+        ["clean", "informational", "suspicious", "malicious", "critical_malicious"]
+    )
 }
 
 
@@ -135,7 +137,9 @@ def aggregate_run(
                 tier_value = None
                 break
         if isinstance(tier_value, str):
-            t = per_tier_acc.setdefault(tier_value, {"n": 0, "verdict_exact": 0, "sum_distance": 0.0})
+            t = per_tier_acc.setdefault(
+                tier_value, {"n": 0, "verdict_exact": 0, "sum_distance": 0.0}
+            )
             t["n"] += 1
             t["sum_distance"] += d
             if predicted == oracle:
@@ -324,7 +328,9 @@ def assess_lift(
     def _var(xs: list[float]) -> float:
         return statistics.variance(xs) if len(xs) >= 2 else 0.0
 
-    se_exact = math.sqrt(_var(before_exact) / len(before_exact) + _var(after_exact) / len(after_exact))
+    se_exact = math.sqrt(
+        _var(before_exact) / len(before_exact) + _var(after_exact) / len(after_exact)
+    )
     se_dist = math.sqrt(_var(before_dist) / len(before_dist) + _var(after_dist) / len(after_dist))
 
     exact_lift = am_exact - bm_exact
@@ -348,7 +354,10 @@ def assess_lift(
     elif z_d is not None and z_d >= min_z:
         parts.append(f"distance {distance_lift:+.4f} (z={z_d:+.2f}σ — REGRESSION)")
     if not parts:
-        parts.append(f"exact {exact_lift:+.2f}pp, distance {distance_lift:+.4f} — both within ±{min_z:.1f}σ noise")
+        parts.append(
+            f"exact {exact_lift:+.2f}pp, distance {distance_lift:+.4f} — "
+            f"both within ±{min_z:.1f}σ noise"
+        )
     rationale = "; ".join(parts)
 
     return LiftAssessment(

@@ -8,24 +8,20 @@ and writes verdicts back via API.
 """
 
 import argparse
+import time
 import json
 import logging
-import time
-from datetime import UTC, datetime
-
 import requests
+from datetime import datetime, timezone
+
 from config import (
-    AUTO_APPLY_THRESHOLD,
-    BM_API_BASE,
-    BM_SERVICE_TOKEN,
-    MAX_RETRIES,
-    POLL_INTERVAL_SECONDS,
-    SPOT_CHECK_THRESHOLD,
-    VERDICT_API_KEY,
-    VERDICT_MODEL,
+    BM_API_BASE, BM_SERVICE_TOKEN,
+    VERDICT_API_KEY, VERDICT_MODEL,
+    AUTO_APPLY_THRESHOLD, SPOT_CHECK_THRESHOLD,
+    POLL_INTERVAL_SECONDS, MAX_RETRIES,
 )
 from opus_verdict_adapter import OpusVerdictAdapter
-from prompt_builder import build_batch_verdict_prompt, build_verdict_prompt
+from prompt_builder import build_verdict_prompt, build_batch_verdict_prompt
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,24 +104,21 @@ class VerdictAgent:
         return None
 
     def submit_verdict(self, review_id: str, verdict: dict, auto_applied: bool) -> bool:
-        result = self._post(
-            f"/review/{review_id}/verdict",
-            {
-                "verdict": verdict["verdict"],
-                "verdict_detail": {
-                    "confidence": verdict["confidence"],
-                    "reasoning": verdict["reasoning"],
-                    "corrected_finding": verdict.get("corrected_finding"),
-                    "input_tokens": verdict.get("_input_tokens", 0),
-                    "output_tokens": verdict.get("_output_tokens", 0),
-                    "response_time_ms": verdict.get("_response_time_ms", 0),
-                    "agent": "opus-verdict-agent",
-                    "model": VERDICT_MODEL,
-                    "auto_applied": auto_applied,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                },
+        result = self._post(f"/review/{review_id}/verdict", {
+            "verdict": verdict["verdict"],
+            "verdict_detail": {
+                "confidence": verdict["confidence"],
+                "reasoning": verdict["reasoning"],
+                "corrected_finding": verdict.get("corrected_finding"),
+                "input_tokens": verdict.get("_input_tokens", 0),
+                "output_tokens": verdict.get("_output_tokens", 0),
+                "response_time_ms": verdict.get("_response_time_ms", 0),
+                "agent": "opus-verdict-agent",
+                "model": VERDICT_MODEL,
+                "auto_applied": auto_applied,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             },
-        )
+        })
         return result is not None
 
     def process_review(self, review_item: dict, dry_run: bool = False):
@@ -136,8 +129,7 @@ class VerdictAgent:
 
         log.info(
             "Processing review %s: %s — %s",
-            review_id[:8],
-            review_item.get("review_type", "?"),
+            review_id[:8], review_item.get("review_type", "?"),
             review_item.get("description", "")[:80],
         )
 
@@ -163,7 +155,9 @@ class VerdictAgent:
             self.stats["errors"] += 1
             return
 
-        system_prompt, user_message = build_verdict_prompt(review_item, source_code, model_findings)
+        system_prompt, user_message = build_verdict_prompt(
+            review_item, source_code, model_findings
+        )
 
         if dry_run:
             log.info("[DRY RUN] Would send to Opus — prompt length: %d chars", len(user_message))
@@ -183,9 +177,7 @@ class VerdictAgent:
             self.submit_verdict(review_id, verdict, auto_applied=True)
             log.info(
                 "AUTO-APPLIED: %s (confidence: %.2f) — %s",
-                base_verdict,
-                confidence,
-                verdict["reasoning"][:100],
+                base_verdict, confidence, verdict["reasoning"][:100],
             )
             self.stats["auto_applied"] += 1
 
@@ -248,7 +240,9 @@ class VerdictAgent:
             return
 
         # Build ONE prompt with ALL disagreements
-        system_prompt, user_message = build_batch_verdict_prompt(file_data, model_findings, review_items)
+        system_prompt, user_message = build_batch_verdict_prompt(
+            file_data, model_findings, review_items
+        )
 
         if dry_run:
             log.info("[DRY RUN] Batch — %d items, prompt %d chars", len(review_items), len(user_message))
@@ -293,12 +287,8 @@ class VerdictAgent:
                     confidence = v.get("confidence", 0)
                     if confidence >= AUTO_APPLY_THRESHOLD:
                         self.submit_verdict(item["id"], v, auto_applied=True)
-                        log.info(
-                            "BATCH AUTO-APPLIED: %s (%.2f) — %s",
-                            v["verdict"],
-                            confidence,
-                            v.get("reasoning", "")[:80],
-                        )
+                        log.info("BATCH AUTO-APPLIED: %s (%.2f) — %s",
+                                 v["verdict"], confidence, v.get("reasoning", "")[:80])
                         self.stats["auto_applied"] += 1
                     elif confidence >= SPOT_CHECK_THRESHOLD:
                         v["verdict"] = f"{v['verdict']}_SPOT_CHECK"

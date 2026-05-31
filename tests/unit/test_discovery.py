@@ -10,6 +10,7 @@ import pytest
 from dast.discovery import (
     DISCOVERY_PAYLOADS,
     DiscoveredFinding,
+    DiscoveryPayload,
     _build_plan,
     _events_text,
     _oracle_match,
@@ -18,6 +19,7 @@ from dast.discovery import (
     run_discovery,
 )
 from dast.sandbox.client import SandboxEvent, SandboxPlan, SandboxTrace
+
 
 # ── Stub sandbox client ──────────────────────────────────────────────────────
 
@@ -561,7 +563,9 @@ async def test_run_discovery_handles_timeout() -> None:
             await asyncio.sleep(10)
             raise AssertionError("should never get here")
 
-    findings, summary = await run_discovery(file_id="x.py", sandbox=_HangingSandbox(), timeout_sec=0.1)
+    findings, summary = await run_discovery(
+        file_id="x.py", sandbox=_HangingSandbox(), timeout_sec=0.1
+    )
     assert findings == []
     assert all(s.get("error") == "timeout" for s in summary)
 

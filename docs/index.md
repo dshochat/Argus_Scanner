@@ -1,59 +1,93 @@
 # Argus
 
-**An AI-native code security scanner that proves exploitability at runtime.**
+**AI-native code security scanner.** Open source (Apache 2.0). Multi-stage
+cascade analysis (Gemini Flash-Lite triage → Sonnet 4.6 → Opus 4.6) plus
+runtime DAST verification in Firecracker microVMs. Bring your own API keys.
 
-Argus combines a cost-graduated LLM cascade (Gemini Flash-Lite triage → Sonnet 4.6 → Opus 4.6) with a Firecracker-microVM sandbox tier that *executes* suspect code and observes what it does. Static-analysis findings get promoted to **CONFIRMED** only when the sandbox captures concrete runtime evidence — a network call, a file write, a process spawn. Findings that cannot be triggered are marked **UNREACHED**; findings the file's own defenses block are **BLOCKED**.
+!!! note "v1.7+ status"
+    Production. Beat-Opus benchmark target (≥15pp verdict-exact lift over
+    single-call Opus 4.6 on the 23-file regression suite) met in v1.1 and
+    re-validated on v1.5 / v1.6 / v1.7 cycles. Public release at
+    [`dshochat/Argus_Scanner`](https://github.com/dshochat/Argus_Scanner)
+    (snapshot of this private dev repo at release boundaries).
 
-Open source, Apache 2.0, BYOK. Argus collects nothing — you pay your providers directly on your own keys: Anthropic + Google for the cascade, Fly.io for the optional DAST sandbox.
+## Why Argus
 
-## What you get per finding
+Most open-source scanners (Semgrep, deepsec, GitHub Advanced Security)
+pattern-match. Few reason about *runtime behavior* or chain findings into
+*exploits*. Mythos charges $50-200/scan for what amounts to
+expert-replacement assessment.
 
-| Status | Meaning |
-|---|---|
-| `CONFIRMED` | Sandbox observed the exploit firing. PoC + event trace are surfaced with the finding. |
-| `BLOCKED` | Attack tested; the file's own code defended (sanitization, escaping, allowlist). |
-| `UNREACHED` | Attack tested; the code path is genuinely unreachable. |
-| `NOT_TESTED` | Sandbox couldn't fully validate (sub-reason: `infra_stub` / `inconclusive` / `not_planned`). |
+**Argus targets Mythos-class verdict quality at ~$5-15 in API spend per
+100 files**, with sandbox-confirmed exploitability as the differentiator.
+You bring API keys; Argus collects nothing.
 
-## How the cascade works
+## How it works (one diagram)
 
 ```
 File
   ↓
-[$0]  Preprocessing       hash, deobfuscation, deps, attack-vector flags
+[$0]  Preprocessing      hash, deobfuscation (incl. webcrack), deps,
+                          attack-vector flags, file-type expansion
+                          (Jupyter, ML models, GitHub Actions)
   ↓
-[Gemini Flash-Lite]  Triage  CLEAN | LOW | HIGH (~$0.0001/file)
+[Gemini Flash-Lite]  Triage   CLEAN | LOW | HIGH   (~$0.0001/file)
   ↓
   ├─ CLEAN → return
-  ├─ LOW   → Gemini Flash combined  (~$0.02/file)
-  └─ HIGH  → Sonnet 4.6 combined    (~$0.07/file, default)
-              └─ borderline / high-stakes → Opus 4.6 deep  (~$0.15/file, ~20%)
+  ├─ LOW   → Gemini Flash combined            (~$0.02/file)
+  └─ HIGH  → Sonnet 4.6 combined              (~$0.05-0.30/file, default)
+              └─ borderline OR high-stakes → Opus 4.6 deep
   ↓
-[N=3 Sonnet ensemble]  borderline-uncertainty path
+[N=3 Sonnet ensemble]    on borderline files (uncertainty > 0.4)
   ↓
-[DAST sandbox]         Sonnet orchestrator + Firecracker microVM
-                        (minimal / networked / ml_tools images)
-                        → Opus iter-3 escalation if stuck after 2 iterations
+[DAST Phase A]           per-finding validation (multi-image: lean |
+                          rich_python | ml_tools)
   ↓
-[Engine guard]         DAST never lowers L1's verdict without sandbox-grounded
-                        refutation (DAST-105)
+[DAST Phase B+]          runtime exploit probing (default ON, v1.8)
+[Phase 3 Stage 1 + 2]    behavioral probe + adversarial reasoning loop
+                          + Strategy B (rejection_signature)
+                          + Strategy C (post-trace LLM judge)
+                          (default ON, v1.8)
+[Phase C]                fix-and-verify (opt-in via --enable-remediation, v1.8)
+  ↓
+[Report-layer policy]    downgrade_cap (default) | strict (v1.8)
 ```
 
-The cascade is built around the observation that most files are clean: spend $0.0001 to dispatch a clean file in under a second, $0.07 to deep-analyze a suspicious one, and only invoke the sandbox tier on the small subset where runtime confirmation actually matters.
+Most files terminate before DAST. DAST runs only on
+`malicious` / `critical_malicious` verdicts by default. Phase B+, Phase 3,
+and Phase C are opt-in.
 
-## Install in a minute
+## Install in one minute
 
 ```bash
-git clone git@github.com:dshochat/Argus_Scanner.git && cd Argus_Scanner
+git clone git@github.com:dshochat/Argus.git && cd Argus
 uv sync --extra dev
-cp .env.example .env       # add ANTHROPIC_API_KEY + GEMINI_API_KEY
+cp .env.example .env  # add ANTHROPIC_API_KEY + GEMINI_API_KEY
 uv run argus scan path/to/your/file.py
 ```
 
-Full instructions: [Install & first scan](install.md). DAST sandbox setup: [DAST setup](dast-setup.md).
+Full instructions: [Install & first scan](install.md).
+
+## CLI commands
+
+| Command | Purpose |
+|---|---|
+| `argus scan FILE` | Single file scan |
+| `argus scan-repo PATH` | Whole repo (markdown / JSON / SARIF v2.1.0) |
+| `argus install PACKAGE` | Pre-install gate for PyPI packages |
+| `argus bench` | Beat-Opus benchmark (release validation) |
+
+## Documentation
+
+- [Install & first scan](install.md)
+- [Architecture](architecture.md)
+- [DAST setup](dast-setup.md)
+- [API keys](api-keys.md)
+- [Cost guide](cost-guide.md)
+- [Contributing](contributing.md)
 
 ## License
 
-Apache 2.0. See [LICENSE](https://github.com/dshochat/Argus_Scanner/blob/main/LICENSE).
+Apache 2.0. See [LICENSE](https://github.com/dshochat/Argus/blob/main/LICENSE).
 
-Copyright © 2026 David Shochat and contributors.
+Copyright © 2026 Dudy Shochat and contributors.

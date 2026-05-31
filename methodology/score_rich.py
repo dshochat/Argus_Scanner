@@ -46,7 +46,11 @@ def _f1(pred: set[str], truth: set[str]) -> tuple[float, float, float]:
 
 
 def _normalize(items: list[str], upper: bool = True) -> set[str]:
-    return {(s.strip().upper() if upper else s.strip()) for s in items if isinstance(s, str) and s.strip()}
+    return {
+        (s.strip().upper() if upper else s.strip())
+        for s in items
+        if isinstance(s, str) and s.strip()
+    }
 
 
 def _bench_to_voter_records(path: Path) -> list[VoterRecord]:
@@ -84,7 +88,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="score_rich")
     parser.add_argument("--consensus", type=Path, required=True)
     parser.add_argument("--argus", type=Path, required=True, help="argus_full_run1.json (no-DAST)")
-    parser.add_argument("--argus-with-dast", type=Path, default=None, help="optional argus_full_run1.json (+DAST)")
+    parser.add_argument(
+        "--argus-with-dast", type=Path, default=None, help="optional argus_full_run1.json (+DAST)"
+    )
     parser.add_argument("--opus", type=Path, required=True, help="raw_opus_run1.json")
     parser.add_argument("--voters-dir", type=Path, required=True, help="dir containing voter JSONs")
     args = parser.parse_args()

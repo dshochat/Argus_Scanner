@@ -26,7 +26,10 @@ def _dep(name: str, version: str, source: str) -> Dependency:
 
 def parse_gemfile(path: Path, content: str) -> list[Dependency]:
     source = path.name
-    return [_dep(m.group("name"), m.group("version") or "*", source) for m in _GEM_LINE.finditer(content)]
+    return [
+        _dep(m.group("name"), m.group("version") or "*", source)
+        for m in _GEM_LINE.finditer(content)
+    ]
 
 
 def parse_gemfile_lock(path: Path, content: str) -> list[Dependency]:

@@ -1,5 +1,6 @@
 import json
 
+
 SYSTEM_PROMPT = """You are a senior security researcher with 15 years of experience \
 in vulnerability analysis, malware reverse engineering, and code auditing.
 
@@ -59,18 +60,18 @@ def _extract_code_snippet(source_code: str, finding_details: dict, context_lines
             snippet_lines = []
             for i in range(start, end):
                 marker = " >>> " if i + 1 == ln else "     "
-                snippet_lines.append(f"{i + 1:4d}{marker}{lines[i]}")
+                snippet_lines.append(f"{i+1:4d}{marker}{lines[i]}")
             return "\n".join(snippet_lines)
         except (ValueError, TypeError):
             pass
 
     # If file is small enough, include it all
     if len(lines) <= 100:
-        return "\n".join(f"{i + 1:4d}     {line}" for i, line in enumerate(lines))
+        return "\n".join(f"{i+1:4d}     {line}" for i, line in enumerate(lines))
 
     # Otherwise, return first 50 + last 20 lines with a truncation notice
-    head = "\n".join(f"{i + 1:4d}     {line}" for i, line in enumerate(lines[:50]))
-    tail = "\n".join(f"{i + 1:4d}     {line}" for i, line in enumerate(lines[-20:], start=len(lines) - 20))
+    head = "\n".join(f"{i+1:4d}     {line}" for i, line in enumerate(lines[:50]))
+    tail = "\n".join(f"{i+1:4d}     {line}" for i, line in enumerate(lines[-20:], start=len(lines)-20))
     return f"{head}\n\n... [{len(lines) - 70} lines truncated] ...\n\n{tail}"
 
 
@@ -89,9 +90,7 @@ def _extract_relevant_findings(model_findings: list, review_type: str) -> str:
                 # Compact: just CWE, severity, line, description
                 for v in vulns:
                     desc = v.get("description", v.get("explanation", ""))[:150]
-                    parts.append(
-                        f"  VULN: {v.get('cwe_id', '?')} sev={v.get('severity', '?')} line={v.get('line_number', '?')} — {desc}"
-                    )
+                    parts.append(f"  VULN: {v.get('cwe_id','?')} sev={v.get('severity','?')} line={v.get('line_number','?')} — {desc}")
             else:
                 parts.append("  [no vulnerabilities found]")
 
@@ -122,12 +121,7 @@ def _extract_relevant_findings(model_findings: list, review_type: str) -> str:
 
         else:
             # Unknown type — include compact summaries of everything
-            for key in (
-                "vulnerabilities",
-                "behavioral_profile",
-                "attack_chains",
-                "ai_tool_analysis",
-            ):
+            for key in ("vulnerabilities", "behavioral_profile", "attack_chains", "ai_tool_analysis"):
                 val = finding.get(key)
                 if val:
                     parts.append(f"  {key}: {json.dumps(val, separators=(',', ':'))[:300]}")
@@ -204,7 +198,7 @@ def _smart_code_snippet(source_code: str, review_items: list) -> str:
 
     # Small file — send all with line numbers
     if len(lines) <= 100:
-        return "\n".join(f"{i + 1:4d}  {line}" for i, line in enumerate(lines))
+        return "\n".join(f"{i+1:4d}  {line}" for i, line in enumerate(lines))
 
     # Large but not encoded — send relevant snippets around each finding
     target_lines = set()
@@ -226,13 +220,13 @@ def _smart_code_snippet(source_code: str, review_items: list) -> str:
         for i in sorted_lines:
             if i > prev + 1:
                 result.append("  ...")
-            result.append(f"{i + 1:4d}  {lines[i]}")
+            result.append(f"{i+1:4d}  {lines[i]}")
             prev = i
         return "\n".join(result)
 
     # Fallback: head + tail
-    head = "\n".join(f"{i + 1:4d}  {line}" for i, line in enumerate(lines[:50]))
-    tail = "\n".join(f"{i + 1:4d}  {line}" for i, line in enumerate(lines[-20:], start=len(lines) - 20))
+    head = "\n".join(f"{i+1:4d}  {line}" for i, line in enumerate(lines[:50]))
+    tail = "\n".join(f"{i+1:4d}  {line}" for i, line in enumerate(lines[-20:], start=len(lines)-20))
     return f"{head}\n\n... [{len(lines) - 70} lines truncated] ...\n\n{tail}"
 
 
@@ -248,16 +242,16 @@ def build_batch_verdict_prompt(file_data: dict, model_findings: list, review_ite
     disagreements = ""
     for i, item in enumerate(review_items):
         disagreements += f"""
---- DISAGREEMENT {i + 1} (review_id: {item["id"]}) ---
-Type: {item.get("review_type", "?")}
-Description: {item.get("description", "")}
-Agree: {json.dumps(item.get("models_agree", []), separators=(",", ":"))}
-Disagree: {json.dumps(item.get("models_disagree", []), separators=(",", ":"))}
-Finding: {json.dumps(item.get("finding_details", {}), separators=(",", ":"))}
+--- DISAGREEMENT {i+1} (review_id: {item['id']}) ---
+Type: {item.get('review_type', '?')}
+Description: {item.get('description', '')}
+Agree: {json.dumps(item.get('models_agree', []), separators=(',',':'))}
+Disagree: {json.dumps(item.get('models_disagree', []), separators=(',',':'))}
+Finding: {json.dumps(item.get('finding_details', {}), separators=(',',':'))}
 """
 
     user_message = f"""## Source Code (analyze ONCE, reference for all disagreements)
-Filename: {file_data.get("filename", "unknown")}
+Filename: {file_data.get('filename', 'unknown')}
 ```
 {code_snippet}
 ```
@@ -289,9 +283,9 @@ def build_verdict_prompt(review_item: dict, source_code: str, model_findings: li
     model_section = _extract_relevant_findings(model_findings, review_type)
 
     user_message = f"""## Disagreement: {review_type}
-{review_item.get("description", "No description")}
+{review_item.get('description', 'No description')}
 
-## Code ({review_item.get("filename", "unknown")})
+## Code ({review_item.get('filename', 'unknown')})
 ```
 {code_snippet}
 ```
@@ -299,8 +293,8 @@ def build_verdict_prompt(review_item: dict, source_code: str, model_findings: li
 ## Model Findings
 {model_section}
 
-## Agree: {json.dumps(models_agree, separators=(",", ":"))}
-## Disagree: {json.dumps(models_disagree, separators=(",", ":"))}
+## Agree: {json.dumps(models_agree, separators=(',', ':'))}
+## Disagree: {json.dumps(models_disagree, separators=(',', ':'))}
 
 ## Finding In Question
 {json.dumps(finding_details, indent=2)}

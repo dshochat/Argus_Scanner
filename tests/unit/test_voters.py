@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 import respx
@@ -24,6 +25,7 @@ from methodology.voters import (
     make_grok_voter,
     run_voter,
 )
+
 
 # ── VoterRecord ──────────────────────────────────────────────────────────────
 
@@ -123,7 +125,9 @@ def _ok_openai_response(content: str, in_tokens: int = 1000, out_tokens: int = 5
 async def test_gpt5_voter_happy_path() -> None:
     response_body = json.dumps(
         {
-            "vulnerabilities": [{"cwe": "CWE-78", "type": "command_injection", "severity": "critical"}],
+            "vulnerabilities": [
+                {"cwe": "CWE-78", "type": "command_injection", "severity": "critical"}
+            ],
             "composite_risk": {"score": 80, "reasoning": "...", "exploitability": "high"},
         }
     )
@@ -154,7 +158,9 @@ async def test_gpt5_voter_low_score_is_clean() -> None:
             "composite_risk": {"score": 0, "reasoning": "clean", "exploitability": "none"},
         }
     )
-    respx.post("https://api.openai.com/v1/chat/completions").respond(json=_ok_openai_response(response_body))
+    respx.post("https://api.openai.com/v1/chat/completions").respond(
+        json=_ok_openai_response(response_body)
+    )
     voter = make_gpt5_voter("sk-test")
     out = await voter("clean.py", b"print('hello')")
     assert out.error is None
@@ -165,7 +171,9 @@ async def test_gpt5_voter_low_score_is_clean() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_gpt5_voter_http_error_captured() -> None:
-    respx.post("https://api.openai.com/v1/chat/completions").respond(status_code=500, json={"error": "boom"})
+    respx.post("https://api.openai.com/v1/chat/completions").respond(
+        status_code=500, json={"error": "boom"}
+    )
     voter = make_gpt5_voter("sk-test")
     out = await voter("a.py", b"x = 1")
     assert out.error is not None
@@ -176,7 +184,9 @@ async def test_gpt5_voter_http_error_captured() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_gpt5_voter_invalid_json_captured() -> None:
-    respx.post("https://api.openai.com/v1/chat/completions").respond(json=_ok_openai_response("not json{"))
+    respx.post("https://api.openai.com/v1/chat/completions").respond(
+        json=_ok_openai_response("not json{")
+    )
     voter = make_gpt5_voter("sk-test")
     out = await voter("a.py", b"x = 1")
     assert out.error is not None
@@ -191,7 +201,9 @@ async def test_gpt5_voter_invalid_json_captured() -> None:
 async def test_grok_voter_happy_path() -> None:
     response_body = json.dumps(
         {
-            "vulnerabilities": [{"cwe": "CWE-94", "type": "code_injection", "severity": "critical"}],
+            "vulnerabilities": [
+                {"cwe": "CWE-94", "type": "code_injection", "severity": "critical"}
+            ],
             "composite_risk": {"score": 85, "reasoning": "...", "exploitability": "high"},
         }
     )
@@ -215,7 +227,9 @@ async def test_grok_voter_happy_path() -> None:
 @pytest.mark.asyncio
 @respx.mock
 async def test_grok_voter_http_error_captured() -> None:
-    respx.post("https://api.x.ai/v1/chat/completions").respond(status_code=429, json={"error": "rate limited"})
+    respx.post("https://api.x.ai/v1/chat/completions").respond(
+        status_code=429, json={"error": "rate limited"}
+    )
     voter = make_grok_voter("xai-test")
     out = await voter("a.py", b"x = 1")
     assert out.error is not None
@@ -240,7 +254,9 @@ async def test_voter_raw_output_captures_full_json() -> None:
         "attack_chains": [{"name": "exfil chain"}],
         "composite_risk": {"score": 70, "reasoning": "exfil risk"},
     }
-    respx.post("https://api.openai.com/v1/chat/completions").respond(json=_ok_openai_response(json.dumps(full_json)))
+    respx.post("https://api.openai.com/v1/chat/completions").respond(
+        json=_ok_openai_response(json.dumps(full_json))
+    )
     voter = make_gpt5_voter("sk-test")
     out = await voter("a.py", b"x = 1")
     assert out.error is None
@@ -251,7 +267,9 @@ async def test_voter_raw_output_captures_full_json() -> None:
     assert "attack_chains" in out.raw_output
     assert "composite_risk" in out.raw_output
     # And it's the exact JSON the model returned
-    assert out.raw_output["behavioral_profile"]["actual_capabilities"]["network_calls"] == ["http://attacker.com"]
+    assert out.raw_output["behavioral_profile"]["actual_capabilities"]["network_calls"] == [
+        "http://attacker.com"
+    ]
     assert out.raw_output["attack_chains"][0]["name"] == "exfil chain"
 
 

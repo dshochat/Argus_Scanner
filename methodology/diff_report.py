@@ -191,7 +191,9 @@ def load_rich_oracle(path: Path) -> dict[str, dict[str, Any]]:
         oracle_findings_raw = analysis.get("findings") or []
 
         out[canonical] = {
-            "findings": [normalize_oracle_finding(f) for f in oracle_findings_raw if isinstance(f, dict)],
+            "findings": [
+                normalize_oracle_finding(f) for f in oracle_findings_raw if isinstance(f, dict)
+            ],
             "capability_tags": [str(t) for t in (capabilities.get("tags") or []) if t],
             "dangerous_apis": [str(a) for a in (capabilities.get("dangerous_apis") or []) if a],
             "verdict_label": verdict_block.get("verdict_label"),
@@ -327,7 +329,11 @@ def _summarize_position(label: str, row: BenchRow | None) -> dict[str, Any]:
     """
     if row is None:
         return {"_label_internal": label, "verdict": None, "n_findings": 0, "findings": []}
-    findings = [normalize_argus_vulnerability(v).to_dict() for v in row.vulnerabilities if isinstance(v, dict)]
+    findings = [
+        normalize_argus_vulnerability(v).to_dict()
+        for v in row.vulnerabilities
+        if isinstance(v, dict)
+    ]
     return {
         "_label_internal": label,
         "verdict": row.predicted_verdict,
@@ -406,7 +412,9 @@ def build_diff_record(
         else []
     )
     opus_findings = (
-        [normalize_argus_vulnerability(v) for v in opus_row.vulnerabilities if isinstance(v, dict)] if opus_row else []
+        [normalize_argus_vulnerability(v) for v in opus_row.vulnerabilities if isinstance(v, dict)]
+        if opus_row
+        else []
     )
     oracle_findings = list(rich_oracle_entry.get("findings") or []) if rich_oracle_entry else []
 
@@ -440,7 +448,9 @@ def build_diff_record(
 
     has_disagreement = len({v for v in [argus_v, opus_v, oracle_v] if v}) > 1
     judge_payload = (
-        build_judge_payload(file_name, argus_row, opus_row, oracle_v, file_content) if has_disagreement else None
+        build_judge_payload(file_name, argus_row, opus_row, oracle_v, file_content)
+        if has_disagreement
+        else None
     )
 
     return {
@@ -450,7 +460,9 @@ def build_diff_record(
             "opus": opus_v,
             "oracle": oracle_v,
             "label_provenance": label_provenance,
-            "all_match": (argus_v == oracle_v == opus_v if (argus_v and opus_v and oracle_v) else None),
+            "all_match": (
+                argus_v == oracle_v == opus_v if (argus_v and opus_v and oracle_v) else None
+            ),
         },
         "findings_per_source": {
             "argus": [f.to_dict() for f in argus_findings],
@@ -524,10 +536,13 @@ def render_markdown(records: list[dict[str, Any]]) -> str:
     n_argus_match = sum(
         1
         for r in records
-        if r["verdict_match"]["argus"] and r["verdict_match"]["argus"] == r["verdict_match"]["oracle"]
+        if r["verdict_match"]["argus"]
+        and r["verdict_match"]["argus"] == r["verdict_match"]["oracle"]
     )
     n_opus_match = sum(
-        1 for r in records if r["verdict_match"]["opus"] and r["verdict_match"]["opus"] == r["verdict_match"]["oracle"]
+        1
+        for r in records
+        if r["verdict_match"]["opus"] and r["verdict_match"]["opus"] == r["verdict_match"]["oracle"]
     )
     n_argus_refused = sum(1 for r in records if r["argus_refused"])
     n_opus_refused = sum(1 for r in records if r["opus_refused"])
@@ -542,7 +557,9 @@ def render_markdown(records: list[dict[str, Any]]) -> str:
     lines.append(f"**Argus refusals**: {n_argus_refused}/{n}")
     lines.append(f"**Vanilla Opus refusals**: {n_opus_refused}/{n}")
     lines.append(f"**Disagreements (sent to BENCH-011 judge)**: {n_disagreements}/{n}")
-    lines.append(f"**Rich-oracle subset (CWE / capability overlap available)**: {n_with_rich}/{n}\n")
+    lines.append(
+        f"**Rich-oracle subset (CWE / capability overlap available)**: {n_with_rich}/{n}\n"
+    )
 
     # CWE / capability aggregate over rich-oracle subset
     rich_records = [r for r in records if r["cwe_overlap"] is not None]
@@ -553,20 +570,28 @@ def render_markdown(records: list[dict[str, Any]]) -> str:
         lines.append("## Tier 2 — CWE F1 (rich-oracle subset)")
         lines.append(f"- Argus mean CWE F1: **{argus_f1:.3f}**")
         lines.append(
-            f"- Vanilla Opus mean CWE F1: **{opus_f1:.3f}** (sample size n={n_rich} — directional signal only)\n"
+            f"- Vanilla Opus mean CWE F1: **{opus_f1:.3f}** "
+            f"(sample size n={n_rich} — directional signal only)\n"
         )
 
     rich_caps = [r for r in records if r["capability_overlap"] is not None]
     if rich_caps:
         n_caps = len(rich_caps)
-        argus_cap_f1 = sum(r["capability_overlap"]["argus_vs_oracle"]["f1"] for r in rich_caps) / n_caps
-        opus_cap_f1 = sum(r["capability_overlap"]["opus_vs_oracle"]["f1"] for r in rich_caps) / n_caps
+        argus_cap_f1 = (
+            sum(r["capability_overlap"]["argus_vs_oracle"]["f1"] for r in rich_caps) / n_caps
+        )
+        opus_cap_f1 = (
+            sum(r["capability_overlap"]["opus_vs_oracle"]["f1"] for r in rich_caps) / n_caps
+        )
         lines.append("## Tier 2 — Capability tag F1 (rich-oracle subset)")
         lines.append(f"- Argus mean capability F1: **{argus_cap_f1:.3f}**")
         lines.append(f"- Vanilla Opus mean capability F1: **{opus_cap_f1:.3f}**\n")
 
     lines.append("## Per-file results\n")
-    lines.append("| File | Argus | Opus | Oracle | Provenance | Argus refused | Opus refused | Disagreement |")
+    lines.append(
+        "| File | Argus | Opus | Oracle | Provenance "
+        "| Argus refused | Opus refused | Disagreement |"
+    )
     lines.append("|---|---|---|---|---|---|---|---|")
     for r in records:
         vm = r["verdict_match"]

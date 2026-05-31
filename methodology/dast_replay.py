@@ -226,11 +226,14 @@ async def replay_all(
         cost = replay_meta.get("dast_cost_usd", 0.0)
         dur = replay_meta.get("dast_duration_ms", 0)
         err = replay_meta.get("error")
-        n_conf = sum(1 for pf in (out.get("per_finding_validation") or []) if pf.get("status") == "CONFIRMED")
+        n_conf = sum(
+            1 for pf in (out.get("per_finding_validation") or []) if pf.get("status") == "CONFIRMED"
+        )
         n_total = len(out.get("per_finding_validation") or [])
         print(
             f"  [{i:>2}/{len(rows)}] {row.file_name:<48} "
-            f"confirmed={n_conf}/{n_total} cost=${cost:.4f} dur={dur}ms" + (f"  ERR: {err[:80]}" if err else "")
+            f"confirmed={n_conf}/{n_total} cost=${cost:.4f} dur={dur}ms"
+            + (f"  ERR: {err[:80]}" if err else "")
         )
 
     return out_rows
@@ -270,11 +273,13 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    print("=== DAST replay (Tier 1) ===")
+    print(f"=== DAST replay (Tier 1) ===")
     print(f"  input:  {args.input}")
     print(f"  output: {args.output}")
     print(f"  suite:  {args.suite_dir}")
-    print(f"  dast eligibility: {'ALL' if args.all_files else 'malicious + critical_malicious only'}")
+    print(
+        f"  dast eligibility: {'ALL' if args.all_files else 'malicious + critical_malicious only'}"
+    )
     print()
 
     out_rows = asyncio.run(
@@ -289,10 +294,15 @@ def main() -> int:
     )
 
     n_total = len(out_rows)
-    n_with_dast = sum(1 for r in out_rows if (r.get("dast_replay") or {}).get("skipped_reason") is None)
+    n_with_dast = sum(
+        1 for r in out_rows if (r.get("dast_replay") or {}).get("skipped_reason") is None
+    )
     total_cost = sum((r.get("dast_replay") or {}).get("dast_cost_usd", 0.0) for r in out_rows)
     n_errors = sum(1 for r in out_rows if (r.get("dast_replay") or {}).get("error"))
-    print(f"\n  done: {n_total} rows, {n_with_dast} with DAST replay, ${total_cost:.4f} total, {n_errors} errors")
+    print(
+        f"\n  done: {n_total} rows, {n_with_dast} with DAST replay, "
+        f"${total_cost:.4f} total, {n_errors} errors"
+    )
     print(f"  -> {args.output}")
     return 0
 

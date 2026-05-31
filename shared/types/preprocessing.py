@@ -44,7 +44,8 @@ class PromptInjectionIndicator(BaseModel):
     )
     match_preview: str = Field(
         description=(
-            "Truncated single-line preview of the matched text + local context. Never contains secret material."
+            "Truncated single-line preview of the matched text + local "
+            "context. Never contains secret material."
         ),
         max_length=200,
     )
@@ -55,7 +56,9 @@ class PromptInjectionIndicator(BaseModel):
             "None when the match was detected only in post-decode content."
         ),
     )
-    severity: Severity = Field(description="Preprocessing-side severity; L1 can override later.")
+    severity: Severity = Field(
+        description="Preprocessing-side severity; L1 can override later."
+    )
 
 
 # ── PREP-009 size tiering ─────────────────────────────────────────────────
@@ -160,7 +163,7 @@ class Preprocessing(BaseModel):
         description=(
             "PREP-009: file-size classification. SMALL <100KB, MEDIUM "
             "100-500KB, LARGE 500KB-5MB, OVERSIZED ≥5MB (skipped). "
-            'Complements ``skip_reason`` which is set to ``"too_large"`` '
+            "Complements ``skip_reason`` which is set to ``\"too_large\"`` "
             "on OVERSIZED files."
         ),
     )
@@ -169,8 +172,8 @@ class Preprocessing(BaseModel):
         max_length=40,
         description=(
             "When set, model stages do not fire on this file. Current "
-            'values: ``"too_large"`` (>5MB, PREP-009), ``"empty"`` '
-            '(zero-byte or whitespace-only, PREP-010), ``"binary"`` '
+            "values: ``\"too_large\"`` (>5MB, PREP-009), ``\"empty\"`` "
+            "(zero-byte or whitespace-only, PREP-010), ``\"binary\"`` "
             "(NUL byte in first 1000 or >30% non-printable, PREP-010). "
             "Future: repo-mode skip-list matches. Preservation "
             "principle: the preprocessing block still reports hash + "

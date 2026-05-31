@@ -18,7 +18,10 @@ def test_deobfuscate_single_base64_call() -> None:
     result = deobfuscate(src)
     assert result.applied is True
     assert result.layers >= 1
-    assert ObfuscationTechnique.EXEC_CHAIN in result.techniques or ObfuscationTechnique.BASE64 in result.techniques
+    assert (
+        ObfuscationTechnique.EXEC_CHAIN in result.techniques
+        or ObfuscationTechnique.BASE64 in result.techniques
+    )
     assert "print('hi')" in result.content
 
 
@@ -266,7 +269,6 @@ def test_raw_deflate_payload_is_decoded() -> None:
     assert ObfuscationTechnique.ZLIB_COMPRESS in result.techniques
     assert "raw deflate payload" in result.content
 
-
 # ── PREP-012: trigger discipline — plain base64 must not fire decode ──
 
 
@@ -403,7 +405,6 @@ def test_should_attempt_gate_matches_labeling_patterns() -> None:
     # a decodable payload inside, which is intentional (labeling behaves
     # the same way).
     from preprocessing.deobfuscation import _should_attempt_decode  # noqa: PLC0415
-
     payload = base64.b64encode(b"x = 1").decode()
     yes = [
         f'exec(base64.b64decode("{payload}"))',
@@ -424,7 +425,7 @@ def test_should_attempt_gate_matches_labeling_patterns() -> None:
         'JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abc"',
         'DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA"',
         'PEM = "-----BEGIN RSA PRIVATE KEY-----\\nMIICXAIBAAKBgQ=\\n-----END"',
-        "x = base64.b64decode(some_var)  # b64 call, no exec context",
+        'x = base64.b64decode(some_var)  # b64 call, no exec context',
     ]
     for src in no:
         assert not _should_attempt_decode(src), f"gate should NOT fire on: {src!r}"
@@ -505,7 +506,9 @@ def test_deobfuscate_declines_on_compound_expression_argument() -> None:
     ``data/labeling`` also only handles the bare-variable case.
     """
     payload = base64.b64encode(b"print('hi')" * 10).decode()
-    src = f'_PARTS = ["{payload[:20]}", "{payload[20:]}"]\nexec(base64.b64decode("".join(_PARTS)))\n'
+    src = (
+        f'_PARTS = ["{payload[:20]}", "{payload[20:]}"]\nexec(base64.b64decode("".join(_PARTS)))\n'
+    )
 
     result = deobfuscate(src)
 
@@ -635,7 +638,7 @@ def test_marshal_detected_but_does_not_inflate_layers() -> None:
     detected-but-not-decoded signal even when paired.
     """
     payload = base64.b64encode(b"x = 1").decode()
-    src = f'marshal.loads(base64.b64decode("{payload}"))'
+    src = f"marshal.loads(base64.b64decode(\"{payload}\"))"
     result = deobfuscate(src)
 
     # MARSHAL appears in techniques as a detected signal.
@@ -652,7 +655,10 @@ def test_marshal_plus_decoded_base64_records_both_techniques() -> None:
 
     assert result.applied is True
     assert ObfuscationTechnique.MARSHAL in result.techniques
-    assert ObfuscationTechnique.BASE64 in result.techniques or ObfuscationTechnique.EXEC_CHAIN in result.techniques
+    assert (
+        ObfuscationTechnique.BASE64 in result.techniques
+        or ObfuscationTechnique.EXEC_CHAIN in result.techniques
+    )
     # Layers count only the decoded ones.
     assert result.layers >= 1
     assert result.decoded_blob_count == result.layers

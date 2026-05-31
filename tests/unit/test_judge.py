@@ -178,7 +178,10 @@ def test_build_user_message_includes_all_signals() -> None:
 
 
 def test_build_user_message_caps_findings() -> None:
-    findings = [{"cwe": f"CWE-{i}", "type": "x", "severity": "low", "line": i, "title": f"f{i}"} for i in range(50)]
+    findings = [
+        {"cwe": f"CWE-{i}", "type": "x", "severity": "low", "line": i, "title": f"f{i}"}
+        for i in range(50)
+    ]
     record = _diff_record(argus_findings=findings)
     blinded, _ = randomize_positions(record["judge_payload"], seed="bar")
     msg = build_user_message(blinded)
@@ -292,7 +295,9 @@ async def test_judge_one_happy_path() -> None:
 @respx.mock
 async def test_judge_one_http_error_captured() -> None:
     record = _diff_record()
-    respx.post(f"{DEFAULT_OPENAI_BASE_URL}/chat/completions").respond(status_code=500, json={"error": "boom"})
+    respx.post(f"{DEFAULT_OPENAI_BASE_URL}/chat/completions").respond(
+        status_code=500, json={"error": "boom"}
+    )
 
     out = await judge_one(record, api_key="sk-test", seed="x")
 
@@ -305,7 +310,9 @@ async def test_judge_one_http_error_captured() -> None:
 @respx.mock
 async def test_judge_one_invalid_json_captured() -> None:
     record = _diff_record()
-    respx.post(f"{DEFAULT_OPENAI_BASE_URL}/chat/completions").respond(json=_ok_response("not parseable"))
+    respx.post(f"{DEFAULT_OPENAI_BASE_URL}/chat/completions").respond(
+        json=_ok_response("not parseable")
+    )
     out = await judge_one(record, api_key="sk-test", seed="x")
     assert out.error is not None
     assert "invalid JSON" in out.error

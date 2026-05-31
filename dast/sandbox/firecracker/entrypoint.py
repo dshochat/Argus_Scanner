@@ -40,6 +40,15 @@ Event kinds emitted (taxonomy mapped 1:1 to SandboxEvent kinds in
                           for TLS handshakes.
   file_writes_observed    Set of new-or-changed files in /workspace
   code_pattern_observed   A pattern in EXPECTED_PATTERNS was found in source
+  syscall_observations    Kernel-level syscall counts + samples captured
+                          by bpftrace sidecar (Phase 2 observability).
+                          Includes execve / openat / connect / mmap-exec
+                          / setuid / unshare / etc. Closes V0 bypass
+                          paths (raw libc, wide-fs writes, raw sockets).
+  syscall_observability_error  bpftrace stderr if it died or failed to
+                          attach. Diagnostic-only; orchestrator falls
+                          back to language-instrumentation alone.
+  syscall_drain_error     /tmp/syscalls.jsonl parse failed.
   env_error               Sandbox-side problem (decoding, etc.)
   execution_complete      Sentinel — terminal event, always last
 
@@ -76,7 +85,46 @@ import time
 from pathlib import Path
 
 WORKSPACE = Path("/workspace")
-STDIO_EXCERPT_CAP = 1024  # chars per command, per stream
+#: Cap on per-command stdout/stderr captured back to the orchestrator.
+#:
+#: Tuning history:
+#:   * 1024 (initial): sized for single-function probe RESULT_JSON
+#:     markers (one return value, value_preview up to 600 chars + framing).
+#:     Adequate for v1.5 single-function probes; insufficient for the
+#:     larger marker shapes that landed later.
+#:   * 8192 (current, v1.6): bumped after Phase 3 Stage 1 behavioral
+#:     probe and (earlier) Phase 2 v1.0 chain harness rewrite both hit
+#:     silent-failure mode where the marker exceeded 1024 chars and
+#:     got truncated mid-content. Truncated JSON failed parse →
+#:     orchestrator returned empty profile / per_step=(no steps). The
+#:     8x increase gives headroom for:
+#:       * Behavioral probe profiles (up to MAX_CALLABLES_EXPLORED × 3
+#:         invocations × ~250 chars per invocation entry) ≈ 6KB
+#:       * Multi-step chain CHAIN_RESULT_JSON (3 steps × ~700 chars
+#:         per_step + framing) ≈ 2.5KB
+#:       * Future Phase 3 Stage 2 adversarial-loop trace summaries
+#:     Pushing the cap further risks Fly log line truncation; 8192 is
+#:     well within Fly's typical 64KB-per-line budget.
+STDIO_EXCERPT_CAP = 8192  # chars per command, per stream
+
+#: Path the harness writes its full structured result to. Bypasses
+#: Fly's per-log-line size cap (≈ 4KB) which truncates large
+#: ``process_exit.stdout_excerpt`` payloads mid-content. See
+#: ``_drain_probe_result_file`` for the read + chunk-emit flow.
+#:
+#: All harnesses (behavioral probe, chain, single-function) that emit
+#: large structured markers write the same JSON to this path in
+#: addition to printing the inline marker to stdout. Backward compat:
+#: small markers still emit on stdout for any reader that doesn't
+#: support the chunk-event reassembly path yet.
+PROBE_RESULT_FILE = "/workspace/argus_probe_result.json"
+
+#: Maximum payload size per ``probe_result_chunk`` event. Sized so the
+#: full event JSON (event_id + kind + payload framing + chunk content)
+#: stays well below Fly's per-log-line cap (~4KB observed in practice).
+#: 1500 bytes content + ~200 bytes framing = ~1700-byte log lines.
+PROBE_CHUNK_BYTES = 1500
+
 NETWORK_DETECT_PATTERNS = (
     r"name or service not known",
     r"nodename nor servname",
@@ -89,6 +137,15 @@ NETWORK_DETECT_PATTERNS = (
     r"getaddrinfo failed",
 )
 NETWORK_DETECT_RE = re.compile("|".join(NETWORK_DETECT_PATTERNS), re.IGNORECASE)
+
+#: Caps on syscall-observation aggregation (Phase 2 v0.1).
+#: Tuned for typical 60s plan + 180s bpftrace budget. A target firing
+#: 10k+ syscalls/sec would produce a multi-MB jsonl; we read up to
+#: SYSCALL_LOG_MAX_BYTES and bound the sample volume separately so
+#: Stage 2's prompt doesn't see a wall of detail.
+SYSCALL_MAX_SAMPLES_PER_KIND = 20
+SYSCALL_MAX_TOTAL_SAMPLES = 200
+SYSCALL_LOG_MAX_BYTES = 16 * 1024 * 1024  # 16 MB
 
 
 def emit(kind: str, payload: dict, event_id: str | None = None) -> None:
@@ -169,6 +226,63 @@ def main() -> int:
     for i, cmd in enumerate(commands):
         if not isinstance(cmd, str) or not cmd.strip():
             continue
+
+        # Defensive: detect bare Python source emitted as a shell command.
+        # The planner occasionally drops a stray Python line (e.g.
+        # ``import json``) as a standalone command — usually a heredoc
+        # whose terminator got mis-quoted by the LLM. /bin/sh then
+        # interprets ``import`` / ``from`` / ``def`` etc. as shell
+        # builtins-not-found and emits ``exit_code=127 /bin/sh:
+        # import: not found`` with no useful trace. Mark it as
+        # ``env_error`` with a clear reason so the orchestrator's
+        # rejection_reason text points at the planner bug instead of
+        # the shell error, and skip execution (no point — would fail).
+        first = cmd.lstrip().split(None, 1)[0] if cmd.lstrip() else ""
+        _PY_LEADING_TOKENS = {
+            "import", "from", "def", "class", "async", "await",
+            "print(", "if", "elif", "else:", "for", "while", "try:",
+            "except", "finally:", "with", "return", "yield", "raise",
+            "lambda", "@",
+        }
+        looks_like_python = (
+            first in _PY_LEADING_TOKENS
+            or any(first.startswith(t) for t in (
+                "print(", "@", "def ", "class ", "async ", "await ",
+            ))
+        )
+        if looks_like_python and "python3" not in cmd[:50]:
+            emit(
+                "env_error",
+                {
+                    "reason": "plan_command_bare_python",
+                    "step": i,
+                    "detail": (
+                        f"Plan command starts with Python token {first!r} "
+                        f"but is not wrapped in `python3 -c '...'` or "
+                        f"`python3 /path/script.py`. The sandbox launcher "
+                        f"runs commands via /bin/sh, which would interpret "
+                        f"this as a shell builtin and fail. Wrap multi-line "
+                        f"Python in `python3 -c '...'` with proper "
+                        f"single-quote escaping, or write the script to "
+                        f"/workspace/<name>.py first and invoke it."
+                    ),
+                    "cmd_excerpt": cmd[:240],
+                },
+            )
+            emit(
+                "process_exit",
+                {
+                    "step": i,
+                    "exit_code": 127,
+                    "stdout_excerpt": "",
+                    "stderr_excerpt": (
+                        f"argus-entrypoint: refused bare-Python command "
+                        f"(starts with {first!r}); wrap in python3 -c '...'."
+                    ),
+                },
+            )
+            continue
+
         emit("process_spawn", {"step": i, "cmd": cmd[:300]})
         try:
             proc = subprocess.run(
@@ -195,6 +309,62 @@ def main() -> int:
                 "stderr_excerpt": stderr_excerpt,
             },
         )
+
+        # 4a-bis. File-based transport drain. Bypasses Fly's per-log-
+        # line ~4KB cap that silently truncates the ``stdout_excerpt``
+        # field on ``process_exit`` for any probe whose marker output
+        # exceeds the cap. Harnesses that produce structured markers
+        # (behavioral probe, chain, single-function on large returns)
+        # are instructed to ALSO write the full marker payload to
+        # ``PROBE_RESULT_FILE``; the entrypoint reads + chunks it into
+        # ``probe_result_chunk`` events sized to fit the log line cap.
+        # The orchestrator-side parser reassembles chunks and prefers
+        # this channel over stdout for structured-result parsing.
+        try:
+            result_path = Path(PROBE_RESULT_FILE)
+            if result_path.exists() and result_path.is_file():
+                try:
+                    content = result_path.read_text(encoding="utf-8", errors="replace")
+                except Exception as _read_err:
+                    emit(
+                        "probe_result_error",
+                        {
+                            "step": i,
+                            "reason": "read_failed",
+                            "detail": str(_read_err)[:200],
+                        },
+                    )
+                    content = ""
+                if content:
+                    total = (len(content) + PROBE_CHUNK_BYTES - 1) // PROBE_CHUNK_BYTES
+                    for idx in range(total):
+                        chunk = content[idx * PROBE_CHUNK_BYTES : (idx + 1) * PROBE_CHUNK_BYTES]
+                        emit(
+                            "probe_result_chunk",
+                            {
+                                "step": i,
+                                "chunk_index": idx,
+                                "total_chunks": total,
+                                "content": chunk,
+                            },
+                        )
+                # Clean up for the next command so concurrent commands
+                # don't see stale results.
+                try:
+                    result_path.unlink()
+                except Exception:
+                    pass
+        except Exception as _drain_err:
+            # Drain failure must not poison the main event stream —
+            # journal it as a diagnostic and continue.
+            emit(
+                "probe_result_error",
+                {
+                    "step": i,
+                    "reason": "drain_failed",
+                    "detail": str(_drain_err)[:200],
+                },
+            )
 
         # 4b. Detect attempted-network signals from stderr
         for line in (proc.stderr or "").splitlines()[:80]:
@@ -293,6 +463,89 @@ def main() -> int:
                 "env_error",
                 {"reason": "captured_jsonl_read_failed", "detail": str(e)[:200]},
             )
+
+    # 5c. Drain bpftrace syscall observability log (Phase 2 v0.1).
+    # /tmp/syscalls.jsonl contains one JSON object per syscall captured
+    # by argus-syscalls.bt (loaded by dast-init.sh as a root sidecar).
+    # We aggregate counts + a bounded sample of detail records, then
+    # emit ONE `syscall_observations` event per plan.
+    #
+    # Aggregation strategy:
+    #   * count by syscall name
+    #   * collect up to N sample records per syscall (preserves arg
+    #     detail like filename for openat, target_uid for setuid)
+    #   * total bounded — never emit > MAX_SYSCALL_SAMPLES regardless
+    #     of stream volume
+    syscall_path = Path("/tmp/syscalls.jsonl")
+    if syscall_path.exists():
+        try:
+            syscall_counts: dict[str, int] = {}
+            syscall_samples: dict[str, list[dict]] = {}
+            total_samples = 0
+            bpftrace_meta: dict = {"start": None, "end": None, "lines_read": 0}
+            raw = syscall_path.read_text(encoding="utf-8", errors="replace")
+            if len(raw) > SYSCALL_LOG_MAX_BYTES:
+                raw = raw[:SYSCALL_LOG_MAX_BYTES]
+            for line in raw.splitlines():
+                bpftrace_meta["lines_read"] += 1
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # Meta records (bpftrace_start / bpftrace_timeout /
+                # bpftrace_end) get tracked separately from syscall
+                # records.
+                kind = rec.get("kind", "")
+                if kind == "bpftrace_start":
+                    bpftrace_meta["start"] = rec.get("ts")
+                    continue
+                if kind in ("bpftrace_timeout", "bpftrace_end"):
+                    bpftrace_meta["end"] = rec.get("ts")
+                    continue
+                sc = rec.get("syscall", "")
+                if not sc:
+                    continue
+                syscall_counts[sc] = syscall_counts.get(sc, 0) + 1
+                if total_samples < SYSCALL_MAX_TOTAL_SAMPLES:
+                    per_sc = syscall_samples.setdefault(sc, [])
+                    if len(per_sc) < SYSCALL_MAX_SAMPLES_PER_KIND:
+                        # Drop the noisy ts field from samples (we have
+                        # the start/end meta); keep the per-event details.
+                        sample = {k: v for k, v in rec.items() if k != "ts"}
+                        per_sc.append(sample)
+                        total_samples += 1
+            if syscall_counts or bpftrace_meta["lines_read"] > 0:
+                emit(
+                    "syscall_observations",
+                    {
+                        "counts": syscall_counts,
+                        "samples": syscall_samples,
+                        "meta": bpftrace_meta,
+                    },
+                )
+        except Exception as _sc_err:
+            # Syscall drain is best-effort — never poison the main
+            # event stream. Emit diagnostic and continue.
+            emit(
+                "syscall_drain_error",
+                {"detail": str(_sc_err)[:200]},
+            )
+        # Also emit bpftrace stderr if it died — helps debug "kernel
+        # doesn't support BPF" failure mode in a fresh image.
+        err_path = Path("/tmp/bpftrace.err")
+        if err_path.exists():
+            try:
+                err_content = err_path.read_text(encoding="utf-8", errors="replace")
+                if err_content.strip():
+                    emit(
+                        "syscall_observability_error",
+                        {"stderr_excerpt": err_content[:1500]},
+                    )
+            except OSError:
+                pass
 
     # 6. Pattern-presence (drives `code_pattern_observed` for Phase B)
     if expected_patterns_json:

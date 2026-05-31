@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from preprocessing import detect_framework
 
+
 # ── Positive: each framework is detected on its canonical import form ──
 
 
@@ -120,7 +121,10 @@ def test_no_match_login_in_comment() -> None:
 
 
 def test_no_match_begin_in_docstring() -> None:
-    assert detect_framework('"""Begin with a short description of the module."""\n') is None
+    assert (
+        detect_framework('"""Begin with a short description of the module."""\n')
+        is None
+    )
 
 
 def test_no_match_engine_in_text() -> None:
@@ -169,7 +173,7 @@ def test_no_match_express_in_string_literal() -> None:
     cases = [
         'config = {"shipping": "express"}\n',
         'RATE_TIER = "express"\n',
-        '# We use "express" as the shipping mode label.\n',
+        "# We use \"express\" as the shipping mode label.\n",
         'data = {"mode": "express", "cost": 5}\n',
     ]
     for content in cases:

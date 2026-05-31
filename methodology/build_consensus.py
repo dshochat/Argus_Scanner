@@ -92,7 +92,11 @@ def main() -> int:
     args = parser.parse_args()
 
     # Validate inputs.
-    missing = [p for p in [args.opus_bench_rows, args.gemini_voter, args.gpt_voter, args.grok_voter] if not p.exists()]
+    missing = [
+        p
+        for p in [args.opus_bench_rows, args.gemini_voter, args.gpt_voter, args.grok_voter]
+        if not p.exists()
+    ]
     if missing:
         print(f"ERROR: missing inputs: {missing}", file=sys.stderr)
         return 2
@@ -102,7 +106,7 @@ def main() -> int:
         print(f"ERROR: no files in baseline {args.baseline}", file=sys.stderr)
         return 2
 
-    print("=== build consensus oracle ===")
+    print(f"=== build consensus oracle ===")
     print(f"  baseline files: {len(file_list)}")
     print(f"  opus rows:      {args.opus_bench_rows}")
     print(f"  gemini voter:   {args.gemini_voter}")
@@ -170,7 +174,9 @@ def main() -> int:
             print()
             print("  CHANGED labels:")
             for c in diff["changed_files"]:
-                voter_str = ", ".join(f"{k}={v}" for k, v in (c.get("voter_verdicts") or {}).items())
+                voter_str = ", ".join(
+                    f"{k}={v}" for k, v in (c.get("voter_verdicts") or {}).items()
+                )
                 print(
                     f"    {c['file_name']:<48} "
                     f"old={c['old_verdict']!s:<22} -> new={c['new_verdict']!s:<22} "

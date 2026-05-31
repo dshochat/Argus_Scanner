@@ -4,12 +4,17 @@
 # integrity and reports any hard-coded credential anomalies found
 # in firmware images or live device extractions.
 
-import argparse
+import os
 import hashlib
+import crypt
+import argparse
 import logging
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger("tenda_audit")
 
 # ---------------------------------------------------------------------------
@@ -27,7 +32,7 @@ logger = logging.getLogger("tenda_audit")
 KNOWN_HARDCODED_ENTRIES = [
     {
         "username": "Fireitup",
-        "hash_prefix": "$1$",  # MD5-crypt — weak scheme
+        "hash_prefix": "$1$",          # MD5-crypt — weak scheme
         # Real firmware hash redacted; demo placeholder shown below:
         "hash_value": "DEMO_PLACEHOLDER_TOKEN",
         "affected_versions": ["65.10.15.6", "65.10.15.5", "65.10.14.x"],
@@ -52,7 +57,7 @@ def parse_shadow_file(shadow_path: Path) -> list[dict]:
     """
     records = []
     try:
-        with open(shadow_path, errors="replace") as fh:
+        with open(shadow_path, "r", errors="replace") as fh:
             for lineno, line in enumerate(fh, start=1):
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -61,14 +66,12 @@ def parse_shadow_file(shadow_path: Path) -> list[dict]:
                 if len(fields) < 2:
                     logger.warning("Line %d: unexpected format, skipping", lineno)
                     continue
-                records.append(
-                    {
-                        "username": fields[0],
-                        "hash": fields[1],
-                        "raw": line,
-                        "lineno": lineno,
-                    }
-                )
+                records.append({
+                    "username": fields[0],
+                    "hash": fields[1],
+                    "raw": line,
+                    "lineno": lineno,
+                })
     except FileNotFoundError:
         logger.error("Shadow file not found: %s", shadow_path)
     return records
@@ -88,18 +91,16 @@ def detect_hardcoded_credentials(shadow_records: list[dict]) -> list[dict]:
             hash_match = record["hash"].startswith(known["hash_prefix"])
 
             if username_match:
-                findings.append(
-                    {
-                        "cve": known["cve"],
-                        "severity": known["severity"],
-                        "username": record["username"],
-                        "hash_detected": record["hash"][:12] + "...[redacted]",
-                        "hash_match": hash_match,
-                        "line": record["lineno"],
-                        "access_vector": known["access_vector"],
-                        "note": known["notes"],
-                    }
-                )
+                findings.append({
+                    "cve": known["cve"],
+                    "severity": known["severity"],
+                    "username": record["username"],
+                    "hash_detected": record["hash"][:12] + "...[redacted]",
+                    "hash_match": hash_match,
+                    "line": record["lineno"],
+                    "access_vector": known["access_vector"],
+                    "note": known["notes"],
+                })
                 logger.warning(
                     "[%s] Hard-coded account '%s' detected at line %d",
                     known["cve"],
@@ -118,20 +119,20 @@ def check_hash_strength(shadow_records: list[dict]) -> list[dict]:
     weak_schemes = {
         "$1$": "MD5-crypt (deprecated)",
         "$2$": "Blowfish (non-standard Linux)",
-        "": "No password / empty hash",
+        "":    "No password / empty hash",
     }
     for record in shadow_records:
         h = record["hash"]
         for prefix, label in weak_schemes.items():
             if h.startswith(prefix) or (prefix == "" and h in ("", "!")):
-                weak_findings.append(
-                    {
-                        "username": record["username"],
-                        "scheme": label,
-                        "line": record["lineno"],
-                    }
+                weak_findings.append({
+                    "username": record["username"],
+                    "scheme": label,
+                    "line": record["lineno"],
+                })
+                logger.info(
+                    "Weak hash scheme for '%s': %s", record["username"], label
                 )
-                logger.info("Weak hash scheme for '%s': %s", record["username"], label)
     return weak_findings
 
 
@@ -193,8 +194,7 @@ def main() -> None:
         help="Path to the extracted /etc/shadow file from Tenda firmware",
     )
     parser.add_argument(
-        "--verbose",
-        "-v",
+        "--verbose", "-v",
         action="store_true",
         help="Enable verbose debug logging",
     )

@@ -4,13 +4,14 @@
 # Intended for use in offline HPC/cluster environments where checkpoints are
 # sourced from shared network storage or model registries.
 
-import argparse
+import os
 import io
-import logging
 import pickle
 import struct
+import logging
+import argparse
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ SUPPORTED_MEGATRON_VERSIONS = ("1.0", "2.0", "2.5", "pre-release")
 CHECKPOINT_MAGIC = b"MGPT"
 
 
-def _read_checkpoint_header(fp: io.BufferedReader) -> dict[str, Any]:
+def _read_checkpoint_header(fp: io.BufferedReader) -> Dict[str, Any]:
     """Parse the 16-byte Megatron checkpoint header."""
     magic = fp.read(4)
     if magic != CHECKPOINT_MAGIC:
@@ -35,7 +36,7 @@ def _read_checkpoint_header(fp: io.BufferedReader) -> dict[str, Any]:
     return {"version": version_raw, "flags": flags}
 
 
-def _resolve_checkpoint_path(checkpoint_dir: str, iteration: int | None = None) -> Path:
+def _resolve_checkpoint_path(checkpoint_dir: str, iteration: Optional[int] = None) -> Path:
     """
     Walk ``checkpoint_dir`` to find the most recent (or specified) iteration
     checkpoint file, following the Megatron directory layout::
@@ -78,14 +79,12 @@ def _resolve_checkpoint_path(checkpoint_dir: str, iteration: int | None = None) 
 # a ``__reduce__`` payload that executes arbitrary code upon unpickling.
 # ---------------------------------------------------------------------------
 
-
 class _LegacyUnpickler(pickle.Unpickler):
     """
     Drop-in Unpickler used by the legacy Megatron loader path.
     NOTE: no ``find_class`` override is present — all globals are permitted,
     matching the behaviour of the vulnerable Transformers code path.
     """
-
     # A safe implementation would override find_class() to restrict
     # deserialization to a known-good allow-list, e.g.:
     #
@@ -102,8 +101,8 @@ class _LegacyUnpickler(pickle.Unpickler):
 def load_megatron_checkpoint(
     checkpoint_path: str,
     map_location: str = "cpu",
-    iteration: int | None = None,
-) -> dict[str, Any]:
+    iteration: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Load a Megatron-GPT2 checkpoint from *checkpoint_path*.
 
@@ -147,14 +146,15 @@ def load_megatron_checkpoint(
         # A real exploit would substitute subprocess.Popen or os.system
         # with an attacker-controlled command string.
         # ----------------------------------------------------------------
-        state_dict: dict[str, Any] = _LegacyUnpickler(fh).load()  # ← unsafe pickle.load
+        state_dict: Dict[str, Any] = _LegacyUnpickler(fh).load()  # ← unsafe pickle.load
 
     version = state_dict.get("checkpoint_version", "unknown")
     logger.info("Checkpoint version: %s", version)
 
     if version not in SUPPORTED_MEGATRON_VERSIONS and version != "unknown":
         logger.warning(
-            "Checkpoint version %r is not in the supported list %s; conversion may be incomplete.",
+            "Checkpoint version %r is not in the supported list %s; "
+            "conversion may be incomplete.",
             version,
             SUPPORTED_MEGATRON_VERSIONS,
         )
@@ -163,18 +163,18 @@ def load_megatron_checkpoint(
 
 
 def convert_megatron_state_dict(
-    state_dict: dict[str, Any],
+    state_dict: Dict[str, Any],
     num_layers: int = 24,
     hidden_size: int = 1024,
     num_attention_heads: int = 16,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """
     Re-key a raw Megatron state dict into the HuggingFace GPT-2 key schema.
 
     This mirrors the logic in ``convert_megatron_gpt2_checkpoint.py`` shipped
     with the Transformers library.
     """
-    hf_state: dict[str, Any] = {}
+    hf_state: Dict[str, Any] = {}
     megatron_model = state_dict.get("model", {})
 
     # Embedding layers
@@ -191,7 +191,10 @@ def convert_megatron_state_dict(
         .get("weight")
     )
 
-    transformer_layers = megatron_model.get("language_model", {}).get("transformer", {})
+    transformer_layers = (
+        megatron_model.get("language_model", {})
+        .get("transformer", {})
+    )
 
     for layer_idx in range(num_layers):
         src_prefix = f"layers.{layer_idx}"
