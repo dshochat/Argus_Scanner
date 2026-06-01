@@ -1,6 +1,6 @@
 [project]
 name = "argus-ai-scanner"
-version = "1.11.1"
+version = "1.12.0"
 description = "AI-native code security scanner: runtime sandbox-validated remediation. Confirm exploits, auto-patch, replay against the fix — all at machine scale."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -71,6 +71,18 @@ docs = [
     "mkdocs>=1.6.0",
     "mkdocs-material>=9.5.0",
 ]
+# MCP scanning mode (v1.12). The official Python SDK is OPTIONAL —
+# Argus ships a minimal JSON-RPC client that handles stdio +
+# streamable-HTTP + SSE transports for full probe-injection control
+# (the SDK validates schemas client-side which blocks adversarial
+# input testing). The optional `mcp` package is listed here for
+# users who also build / test MCP servers and want the canonical
+# SDK in the same venv.
+#
+# Install with: pip install argus-ai-scanner[mcp]
+mcp = [
+    "mcp>=1.0.0",
+]
 
 [project.scripts]
 argus = "scanner.cli:main"
@@ -124,6 +136,7 @@ packages = [
     "analysis",
     "dast",
     "inference",
+    "mcp_scanner",
     "methodology",
     "preprocessing",
     "prompts",
@@ -137,6 +150,7 @@ include = [
     "/analysis",
     "/dast",
     "/inference",
+    "/mcp_scanner",
     "/methodology",
     "/preprocessing",
     "/prompts",

@@ -1049,7 +1049,152 @@ def _build_parser() -> argparse.ArgumentParser:
         "Default: 'claude-opus-4-6'. See `argus scan --help` for full "
         "semantics + caveats.",
     )
+
+    # ── argus mcp — MCP server scanning (v1.12) ────────────────────────────
+    # Dynamic security testing for Model Context Protocol servers. Plugs
+    # into the existing engine via mcp_scanner.cli — flag definitions
+    # live HERE so they surface in ``argus --help`` and pass the
+    # every-subparser-help-renders-cleanly regression check.
+    mcp = sub.add_parser(
+        "mcp",
+        help="Scan / enumerate Model Context Protocol (MCP) servers. "
+        "Speaks stdio (sandboxed) and streamable-HTTP / SSE. See "
+        "``argus mcp enumerate --help`` for v1.12 entry points.",
+    )
+    mcp_sub = mcp.add_subparsers(dest="mcp_command", required=True)
+
+    _add_mcp_target_args(
+        mcp_sub.add_parser(
+            "enumerate",
+            help="MCP recon — connect, list tools/resources/prompts, "
+            "classify params, emit a surface map. No active attacks.",
+        )
+    )
+    _add_mcp_target_args(
+        mcp_sub.add_parser(
+            "scan",
+            help="Run the MCP probe catalog (SSRF, redirect, fail-open, "
+            "auth-bypass) against the enumerated surface. Remote targets "
+            "require --authorized.",
+        ),
+        include_scan_flags=True,
+    )
+
     return parser
+
+
+def _add_mcp_target_args(
+    p: argparse.ArgumentParser, *, include_scan_flags: bool = False
+) -> None:
+    """Shared flag definitions for ``argus mcp enumerate`` + ``argus mcp scan``.
+
+    Both subcommands accept the same target / transport / auth flags;
+    only ``scan`` adds the active-probe knobs. Keeping the shared block
+    in one place avoids drift between the two help screens.
+    """
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument(
+        "--url",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="Remote MCP server URL (http:// or https://). Use --transport "
+        "to pick http / sse / streamable-http (default: streamable-http).",
+    )
+    target.add_argument(
+        "--stdio",
+        type=str,
+        default=None,
+        metavar="CMD",
+        help="Local MCP server launch command, e.g. 'uvx some-mcp-server'. "
+        "``argus mcp scan`` always runs stdio targets inside the Firecracker "
+        "sandbox (safety contract); ``enumerate`` runs direct-subprocess "
+        "for fast local recon.",
+    )
+
+    p.add_argument(
+        "--transport",
+        choices=("http", "sse", "streamable-http"),
+        default=None,
+        help="Override the inferred transport for --url. Default: "
+        "streamable-http (2025-03-26 MCP spec).",
+    )
+    p.add_argument(
+        "--auth",
+        choices=("none", "token"),
+        default="none",
+        help="Authentication scheme. Default: none. ``token`` requires "
+        "--auth-token <value> (sent as Authorization: Bearer ...).",
+    )
+    p.add_argument(
+        "--auth-token",
+        type=str,
+        default=None,
+        metavar="TOKEN",
+        help="Bearer token value used with --auth token. Read this from "
+        "an env var, not your shell history (e.g. --auth-token \"$MCP_TOKEN\").",
+    )
+
+    p.add_argument(
+        "--report",
+        choices=("json", "md"),
+        default="json",
+        help="Output format. Default: json (machine-readable). md = "
+        "human-readable Markdown.",
+    )
+    p.add_argument(
+        "--output-file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Write the report to this file instead of stdout.",
+    )
+
+    if not include_scan_flags:
+        return
+
+    # ── active-scan-only flags ─────────────────────────────────────────
+    p.add_argument(
+        "--authorized",
+        action="store_true",
+        help="REQUIRED for active scans against --url. Confirms you have "
+        "permission to attack the target. Stdio targets do not need this "
+        "flag because they run inside the Argus sandbox with isolated egress.",
+    )
+    p.add_argument(
+        "--oob",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="External OOB callback endpoint for blind-SSRF confirmation "
+        "on remote targets (e.g. https://abc.interact.sh). Stdio targets "
+        "use the in-sandbox capture-server and don't need --oob. If "
+        "omitted, Argus spawns a local listener (see Step 6 docs).",
+    )
+    p.add_argument(
+        "--canary-config",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Path to a JSON file overriding the default canary "
+        "payload set (IMDS targets, redirect chains, fail-open inputs).",
+    )
+    p.add_argument(
+        "--scope-deny",
+        action="append",
+        default=[],
+        metavar="CIDR",
+        help="CIDR range probes must NEVER send the target to. Repeatable. "
+        "Defense-in-depth on top of the sandbox / OOB isolation.",
+    )
+    p.add_argument(
+        "--tools",
+        type=str,
+        default=None,
+        metavar="LIST",
+        help="Comma-separated subset of tool names to scan (default: all). "
+        "Useful for narrowing a re-run after a partial scan.",
+    )
 
 
 async def _run_scan(args: argparse.Namespace) -> int:
@@ -2251,6 +2396,24 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_scan_repo(args))
     if args.command == "install":
         return asyncio.run(_run_install(args))
+    if args.command == "mcp":
+        # MCP mode (v1.12). Handlers live in mcp_scanner.cli; we lazy-
+        # import so users who never run ``argus mcp`` don't pay any
+        # import cost (and so a future optional [mcp] dep doesn't
+        # become required for the rest of the CLI to load).
+        from mcp_scanner.cli import _run_mcp_enumerate, _run_mcp_scan
+
+        mcp_command = getattr(args, "mcp_command", None)
+        if mcp_command == "enumerate":
+            return asyncio.run(_run_mcp_enumerate(args))
+        if mcp_command == "scan":
+            return asyncio.run(_run_mcp_scan(args))
+        print(
+            "error: 'argus mcp' requires a subcommand (enumerate|scan). "
+            "Try 'argus mcp enumerate --help'.",
+            file=sys.stderr,
+        )
+        return 2
     return 1
 
 

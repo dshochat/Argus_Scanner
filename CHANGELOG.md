@@ -4,6 +4,36 @@ All notable changes to Argus are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] — 2026-06-01 — MCP server scanning mode
+
+Adds dynamic security testing for Model Context Protocol servers. A new `argus mcp` subcommand speaks MCP over stdio (sandboxed) and Streamable-HTTP / SSE (remote, opt-in), enumerates the tool / resource / prompt surface, classifies each parameter, and runs a black-box probe catalog. It's a self-contained plug-in that reuses the existing DAST sandbox, SSRF payload catalog, CWE→probe registry, and findings schema — the only change to the rest of the engine is one CLI subparser block.
+
+### Added
+
+* **`argus mcp enumerate <target>`** — recon only. Handshake, `tools/list` + `resources/list` + `prompts/list`, parameter classification (URL / HOST / PATH / COMMAND / QUERY / FUZZ), surface-map output. No attacks; always safe to run.
+* **`argus mcp scan <target>`** — active probe catalog:
+  * **SSRF** (CWE-918) — 8 canaries per URL/HOST param: AWS IMDSv1 + IMDSv2 token endpoint, GCP / Azure metadata, decimal + hex IP encodings, loopback variants.
+  * **Redirect-to-internal** (CWE-601 → CWE-918) — external-looking URLs that 30x-redirect to internal targets; catches missing post-redirect re-validation.
+  * **Fail-open** (CWE-755) — malformed inputs (NUL bytes, oversize, CRLF, garbage, wrong types) probe whether validation silently bypasses on exception.
+  * **Authorization bypass** (CWE-862) — paired authed-vs-unauthed calls per tool with a response-shape diff.
+* **Transports:** stdio (launched as a subprocess; sandboxed execution path wired through the existing Firecracker `SandboxClient`) and Streamable-HTTP / SSE via httpx.
+* **Out-of-band listener** for blind-SSRF confirmation on remote HTTP targets — `--oob <url>` for a user-supplied interactsh / dnslog / webhook.site endpoint, or an Argus-managed local listener spawned automatically.
+* **Reports:** `--report json` (stable `argus.mcp.scan-report` schema, `schema_version=1`) and `--report md` (human summary). Findings carry `confirmed` (runtime evidence) vs heuristic, CWE, CVSS estimate, payload, response excerpt, network evidence, and a copy-paste remediation + repro.
+* **Flags:** `--stdio` / `--url`, `--transport`, `--auth none|token` + `--auth-token`, `--oob`, `--canary-config`, `--scope-deny <cidr>` (repeatable), `--tools <list>`, `--authorized`, `--report`, `--output-file`.
+* Optional `[mcp]` extra (`pip install argus-ai-scanner[mcp]`) for users who also want the official Python MCP SDK in the same venv. Argus itself ships a minimal JSON-RPC client and does not depend on the SDK.
+
+### Safety
+
+* Remote URL scans **refuse to attack** without `--authorized`. Stdio scans skip the gate (sandbox-protected).
+* `--scope-deny <cidr>` drops any probe whose canary URL targets a denied IP range.
+* Exit codes for CI gating: `0` = no / heuristic-only findings, `1` = at least one confirmed finding, `2` = usage / consent error.
+
+### Out of scope for v1.12 (clean extension points)
+
+Prompt-injection / LLM testing, static MCP code analysis, continuous monitoring, advisory auto-generation.
+
+See [docs/mcp.md](docs/mcp.md) for the operator guide.
+
 ## [1.11.1] — 2026-05-30 — Anthropic model overrides (SCAN-020)
 
 Adds two new CLI flags so operators can pick the Anthropic model used in each tier without code edits — bump to a newer Opus version, run Opus in both slots for a high-precision audit, or swap a future Anthropic-compatible model into either slot.

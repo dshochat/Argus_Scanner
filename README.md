@@ -45,7 +45,7 @@ Every CONFIRMED row has a kernel-level event trace. Every Remediation row has a 
 The composition is the engineering. Each layer is structurally best-in-class for one job; skipping work the other layers can absorb is what makes the pipeline both fast and verified.
 
 - **Deterministic preprocessing** — hash dedup, AST parsing, deobfuscation, known-malware hash lookup. Free, byte-deterministic. Argus never burns a token on what a hash match can decide.
-- **Semantic LLM** (Sonnet 4.6 / Opus 4.6) — reads intent, designs exploits, writes patches, judges sandbox traces. The only layer that can answer *"is this function supposed to take untrusted input?"*
+- **Semantic LLM** — reads intent, designs exploits, writes patches, judges sandbox traces. The only layer that can answer *"is this function supposed to take untrusted input?"* Two role-based tiers: a **scan tier** (default Sonnet 4.6 — triage + L1 + DAST probe inference) and a **deep-reasoning tier** (default Opus 4.6 — borderline escalation, adversarial reasoning, adjudication). Both defaults are overridable to *any* model in the Anthropic ecosystem — bump to a newer Opus, run Opus in both slots for a high-precision audit, or point either tier at a future Anthropic-API-compatible model — via `--scan-model` / `--reasoning-model`. No code edits, no lock-in.
 - **Runtime sandbox** (Firecracker microVM + kernel-syscall observation via bpftrace) — the ground-truth oracle. The only layer that can prove an exploit actually fired or a patch actually closed the hole.
 
 Pure-SAST tools have no runtime. Classic DAST tools have no semantic reasoning. Pattern-based remediation tools generate patches without verification. Argus closes all three gaps in one pipeline.
@@ -87,6 +87,8 @@ Default cost on a typical scan: **$0.10–$0.40 per suspicious file**. Opt-in ze
 - **Doc / web attack surface:** Markdown · RST · AsciiDoc · HTML · SVG · XML
 
 **Sandbox (Validation + Remediation):** Python · JS/TS · shell · Java bytecode. Non-executable formats stay cascade-only.
+
+**Dynamic MCP server scanning** (`argus mcp`): black-box probing of live Model Context Protocol servers over stdio (sandboxed) or HTTP / SSE — SSRF (incl. cloud IMDS + alt IP encodings), redirect-to-internal, fail-open validation, and authorization bypass. Findings come from runtime evidence (sandbox network captures or out-of-band callbacks), not static guesses. See [docs/mcp.md](docs/mcp.md).
 
 **Roadmap:** Go · Rust · .NET.
 
@@ -132,15 +134,25 @@ argus scan-repo . --diff origin/main --output sarif --output-file argus.sarif
 
 # Cap per-file API spend
 argus scan path/to/file.py --max-cost 0.50
+
+# Swap the model on either tier — defaults are Sonnet 4.6 (scan) + Opus 4.6 (reasoning).
+# Pass any Anthropic-ecosystem model_id; same id on both = high-precision audit mode.
+argus scan path/to/file.py --scan-model claude-opus-4-8 --reasoning-model claude-opus-4-8
+
+# Scan a live MCP server (no API key needed — probes are deterministic)
+argus mcp enumerate --stdio "python -m my_mcp_server"     # recon only
+argus mcp scan --stdio "python -m my_mcp_server"          # active probes, sandboxed
+argus mcp scan --url https://mcp.example.com/mcp --authorized   # remote (consent-gated)
 ```
 
-Full reference: `argus scan --help`, `argus scan-repo --help`, `argus install --help`.
+Full reference: `argus scan --help`, `argus scan-repo --help`, `argus install --help`, `argus mcp enumerate --help`.
 
 ## Documentation
 
 | Topic | Page |
 |---|---|
 | Install + first scan | [docs/install.md](docs/install.md) |
+| MCP server scanning | [docs/mcp.md](docs/mcp.md) |
 | DAST sandbox setup (Fly.io) | [docs/dast-setup.md](docs/dast-setup.md) |
 | Architecture deep dive | [docs/architecture.md](docs/architecture.md) |
 | Cost guide | [docs/cost-guide.md](docs/cost-guide.md) |
