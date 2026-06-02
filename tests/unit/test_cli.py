@@ -102,6 +102,44 @@ def test_format_markdown_includes_error() -> None:
     assert "analysis_failure" in out
 
 
+def test_format_markdown_renders_remediation() -> None:
+    """Phase C (auto-patch + exploit-replay) must appear in the markdown
+    report — previously the data lived only in --output json."""
+    r = _sample_result()
+    r.phase_c = {
+        "attempted": True,
+        "post_patch_verdict": "informational",
+        "n_neutralized": 1,
+        "n_still_exploitable": 0,
+        "n_unverifiable": 1,
+        "per_finding": [
+            {"finding_ref": "H001", "original_status": "CONFIRMED",
+             "post_patch_status": "NEUTRALIZED"},
+            {"finding_ref": "H002", "original_status": "CONFIRMED",
+             "post_patch_status": "UNVERIFIABLE"},
+        ],
+        "per_finding_fixes": [
+            {"finding_ref": "H001",
+             "change_description": "replaced shell=True with an argv list"},
+        ],
+        "fix_summary": "Swapped string interpolation for a parameterized call.",
+    }
+    out = cli.format_markdown(r)
+    assert "## Remediation (auto-patch + exploit-replay)" in out
+    assert "`informational`" in out
+    assert "1 NEUTRALIZED" in out
+    assert "1 UNVERIFIABLE" in out
+    assert "**H001**: CONFIRMED → **NEUTRALIZED**" in out
+    assert "replaced shell=True with an argv list" in out
+    assert "Swapped string interpolation" in out
+
+
+def test_format_markdown_no_remediation_when_absent() -> None:
+    r = _sample_result()
+    r.phase_c = None
+    assert "## Remediation" not in cli.format_markdown(r)
+
+
 # ── argparse ───────────────────────────────────────────────────────────────
 
 

@@ -530,6 +530,12 @@ _VERDICT_RANK: dict[str, int] = {
     "critical_malicious": 4,
 }
 
+# Storage bound for the verdict's free-text log_summary. The request
+# schema deliberately has no hard maxLength (so the model is never
+# rejected for an over-long log string); we truncate to this on ingest.
+# Kept in sync with shared.types.verdict.Verdict.log_summary's max_length.
+_LOG_SUMMARY_MAX = 400
+
 
 def _has_refutation_of_prior_confirmed(
     claim_verdicts: list,
@@ -1745,7 +1751,11 @@ async def run_dast(
             # the litellm_obfuscated-style erosion where iter 2's failed
             # re-confirmation (curl missing in image) was treated as
             # disconfirmation.
-            log_summary = cur.get("log_summary", "")
+            # Truncate on ingest: the request schema no longer caps
+            # log_summary length (so the model is never rejected for an
+            # over-long log string), so bound it here for storage + to
+            # satisfy the Verdict model's max_length.
+            log_summary = (cur.get("log_summary") or "")[:_LOG_SUMMARY_MAX]
             if (
                 max_dast_verdict_rank >= 0
                 and new_rank < max_dast_verdict_rank

@@ -199,6 +199,43 @@ def format_markdown(result: ScanResult) -> str:
             f"{len(result.dast_iterations)} iterations"
         )
         lines.append("")
+    # Remediation (Phase C): auto-patch + replay the SAME exploit against the
+    # patched code. Surfaced here so `--output markdown` shows the fix-and-verify
+    # loop, not just detection/validation (the JSON always carried `phase_c`).
+    pc = result.phase_c or {}
+    if pc.get("attempted"):
+        n_neu = int(pc.get("n_neutralized", 0) or 0)
+        n_still = int(pc.get("n_still_exploitable", 0) or 0)
+        n_unv = int(pc.get("n_unverifiable", 0) or 0)
+        lines.append("## Remediation (auto-patch + exploit-replay)")
+        lines.append("")
+        ppv = pc.get("post_patch_verdict")
+        if ppv:
+            lines.append(f"**Post-patch verdict:** `{ppv}`  ")
+        lines.append(
+            f"**Replay:** {n_neu} NEUTRALIZED · {n_still} STILL_EXPLOITABLE · "
+            f"{n_unv} UNVERIFIABLE"
+        )
+        lines.append("")
+        fixes_by_ref = {
+            f.get("finding_ref"): f.get("change_description", "")
+            for f in (pc.get("per_finding_fixes") or [])
+        }
+        for pf in pc.get("per_finding") or []:
+            ref = pf.get("finding_ref", "?")
+            orig = pf.get("original_status", "?")
+            post = (pf.get("post_patch_status") or "?").upper()
+            lines.append(f"- **{ref}**: {orig} → **{post}**")
+            change = fixes_by_ref.get(ref)
+            if change:
+                lines.append(f"  - patch: {change}")
+        if pc.get("fix_summary"):
+            lines.append("")
+            lines.append(f"**Patch summary:** {pc['fix_summary']}")
+        if pc.get("skipped_reason"):
+            lines.append("")
+            lines.append(f"_Remediation incomplete: {pc['skipped_reason']}_")
+        lines.append("")
     if result.error:
         lines.append("## Error")
         lines.append("")

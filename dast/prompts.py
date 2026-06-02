@@ -198,7 +198,16 @@ def phase_a_verdict_schema() -> dict[str, Any]:
                 ],
                 "properties": {
                     "verdict_label": {"type": "string", "enum": _VERDICT_LABELS},
-                    "log_summary": {"type": "string", "maxLength": 250},
+                    # No hard maxLength: a security verdict must never be
+                    # REJECTED at the tool-call layer because a log string ran
+                    # a few chars long (that caused intermittent schema-
+                    # validation retries). We nudge for brevity via the
+                    # description and truncate on ingest (see orchestrator).
+                    "log_summary": {
+                        "type": "string",
+                        "description": "One concise sentence (~1-2 lines) "
+                        "summarizing the verdict and the key evidence.",
+                    },
                     "validated_findings": {
                         "type": "array",
                         "items": {"type": "string"},

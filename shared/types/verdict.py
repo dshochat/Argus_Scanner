@@ -45,7 +45,10 @@ class Verdict(BaseModel):
             "score from the logprob distribution over this token."
         ),
     )
-    log_summary: str = Field(max_length=200)
+    # Bound matches dast.orchestrator._LOG_SUMMARY_MAX (truncated on
+    # ingest). Generous enough that a concise verdict summary is never
+    # rejected; the request schema has no hard cap (see dast/prompts.py).
+    log_summary: str = Field(max_length=400)
     recommended_action: RecommendedAction | None = None
     validation_status: ValidationStatus | None = Field(
         default=None,
