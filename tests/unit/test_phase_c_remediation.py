@@ -24,14 +24,38 @@ All tests stub the inference + sandbox interfaces; no live API calls.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from dast.orchestrator import _run_phase_c_fix_verify
+from dast.orchestrator import _post_patch_status, _run_phase_c_fix_verify
 from dast.sandbox.client import SandboxTrace
+
+# ── post-patch verdict → status mapping (regression for the inverted map) ──
+
+
+def test_post_patch_status_refuted_is_neutralized() -> None:
+    """`refuted` = the trace affirmatively shows the exploit no longer
+    fires = a VERIFIED fix. Prior bug mapped it to UNVERIFIABLE."""
+    assert _post_patch_status("refuted") == "NEUTRALIZED"
+
+
+def test_post_patch_status_confirmed_is_still_exploitable() -> None:
+    assert _post_patch_status("confirmed") == "STILL_EXPLOITABLE"
+
+
+def test_post_patch_status_inconclusive_is_unverifiable() -> None:
+    """`inconclusive` = no decisive evidence → UNVERIFIABLE. Prior bug
+    wrongly reported this as NEUTRALIZED (a false 'fixed' claim)."""
+    assert _post_patch_status("inconclusive") == "UNVERIFIABLE"
+
+
+def test_post_patch_status_missing_or_unknown_is_unverifiable() -> None:
+    assert _post_patch_status(None) == "UNVERIFIABLE"
+    assert _post_patch_status("unknown") == "UNVERIFIABLE"
+    # The phantom value the old code matched must NOT be a fix signal.
+    assert _post_patch_status("rejected") == "UNVERIFIABLE"
 
 
 def _make_inference_stub(

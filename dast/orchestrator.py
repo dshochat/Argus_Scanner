@@ -537,6 +537,32 @@ _VERDICT_RANK: dict[str, int] = {
 _LOG_SUMMARY_MAX = 400
 
 
+def _post_patch_status(claim_verdict: str | None) -> str:
+    """Map a post-patch per-claim verdict to a remediation status.
+
+    Claim-verdict vocabulary (see ``dast/prompts.py`` — the verdict enum
+    is ``confirmed`` / ``refuted`` / ``inconclusive``):
+
+      * ``confirmed``    — the exploit STILL fires against the patched
+        code  → ``STILL_EXPLOITABLE``.
+      * ``refuted``      — the trace AFFIRMATIVELY shows the exploit no
+        longer fires  → ``NEUTRALIZED`` (a verified fix).
+      * ``inconclusive`` / ``None`` / anything else — no decisive
+        evidence either way  → ``UNVERIFIABLE``.
+
+    Prior bug (pre-2026-06): this matched the phantom value ``rejected``
+    (never emitted by the schema), so ``refuted`` — the actual proof of a
+    fix — fell through to ``UNVERIFIABLE``, while ``inconclusive`` (no
+    evidence) was wrongly reported as ``NEUTRALIZED``. The mapping was
+    effectively inverted; remediation could not report a verified fix.
+    """
+    if claim_verdict == "confirmed":
+        return "STILL_EXPLOITABLE"
+    if claim_verdict == "refuted":
+        return "NEUTRALIZED"
+    return "UNVERIFIABLE"
+
+
 def _has_refutation_of_prior_confirmed(
     claim_verdicts: list,
     hyp_index: dict,
@@ -4438,12 +4464,7 @@ async def _run_phase_c_fix_verify(
         h = hyp_by_ref.get(ref) or {}
         hid = h.get("id") or ref
         new_v = new_v_by_hid.get(hid)
-        if new_v == "confirmed":
-            status = "STILL_EXPLOITABLE"
-        elif new_v in ("rejected", "inconclusive"):
-            status = "NEUTRALIZED"
-        else:
-            status = "UNVERIFIABLE"
+        status = _post_patch_status(new_v)
         per_finding.append(
             {
                 "finding_ref": ref,
