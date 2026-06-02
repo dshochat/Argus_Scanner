@@ -1,8 +1,25 @@
 # Argus Scanner
 
-**Verified vulnerability remediation at machine scale.** Static scanners give security teams more findings to triage; Argus closes them. Argus stacks three layers — deterministic preprocessing, semantic LLM reasoning, runtime sandbox validation — each doing what it's fastest at, so a vulnerability goes from detection to verified, sandbox-tested patch in minutes instead of weeks. The LLM designs the exploit; a Firecracker microVM proves it fires. The LLM writes the patch; the same sandbox replays the same exploit against the patched code. You ship kernel-evidence-verified fixes, not tickets that pile up.
+**Finding vulnerabilities is becoming free. Closing them fast enough is the
+whole game.**
 
-**Beyond code:** Argus also scans live **MCP servers** for runtime vulnerabilities — SSRF (incl. cloud metadata), redirect-to-internal, fail-open validation, and auth bypass — with the same sandbox-verified evidence, pointed at your AI tool surface.
+Frontier models and agent swarms are about to surface vulnerabilities faster
+than any team can triage — let alone fix. In that world the backlog only grows,
+and the unit that matters stops being a *finding* and becomes a *shipped, proven
+fix*. Argus is built for that bottleneck: it takes a vulnerability from detection
+to a **sandbox-verified, exploit-tested patch in minutes**, then closes the loop
+at machine speed — file after file, repo after repo.
+
+The catch with remediation at speed is that a fast wrong patch is worse than no
+patch. So Argus verifies the fix the same way it proved the bug: the LLM designs
+the exploit, a Firecracker microVM proves it fires, the LLM writes the patch, and
+the *same* sandbox replays the *same* exploit against the patched code. You ship
+fixes with a kernel-level event trace behind them — not tickets that pile up,
+and not patches you have to manually re-check.
+
+> **Beyond code:** Argus also scans live **MCP servers** for runtime vulns —
+> SSRF (incl. cloud metadata), redirect-to-internal, fail-open validation, auth
+> bypass — with the same sandbox-verified evidence, pointed at your AI tool surface.
 
 Open source. BYOK. Apache 2.0.
 
