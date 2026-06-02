@@ -2768,6 +2768,7 @@ def build_phase_c_fix_prompt(
     file_name: str,
     original_source: str,
     confirmed_findings: list[dict],
+    prior_feedback: str | None = None,
 ) -> str:
     findings_lines = []
     for i, f in enumerate(confirmed_findings):
@@ -2779,11 +2780,28 @@ def build_phase_c_fix_prompt(
             f"  L1_fix:      {(f.get('fix') or '(none provided)').strip()[:400]}"
         )
     findings_block = "".join(findings_lines)
+    # Retry feedback (verified-remediation loop): when a prior patch passed
+    # the original-PoC replay but FAILED a verification gate (a same-class
+    # variant still fired, or the patch broke legitimate functionality),
+    # the orchestrator feeds that evidence back so this attempt fixes the
+    # CLASS / preserves behavior instead of repeating the shallow fix.
+    feedback_block = ""
+    if prior_feedback:
+        feedback_block = (
+            f"\n\n=== Prior patch attempt FAILED verification — fix this ===\n"
+            f"{prior_feedback.strip()[:1200]}\n"
+            f"Your previous patch did NOT fully close the vulnerability class "
+            f"or broke legitimate use. Address the specific failure above: "
+            f"defend against the bypass technique that still worked, and keep "
+            f"legitimate inputs working.\n"
+        )
     payload = (
         f"\n\nFILENAME: {file_name}\n\n"
         f"=== Original source ===\n"
         f"{wrap_untrusted_source(original_source)}\n\n"
-        f"=== Confirmed vulnerabilities ===\n{findings_block}\n\n"
+        f"=== Confirmed vulnerabilities ==="
+        f"\n{findings_block}\n"
+        f"{feedback_block}\n"
         f"Output JSON conforming to the provided schema."
     )
     return _PHASE_C_FIX_BODY + payload

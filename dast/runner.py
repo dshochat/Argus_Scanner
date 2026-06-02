@@ -240,6 +240,7 @@ def make_dast_runner(
         enable_phase_3_loop: bool = False,
         phase_3_loop_max_turns: int = 1,
         enable_phase_d: bool = False,
+        enable_remediation_verify: bool = False,
         enable_per_scan_dep_install: bool = False,
         enable_coverage_dedupe: bool = True,
         host_path: str | None = None,
@@ -509,6 +510,7 @@ def make_dast_runner(
             enable_phase_3_loop=enable_phase_3_loop,
             phase_3_loop_max_turns=phase_3_loop_max_turns,
             enable_phase_d=enable_phase_d,
+            enable_remediation_verify=enable_remediation_verify,
             enable_per_scan_dep_install=enable_per_scan_dep_install,
             enable_coverage_dedupe=enable_coverage_dedupe,
         )

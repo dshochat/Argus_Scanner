@@ -140,6 +140,77 @@ def test_format_markdown_no_remediation_when_absent() -> None:
     assert "## Remediation" not in cli.format_markdown(r)
 
 
+def test_format_markdown_renders_verification_gates() -> None:
+    """v15 verified remediation: the functional + adversarial gate
+    results (confidence, per-variant replay, retries) must render so the
+    report shows a class-complete, behavior-preserving fix — not just a
+    bare NEUTRALIZED."""
+    r = _sample_result()
+    r.phase_c = {
+        "attempted": True,
+        "post_patch_verdict": "informational",
+        "n_neutralized": 1,
+        "n_still_exploitable": 0,
+        "n_unverifiable": 0,
+        "per_finding": [
+            {"finding_ref": "H001", "original_status": "CONFIRMED",
+             "post_patch_status": "NEUTRALIZED", "confidence": "HIGH"},
+        ],
+        "retry_attempts": 1,
+        "verification": {
+            "confidence": "HIGH",
+            "functional_ok": True,
+            "functional": {"ok": True, "benign_url": "https://example.com/img.png"},
+            "variants_total": 5,
+            "variants_fired": 0,
+            "variants": [
+                {"payload": "http://2130706433/", "description": "decimal IP",
+                 "result": "blocked"},
+                {"payload": "http://169.254.169.254/", "description": "metadata",
+                 "result": "blocked"},
+            ],
+            "notes": [],
+        },
+    }
+    out = cli.format_markdown(r)
+    assert "### Verified remediation — confidence: `HIGH`" in out
+    assert "Functional preservation:** PASS" in out
+    assert "5/5 novel same-class exploits blocked (all blocked)" in out
+    assert "http://2130706433/" in out
+    assert "decimal IP" in out
+    assert "Patch regenerated 1x" in out
+
+
+def test_format_markdown_verification_flags_surviving_variant() -> None:
+    """A variant that still fires must render as FIRED + a non-all-blocked
+    summary so a shallow patch is never dressed up as fully verified."""
+    r = _sample_result()
+    r.phase_c = {
+        "attempted": True,
+        "n_neutralized": 1,
+        "n_still_exploitable": 0,
+        "n_unverifiable": 0,
+        "per_finding": [
+            {"finding_ref": "H001", "original_status": "CONFIRMED",
+             "post_patch_status": "NEUTRALIZED", "confidence": "FAILED"},
+        ],
+        "verification": {
+            "confidence": "FAILED",
+            "functional_ok": True,
+            "variants_total": 3,
+            "variants_fired": 1,
+            "variants": [
+                {"payload": "http://0x7f000001/", "description": "hex IP",
+                 "result": "FIRED"},
+            ],
+        },
+    }
+    out = cli.format_markdown(r)
+    assert "confidence: `FAILED`" in out
+    assert "1 STILL FIRED" in out
+    assert "**FIRED**" in out
+
+
 # ── argparse ───────────────────────────────────────────────────────────────
 
 

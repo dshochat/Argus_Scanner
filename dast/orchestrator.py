@@ -614,6 +614,7 @@ async def run_dast(
     enable_phase_3_loop: bool = False,
     phase_3_loop_max_turns: int = 1,
     enable_phase_d: bool = False,
+    enable_remediation_verify: bool = False,
     enable_per_scan_dep_install: bool = False,
     enable_coverage_dedupe: bool = True,
 ) -> DastResult:
@@ -2148,25 +2149,54 @@ async def run_dast(
                 }
             )
         try:
-            phase_c_result = await _run_phase_c_fix_verify(
-                file_record=file_record,
-                findings_validated=phase_c_findings,
-                l1_output=l1_output,
-                iter1_plans=iter1_plan_records,
-                inference=inference,
-                sandbox=sandbox,
-                journal=journal,
-                dast_findings=dast_findings_synthetic,
-                # v15 follow-on: ``dast_plans`` for sandbox replay of
-                # Stage 2 plans against the patched source. v14 leaves
-                # DAST findings as UNVERIFIABLE in the per_finding
-                # output rather than misclassifying as NEUTRALIZED.
-                dast_plans=None,
-            )
-            if phase_c_result:
-                total_in += phase_c_result.get("tokens_in", 0)
-                total_out += phase_c_result.get("tokens_out", 0)
-                total_sb += phase_c_result.get("n_replays", 0)
+            # v15 verified-remediation attempt loop: generate → replay the
+            # PoC → run functional + adversarial gates. If a gate FAILS
+            # (shallow patch or broken functionality) and the severity
+            # budget allows, regenerate the patch with the failure as
+            # feedback and re-verify. Budget caps the retries per severity.
+            attempt = 0
+            prior_feedback: str | None = None
+            phase_c_result = None
+            while True:
+                phase_c_result = await _run_phase_c_fix_verify(
+                    file_record=file_record,
+                    findings_validated=phase_c_findings,
+                    l1_output=l1_output,
+                    iter1_plans=iter1_plan_records,
+                    inference=inference,
+                    sandbox=sandbox,
+                    journal=journal,
+                    dast_findings=dast_findings_synthetic,
+                    # v15 follow-on: ``dast_plans`` for sandbox replay of
+                    # Stage 2 plans against the patched source. v14 leaves
+                    # DAST findings as UNVERIFIABLE in the per_finding
+                    # output rather than misclassifying as NEUTRALIZED.
+                    dast_plans=None,
+                    enable_verify_gates=enable_remediation_verify,
+                    gate_inference=phase_3_inference or inference,
+                    prior_feedback=prior_feedback,
+                )
+                if phase_c_result:
+                    total_in += phase_c_result.get("tokens_in", 0)
+                    total_out += phase_c_result.get("tokens_out", 0)
+                    total_sb += phase_c_result.get("n_replays", 0)
+                ver = (phase_c_result or {}).get("verification") or {}
+                max_retries = int((ver.get("budget") or {}).get("retries", 0) or 0)
+                if not (
+                    phase_c_result
+                    and phase_c_result.get("needs_retry")
+                    and attempt < max_retries
+                ):
+                    break
+                prior_feedback = phase_c_result.get("failure_evidence") or None
+                attempt += 1
+            # Surface how many regenerations happened; strip the internal
+            # retry signals from the public result.
+            if isinstance(phase_c_result, dict):
+                if attempt:
+                    phase_c_result["retry_attempts"] = attempt
+                phase_c_result.pop("needs_retry", None)
+                phase_c_result.pop("failure_evidence", None)
         except Exception as e:  # noqa: BLE001
             phase_c_result = {
                 "attempted": True,
@@ -3992,6 +4022,202 @@ def _iter_inner_sandbox_clients(sandbox: SandboxClient):
         yield sandbox
 
 
+_GATE_SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+
+
+def _build_gate_failure_evidence(outcome: Any, details: dict[str, Any]) -> str:
+    """Render a verification-gate failure into retry feedback for the
+    patch generator — concrete enough that the next attempt fixes the
+    CLASS / preserves behavior instead of repeating the shallow fix."""
+    parts: list[str] = []
+    if outcome.functional_ok is False:
+        f = details.get("functional") or {}
+        parts.append(
+            "FUNCTIONAL REGRESSION: the patch rejected a LEGITIMATE request "
+            f"({f.get('benign_url') or 'a benign input'}). The fix must keep "
+            "valid public hosts/inputs working — do not over-block."
+        )
+    fired = [v for v in (details.get("variants") or []) if v.get("result") == "FIRED"]
+    if fired:
+        lines = "; ".join(
+            f"{v.get('description')}: {v.get('payload')}" for v in fired[:5]
+        )
+        parts.append(
+            f"BYPASS STILL WORKS: {len(fired)} same-class variant(s) reached the "
+            f"internal target against the PATCHED code — [{lines}]. Neutralize "
+            "these techniques (resolve-to-IP / canonicalize before validating), "
+            "not just the originally-reported payload."
+        )
+    return "\n".join(parts)
+
+
+async def _run_phase_c_verify_gates(
+    *,
+    confirmed: list[dict],
+    original_text: str,
+    patched_source: str,
+    patched_bytes: bytes,
+    original_bytes: bytes,
+    file_id: str,
+    file_name: str,
+    re_plans: list[dict],
+    iter1_plans: list[dict],
+    per_finding: list[dict],
+    inference: InferenceFn,
+    sandbox: SandboxClient,
+) -> dict[str, Any]:
+    """Run the Stage 2 (functional) + Stage 3 (adversarial) gates for a
+    patch that already neutralized the reported PoC, and fold the result
+    into a structured ``verification`` dict.
+
+    Generation (LLM) runs first, lock-free; the variant/functional
+    harnesses are then replayed against freshly re-injected patched bytes
+    inside one per-sandbox content-lock window (Stage-1 restored the
+    originals). Mutates ``per_finding`` in place to stamp each NEUTRALIZED
+    finding with the gate confidence. Returns the verification dict with
+    two private keys — ``_needs_retry`` / ``_failure_evidence`` — for the
+    caller's attempt loop to pop.
+    """
+    import asyncio as _asyncio_g  # noqa: PLC0415
+
+    from dast.phase_c_verify_gates import (  # noqa: PLC0415
+        execute_gates,
+        prepare_gate_plans,
+    )
+    from dast.remediation_verify import verify_budget_for  # noqa: PLC0415
+
+    # Severity → verification budget (depth/spend). Max across findings.
+    severity = "high"
+    for h in confirmed:
+        s = str(h.get("severity") or "").lower()
+        if _GATE_SEV_RANK.get(s, 0) > _GATE_SEV_RANK.get(severity, 0):
+            severity = s
+    budget = verify_budget_for(severity)
+
+    # Seed harness template: prefer a plan that actually replayed this
+    # round (proven imports + entrypoint call shape); else first
+    # executable iter-1 plan.
+    seed_plan_dict: dict[str, Any] = {}
+    for p in re_plans or []:
+        if isinstance(p, dict) and p.get("commands"):
+            seed_plan_dict = p
+            break
+    if not seed_plan_dict:
+        for p in iter1_plans or []:
+            if (
+                isinstance(p, dict)
+                and p.get("plan_status") == "executable"
+                and p.get("commands")
+            ):
+                seed_plan_dict = p
+                break
+    seed_commands = [c for c in (seed_plan_dict.get("commands") or []) if isinstance(c, str)]
+    seed_payload = str(seed_plan_dict.get("payload") or "")
+    raw_hint = seed_plan_dict.get("image_hint")
+    gate_image_hint = raw_hint if isinstance(raw_hint, str) and raw_hint else "lean"
+    gate_timeout = int(seed_plan_dict.get("timeout_sec") or 30)
+
+    try:
+        gate_plans = await prepare_gate_plans(
+            inference=inference,
+            file_name=file_name,
+            confirmed_findings=confirmed,
+            original_source=original_text,
+            patched_source=patched_source,
+            seed_commands=seed_commands,
+            seed_payload=seed_payload,
+            budget=budget,
+        )
+
+        # Re-inject patched bytes (Stage-1 restored originals) and replay
+        # the gate harnesses in one locked window.
+        gate_locks: list[Any] = []
+        for client in _iter_inner_sandbox_clients(sandbox):
+            lk = getattr(client, "_phase_c_content_lock", None)
+            if lk is None:
+                lk = _asyncio_g.Lock()
+                try:
+                    setattr(client, "_phase_c_content_lock", lk)  # noqa: B010
+                except (AttributeError, TypeError):
+                    pass
+            gate_locks.append(lk)
+        for lk in gate_locks:
+            await lk.acquire()
+        try:
+            for client in _iter_inner_sandbox_clients(sandbox):
+                cmap = getattr(client, "file_content_map", None)
+                if isinstance(cmap, dict):
+                    cmap[file_id] = patched_bytes
+
+            async def _submit_patched(plan: SandboxPlan) -> Any:
+                return await sandbox.submit(plan)
+
+            outcome, details = await execute_gates(
+                plans=gate_plans,
+                submit_patched=_submit_patched,
+                file_id=file_id,
+                file_name=file_name,
+                image_hint=gate_image_hint,
+                timeout_sec=gate_timeout,
+                severity=severity,
+                poc_refuted=True,  # caller guarantees n_neutralized > 0
+                budget=budget,
+            )
+        finally:
+            for client in _iter_inner_sandbox_clients(sandbox):
+                cmap = getattr(client, "file_content_map", None)
+                if isinstance(cmap, dict):
+                    cmap[file_id] = original_bytes
+            for lk in gate_locks:
+                try:
+                    lk.release()
+                except (RuntimeError, ValueError):
+                    pass
+
+        # Stamp gate confidence onto every NEUTRALIZED finding.
+        for pf in per_finding:
+            if pf.get("post_patch_status") == "NEUTRALIZED":
+                pf["confidence"] = outcome.confidence
+
+        verification: dict[str, Any] = {
+            "confidence": outcome.confidence,
+            "severity": severity,
+            "budget": {
+                "functional": budget.functional,
+                "variants": budget.variants,
+                "retries": budget.retries,
+                "max_usd": budget.max_usd,
+            },
+            "functional_ok": outcome.functional_ok,
+            "functional": details.get("functional"),
+            "variants_total": outcome.variants_total,
+            "variants_fired": outcome.variants_fired,
+            "variants": details.get("variants") or [],
+            "notes": (gate_plans.notes or []) + (outcome.notes or []),
+            "gate_errors": details.get("errors") or [],
+            "n_sandbox_calls": details.get("n_sandbox_calls", 0),
+            "tokens_in": gate_plans.tokens_in,
+            "tokens_out": gate_plans.tokens_out,
+            "_needs_retry": outcome.needs_retry,
+            "_failure_evidence": (
+                _build_gate_failure_evidence(outcome, details)
+                if outcome.needs_retry
+                else ""
+            ),
+        }
+        return verification
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "attempted": True,
+            "error": f"{type(exc).__name__}: {str(exc)[:240]}",
+            "_needs_retry": False,
+            "_failure_evidence": "",
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "n_sandbox_calls": 0,
+        }
+
+
 async def _run_phase_c_fix_verify(
     *,
     file_record: dict,
@@ -4003,6 +4229,9 @@ async def _run_phase_c_fix_verify(
     journal: Journal,
     dast_findings: list[dict] | None = None,
     dast_plans: list[dict] | None = None,
+    enable_verify_gates: bool = False,
+    gate_inference: InferenceFn | None = None,
+    prior_feedback: str | None = None,
 ) -> dict[str, Any]:
     """Phase C (v1.2 → v14): generate a patch for confirmed findings,
     then re-test the original exploit plans against the patched source.
@@ -4137,6 +4366,7 @@ async def _run_phase_c_fix_verify(
         file_name=file_name,
         original_source=original_text,
         confirmed_findings=confirmed,
+        prior_feedback=prior_feedback,
     )
     fix_resp = await inference(
         fix_prompt,
@@ -4184,15 +4414,20 @@ async def _run_phase_c_fix_verify(
         }
     orig_len = len(original_text)
     new_len = len(patched_source)
-    # Bounds: <20% of original or > max(3×, original + 2048 bytes)
-    # indicates the model likely emitted a truncation, stub, or wrong
-    # file. The 2 KB absolute headroom is load-bearing for SHORT seed
-    # functions — a 9-line `fetch_url` body fixed with a correct
-    # scheme-allowlist + IP-private-block SSRF mitigation legitimately
-    # grows ~5×. Pure 3× ratio rejects those real fixes; pure absolute
-    # headroom permits whole-file rewrites on large originals. The
-    # compound bound takes whichever is more permissive at each size.
-    upper_bound = max(orig_len * 3.0, orig_len + 2048)
+    # Bounds: <20% of original (truncation/stub) or > max(3×, original +
+    # 8 KB) (likely a hallucinated wrong file) is rejected. The absolute
+    # headroom is load-bearing for SHORT seed functions: a correct,
+    # class-complete fix to a tiny file is large in ABSOLUTE terms — e.g.
+    # a proper SSRF mitigation (resolve host→IP via socket.getaddrinfo +
+    # ipaddress private/loopback/link-local/reserved checks + a helper +
+    # docstrings) runs ~4–6 KB regardless of how small the original was.
+    # The 2 KB headroom we used pre-2026-06 rejected exactly those real
+    # fixes. Size alone can't distinguish a thorough fix from bloat —
+    # correctness is enforced downstream by the syntax check + sandbox
+    # replay + the verification gates — so this stays permissive and only
+    # catches egregious truncation / whole-file hallucination. 3× ratio
+    # still governs large originals (permits a proportional rewrite).
+    upper_bound = max(orig_len * 3.0, orig_len + 8192)
     if orig_len > 100 and (new_len < orig_len * 0.20 or new_len > upper_bound):
         return {
             "attempted": True,
@@ -4496,6 +4731,39 @@ async def _run_phase_c_fix_verify(
         1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE"
     )
 
+    # ── Step 5 (v15) — verified-remediation gates (Stage 2 + Stage 3) ──
+    # The original-PoC replay above only proves the REPORTED exploit no
+    # longer fires (a LOW-confidence signal). When enabled, run the
+    # functional-preservation + adversarial-variant gates to upgrade a
+    # bare NEUTRALIZED into a CONFIDENCE-rated, class-complete verdict.
+    # The retry decision (regenerate the patch with this failure as
+    # feedback) is taken by the caller, which owns the attempt budget.
+    verification: dict[str, Any] | None = None
+    needs_retry = False
+    failure_evidence = ""
+    gate_sandbox_calls = 0
+    if enable_verify_gates and n_neutralized > 0:
+        verification = await _run_phase_c_verify_gates(
+            confirmed=confirmed,
+            original_text=original_text,
+            patched_source=patched_source,
+            patched_bytes=patched_bytes,
+            original_bytes=original_bytes,
+            file_id=file_id,
+            file_name=file_name,
+            re_plans=re_plans,
+            iter1_plans=iter1_plans or [],
+            per_finding=per_finding,
+            inference=gate_inference or inference,
+            sandbox=sandbox,
+        )
+        if verification:
+            needs_retry = bool(verification.pop("_needs_retry", False))
+            failure_evidence = str(verification.pop("_failure_evidence", "") or "")
+            gate_sandbox_calls = int(verification.get("n_sandbox_calls", 0) or 0)
+            fix_in += int(verification.get("tokens_in", 0) or 0)
+            fix_out += int(verification.get("tokens_out", 0) or 0)
+
     return {
         "attempted": True,
         "patched_source": patched_source,
@@ -4506,7 +4774,15 @@ async def _run_phase_c_fix_verify(
         "n_neutralized": n_neutralized,
         "n_still_exploitable": n_still_exploitable,
         "n_unverifiable": len(per_finding) - n_neutralized - n_still_exploitable,
-        "n_replays": n_replays,
+        "n_replays": n_replays + gate_sandbox_calls,
+        # v15: verified-remediation gate results (None when gates disabled
+        # or nothing was neutralized). Carries the confidence label, the
+        # per-variant fire results, and the functional-preservation check.
+        "verification": verification,
+        # Retry signals for the caller's attempt loop (popped from
+        # verification so they don't leak into the public report).
+        "needs_retry": needs_retry,
+        "failure_evidence": failure_evidence,
         # v14 B5: surface per-plan replay failures instead of silently
         # masking them. Operators can correlate NEUTRALIZED claims with
         # the underlying sandbox health; a NEUTRALIZED with 5 replay

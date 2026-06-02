@@ -231,6 +231,50 @@ def format_markdown(result: ScanResult) -> str:
             change = fixes_by_ref.get(ref)
             if change:
                 lines.append(f"  - patch: {change}")
+
+        # v15 verified-remediation gates: confidence + functional gate +
+        # per-variant adversarial replay. This is the signal that turns a
+        # bare NEUTRALIZED into a class-complete, behavior-preserving fix.
+        ver = pc.get("verification") or {}
+        if ver and not ver.get("error"):
+            conf = ver.get("confidence", "?")
+            lines.append("")
+            lines.append(f"### Verified remediation — confidence: `{conf}`")
+            lines.append("")
+            fok = ver.get("functional_ok")
+            func = ver.get("functional") or {}
+            if fok is True:
+                lines.append(
+                    "- **Functional preservation:** PASS — legitimate request "
+                    f"still served ({func.get('benign_url') or 'benign input'})"
+                )
+            elif fok is False:
+                lines.append(
+                    "- **Functional preservation:** FAIL — patch broke a "
+                    "legitimate request"
+                )
+            vt = int(ver.get("variants_total", 0) or 0)
+            vf = int(ver.get("variants_fired", 0) or 0)
+            if vt:
+                summary = "all blocked" if vf == 0 else f"{vf} STILL FIRED"
+                lines.append(
+                    f"- **Adversarial variants:** {vt - vf}/{vt} novel same-class "
+                    f"exploits blocked ({summary})"
+                )
+                for v in ver.get("variants") or []:
+                    res = (v.get("result") or "?").upper()
+                    lines.append(
+                        f"  - `{v.get('payload')}` — {v.get('description')} → **{res}**"
+                    )
+            ra = int(pc.get("retry_attempts", 0) or 0)
+            if ra:
+                lines.append(
+                    f"- **Patch regenerated {ra}x** with failure feedback until "
+                    "verification passed"
+                )
+            for note in ver.get("notes") or []:
+                lines.append(f"  - _note: {note}_")
+
         if pc.get("fix_summary"):
             lines.append("")
             lines.append(f"**Patch summary:** {pc['fix_summary']}")
@@ -278,6 +322,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "verified remediation is Argus's headline pitch. Adds "
         "~$0.05/file in patch-generation token cost. Compliance / CI / "
         "read-only audit users opt out via --no-enable-remediation.",
+    )
+    scan.add_argument(
+        "--enable-remediation-verify",
+        action=argparse.BooleanOptionalAction,
+        default=None,  # None = use ScanConfig default (v15: True)
+        help="Verified remediation (Stage 2 + 3). After a patch neutralizes "
+        "the reported exploit, run the functional-preservation gate "
+        "(legitimate inputs still work) + the adversarial-variant gate "
+        "(novel same-class payloads are replayed against the patched code "
+        "in the sandbox) and assign a confidence label "
+        "(HIGH/MEDIUM/LOW/FAILED). On a gate failure, the patch is "
+        "regenerated with the failure as feedback (budget-capped per "
+        "severity). **Default ON.** Adds a few sandbox replays + 2 LLM "
+        "calls per neutralized finding; opt out via "
+        "--no-enable-remediation-verify.",
     )
     scan.add_argument(
         "--enable-phase-d",
@@ -1402,6 +1461,11 @@ async def _run_scan(args: argparse.Namespace) -> int:
     _rem_flag = getattr(args, "enable_remediation", None)
     if _rem_flag is not None:
         config_kwargs["enable_phase_c"] = bool(_rem_flag)
+    # v15 verified remediation (Stage 2+3 gates): BooleanOptionalAction
+    # default=None → use ScanConfig default (True); --no-… forces OFF.
+    _rem_verify_flag = getattr(args, "enable_remediation_verify", None)
+    if _rem_verify_flag is not None:
+        config_kwargs["enable_remediation_verify"] = bool(_rem_verify_flag)
     # DAST-301/302 v1.0/v1.1: Phase D variant analysis opt-in.
     if getattr(args, "enable_phase_d", False):
         config_kwargs["enable_phase_d"] = True
@@ -1832,6 +1896,11 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
     _rem_flag = getattr(args, "enable_remediation", None)
     if _rem_flag is not None:
         config_kwargs["enable_phase_c"] = bool(_rem_flag)
+    # v15 verified remediation (Stage 2+3 gates): BooleanOptionalAction
+    # default=None → use ScanConfig default (True); --no-… forces OFF.
+    _rem_verify_flag = getattr(args, "enable_remediation_verify", None)
+    if _rem_verify_flag is not None:
+        config_kwargs["enable_remediation_verify"] = bool(_rem_verify_flag)
     # DAST-301/302 v1.0/v1.1: Phase D variant analysis opt-in.
     if getattr(args, "enable_phase_d", False):
         config_kwargs["enable_phase_d"] = True

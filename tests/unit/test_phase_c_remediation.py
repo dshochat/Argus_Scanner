@@ -244,10 +244,14 @@ async def test_phase_c_rejects_suspiciously_small_patch() -> None:
 
 @pytest.mark.asyncio
 async def test_phase_c_rejects_suspiciously_large_patch() -> None:
-    """v14 Fix #3: 4× growth indicates the model hallucinated a
-    different file or padded with junk. Reject."""
-    original = "def fetch(url):\n    return urlopen(url)\n"  # ~40 chars
-    bloat = "# bloat\n" * 200  # ~1600 chars
+    """v14 Fix #3: whole-file hallucination / junk-padding still gets
+    rejected. The absolute headroom is generous (+8 KB) so a thorough
+    real fix to a small file passes (see the SSRF test below) — but an
+    egregious blow-up beyond ``max(3×, +8 KB)`` is still caught before
+    we waste a sandbox replay on it."""
+    # ~400-char original (>100 so the size guard is active).
+    original = "def fetch(url):\n    return urlopen(url)\n" * 10
+    bloat = "# bloat\n" * 1600  # ~12.8 KB — well past the +8 KB headroom
     file_record = {
         "file_id": "abc",
         "file_name": "x.py",
@@ -265,25 +269,8 @@ async def test_phase_c_rejects_suspiciously_large_patch() -> None:
         sandbox=_StubSandbox(),
         journal=_StubJournal(),
     )
-    # original < 100 chars → strict bounds don't fire on short files;
-    # rewrite with longer original to trigger the >300% bound.
-    if result["skipped_reason"] != "patch_size_suspicious":
-        # Re-run with a sufficiently long original to exercise the 3x cap.
-        bigger_orig = "def fetch(url):\n    return urlopen(url)\n" * 10
-        file_record["source_text"] = bigger_orig
-        inf = _make_inference_stub(patched_source=bigger_orig + bloat * 5)
-        result = await _run_phase_c_fix_verify(
-            file_record=file_record,
-            findings_validated=["H001"],
-            l1_output={
-                "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
-            },
-            iter1_plans=[],
-            inference=inf,
-            sandbox=_StubSandbox(),
-            journal=_StubJournal(),
-        )
     assert result["skipped_reason"] == "patch_size_suspicious"
+    assert "size_delta" in result
 
 
 @pytest.mark.asyncio
@@ -293,7 +280,7 @@ async def test_phase_c_accepts_short_function_with_legitimate_growth() -> None:
     SSRF mitigation (scheme allowlist + IP-private-block + DNS check)
     grew to ~2442 chars (~5.9×). The pure 3× ratio bound rejected the
     fix even though it was objectively correct. Compound bound
-    ``max(3×, +2 KB)`` permits legitimate growth on short attack-
+    ``max(3×, +8 KB)`` permits legitimate growth on short attack-
     attractive functions while still rejecting whole-file hallucinations
     on larger originals (covered by the suspiciously_large test above).
     """
@@ -372,6 +359,85 @@ async def test_phase_c_accepts_short_function_with_legitimate_growth() -> None:
     assert (
         result.get("skipped_reason") != "patch_size_suspicious"
     ), f"compound size bound should accept short-function SSRF fix; got {result!r}"
+
+
+@pytest.mark.asyncio
+async def test_phase_c_accepts_thorough_fix_to_tiny_file() -> None:
+    """Regression for the CVE-2026-24779 demo bug (2026-06-01): a
+    471-char loader fixed with a class-complete SSRF mitigation
+    (resolve host→IP + ipaddress private/loopback/link-local/reserved/
+    multicast checks + a helper + docstrings) grew to ~4.9 KB (~10×).
+    The old ``+2 KB`` absolute headroom rejected this *airtight* patch as
+    ``patch_size_suspicious`` — the patch never replayed, so the headline
+    remediation reported UNVERIFIABLE. A thorough fix to a tiny file is
+    large in absolute terms by nature; the ``+8 KB`` headroom admits it
+    while syntax/replay/gates remain the real correctness check.
+    """
+    original = (
+        "import requests\n"
+        "from urllib.parse import urlparse\n\n\n"
+        "def load_remote_media(url):\n"
+        "    p = urlparse(url)\n"
+        "    if p.hostname in ('localhost', '127.0.0.1'):\n"
+        "        raise ValueError('blocked')\n"
+        "    return requests.get(url).content\n"
+    )
+    # ~4.9 KB stand-in for the real Phase C airtight patch: lands in the
+    # band the OLD +2 KB bound wrongly rejected and the +8 KB bound accepts.
+    body = (
+        "import ipaddress\n"
+        "import socket\n"
+        "import requests\n"
+        "from urllib.parse import urlparse\n\n\n"
+        "_ALLOWED_SCHEMES = {'http', 'https'}\n\n\n"
+        "def _resolve_and_check_host(host):\n"
+        '    """Resolve host to every IP and reject internal ranges.\n'
+        "    Defeats decimal/hex/octal/IPv6-mapped encodings and DNS-to-\n"
+        '    internal rebinding by checking the RESOLVED address."""\n'
+        "    for info in socket.getaddrinfo(host, None):\n"
+        "        addr = ipaddress.ip_address(info[4][0])\n"
+        "        if (addr.is_private or addr.is_loopback\n"
+        "                or addr.is_link_local or addr.is_reserved\n"
+        "                or addr.is_multicast or addr.is_unspecified):\n"
+        "            raise ValueError(f'blocked internal address: {addr}')\n"
+    )
+    # Pad with real-looking guard logic to ~4.9 KB (still < orig + 8 KB).
+    body += "    # defense-in-depth: re-validate on each call path\n" * 70
+    body += (
+        "\n\ndef load_remote_media(url):\n"
+        "    p = urlparse(url.replace(chr(92), '/'))\n"
+        "    if p.scheme not in _ALLOWED_SCHEMES:\n"
+        "        raise ValueError('scheme not allowed')\n"
+        "    _resolve_and_check_host(p.hostname or '')\n"
+        "    return requests.get(url, allow_redirects=False).content\n"
+    )
+    patched = body
+    # The case must land in the headroom band the regression is about:
+    # past 3× AND past the old +2 KB, but within the new +8 KB.
+    assert len(patched) > len(original) * 3.0
+    assert len(patched) > len(original) + 2048   # old bound would reject
+    assert len(patched) < len(original) + 8192   # new bound admits
+    file_record = {
+        "file_id": "abc",
+        "file_name": "_demo_media_loader.py",
+        "source_text": original,
+    }
+    inf = _make_inference_stub(patched_source=patched, verdict_label="clean")
+    result = await _run_phase_c_fix_verify(
+        file_record=file_record,
+        findings_validated=["H001"],
+        l1_output={
+            "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
+        },
+        iter1_plans=[],
+        inference=inf,
+        sandbox=_StubSandbox(),
+        journal=_StubJournal(),
+    )
+    assert result.get("skipped_reason") != "patch_size_suspicious", (
+        "the +8 KB headroom must admit a thorough fix to a tiny file; "
+        f"got {result.get('skipped_reason')!r}"
+    )
 
 
 # ── Fix #2: syntax validation ────────────────────────────────────────
@@ -737,3 +803,211 @@ async def test_phase_c_dast_only_findings_still_drive_patch() -> None:
     )
     # Must NOT report no_confirmed_findings — the DAST finding qualifies.
     assert result.get("skipped_reason") != "no_confirmed_findings_with_finding_ref"
+
+
+# ── v15: verified-remediation gate wiring (Stage 2 + 3) ──────────────
+
+
+_GATE_PATCH = (
+    "import requests\n"
+    "import ipaddress\n"
+    "import socket\n"
+    "from urllib.parse import urlparse\n\n\n"
+    "def load_media_from_url(url):\n"
+    "    p = urlparse(url)\n"
+    "    for info in socket.getaddrinfo(p.hostname or '', None):\n"
+    "        if ipaddress.ip_address(info[4][0]).is_private:\n"
+    "            raise ValueError('blocked')\n"
+    "    return requests.get(url).content\n"
+)
+
+
+def _gate_inference_stub(*, n_variants: int):
+    """Inference stub for the full Phase C + gates path. Routes by prompt:
+    Stage-2/Stage-3 gate prompts return functional/adversarial JSON; the
+    first two non-gate calls return the patch then the (refuted) verdict."""
+    import json
+
+    func_json = json.dumps(
+        {
+            "description": "benign public host",
+            "benign_url": "https://example.com/img.png",
+            "commands": ["python -c \"print('ARGUS_FUNC_OK')\""],
+        }
+    )
+    adv_json = json.dumps(
+        {
+            "variants": [
+                {
+                    "description": f"technique {i}",
+                    "payload": f"http://variant{i}/",
+                    "commands": [f"python -c \"print({i})\""],
+                }
+                for i in range(n_variants)
+            ]
+        }
+    )
+    patch_json = json.dumps(
+        {"patched_source": _GATE_PATCH, "fix_summary": "resolve-to-IP", "per_finding_fixes": []}
+    )
+    verdict_json = json.dumps(
+        {
+            "current_verdict": {"verdict_label": "clean"},
+            "claim_verdicts": [{"hypothesis_id": "H001", "verdict": "refuted"}],
+        }
+    )
+    state = {"non_gate": 0}
+
+    async def _inf(prompt: str, params: dict, schema: Any) -> dict[str, Any]:
+        if "Stage 2 (functional" in prompt:
+            txt = func_json
+        elif "Stage 3 (adversarial" in prompt:
+            txt = adv_json
+        else:
+            txt = patch_json if state["non_gate"] == 0 else verdict_json
+            state["non_gate"] += 1
+        return {"text": txt, "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+
+    return _inf
+
+
+class _GateSandbox(_StubSandbox):
+    """Sandbox stub that self-classifies gate harnesses by oracle: the
+    functional plan always 'passes'; a variant 'fires' only if its
+    payload is in ``fire_payloads``."""
+
+    def __init__(self, *, fire_payloads: tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self.fire_payloads = set(fire_payloads)
+
+    async def submit(self, plan: Any) -> SandboxTrace:
+        from dast.phase_c_verify_gates import FUNC_OK, REACH_ORACLE
+
+        self.submit_calls.append(plan)
+        out = ""
+        oracle = getattr(plan, "expected_oracle", "")
+        if oracle == FUNC_OK:
+            out = FUNC_OK
+        elif oracle == REACH_ORACLE and (plan.payload in self.fire_payloads):
+            out = REACH_ORACLE
+        return SandboxTrace(
+            plan_id=plan.plan_id,
+            file_id=plan.file_id,
+            hypothesis_id=plan.hypothesis_id,
+            events=[],
+            exit_code=0,
+            stdout_excerpt=out,
+            stderr_excerpt="",
+            elapsed_ms=10,
+        )
+
+
+def _gate_call(inference: Any, sandbox: Any, severity: str = "critical"):
+    return _run_phase_c_fix_verify(
+        file_record={
+            "file_id": "abc",
+            "file_name": "loader.py",
+            "source_text": (
+                "import requests\n"
+                "from urllib.parse import urlparse\n\n\n"
+                "def load_media_from_url(url):\n"
+                "    if urlparse(url).hostname == 'localhost':\n"
+                "        raise ValueError('no')\n"
+                "    return requests.get(url).content\n"
+            ),
+        },
+        findings_validated=["H001"],
+        l1_output={
+            "hypotheses": [
+                {
+                    "id": "H001",
+                    "finding_ref": "H001",
+                    "type": "ssrf",
+                    "severity": severity,
+                }
+            ]
+        },
+        iter1_plans=[
+            {
+                "hypothesis_id": "H001",
+                "plan_status": "executable",
+                "commands": ["python -c 'pass'"],
+                "payload": "http://localhost",
+                "oracle": "x",
+                "image_hint": "lean",
+                "timeout_sec": 30,
+            }
+        ],
+        inference=inference,
+        sandbox=sandbox,
+        journal=_StubJournal(),
+        enable_verify_gates=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_phase_c_gates_high_confidence_when_class_complete() -> None:
+    """Patch refutes the PoC, preserves a benign request, and blocks all
+    5 novel same-class variants → HIGH confidence, stamped onto the
+    NEUTRALIZED finding."""
+    sandbox = _GateSandbox()  # no variant fires
+    result = await _gate_call(_gate_inference_stub(n_variants=5), sandbox)
+    ver = result["verification"]
+    assert ver is not None
+    assert ver["confidence"] == "HIGH"
+    assert ver["functional_ok"] is True
+    assert ver["variants_total"] == 5 and ver["variants_fired"] == 0
+    assert result["needs_retry"] is False
+    pf = result["per_finding"][0]
+    assert pf["post_patch_status"] == "NEUTRALIZED"
+    assert pf["confidence"] == "HIGH"
+
+
+@pytest.mark.asyncio
+async def test_phase_c_gates_failed_signals_retry_when_variant_fires() -> None:
+    """A surviving same-class variant ⇒ FAILED confidence + a retry
+    signal carrying concrete bypass evidence for patch regeneration."""
+    sandbox = _GateSandbox(fire_payloads=("http://variant2/",))
+    result = await _gate_call(_gate_inference_stub(n_variants=5), sandbox)
+    ver = result["verification"]
+    assert ver["confidence"] == "FAILED"
+    assert ver["variants_fired"] == 1
+    assert result["needs_retry"] is True
+    assert "BYPASS STILL WORKS" in result["failure_evidence"]
+    assert "http://variant2/" in result["failure_evidence"]
+    # The PoC was still refuted, so status stays NEUTRALIZED but the
+    # confidence is honestly FAILED (shallow patch).
+    assert result["per_finding"][0]["confidence"] == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_phase_c_gates_absent_when_disabled() -> None:
+    """Default (gates disabled) leaves verification=None and never calls
+    the Stage-2/3 generators."""
+    sandbox = _GateSandbox()
+    result = await _run_phase_c_fix_verify(
+        file_record={
+            "file_id": "abc",
+            "file_name": "loader.py",
+            "source_text": "import x\ndef f(u):\n    return x.get(u)\n",
+        },
+        findings_validated=["H001"],
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
+        iter1_plans=[
+            {
+                "hypothesis_id": "H001",
+                "plan_status": "executable",
+                "commands": ["python -c 'pass'"],
+                "payload": "http://localhost",
+                "oracle": "x",
+                "image_hint": "lean",
+                "timeout_sec": 30,
+            }
+        ],
+        inference=_gate_inference_stub(n_variants=5),
+        sandbox=sandbox,
+        journal=_StubJournal(),
+        # enable_verify_gates defaults False
+    )
+    assert result["verification"] is None
+    assert result["needs_retry"] is False

@@ -24,6 +24,7 @@ CONFIDENCE model that turns the gate results into an honest label.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Awaitable, Callable
 
 # ── Confidence labels ────────────────────────────────────────────────
 CONFIDENCE_HIGH = "HIGH"
@@ -153,8 +154,8 @@ async def verify_patch(
     *,
     poc_refuted: bool,
     severity: str | None,
-    run_functional,
-    run_adversarial,
+    run_functional: Callable[[], Awaitable[bool | None]],
+    run_adversarial: Callable[[int], Awaitable[tuple[int, int]]],
     budget: VerifyBudget | None = None,
 ) -> VerifyOutcome:
     """Run the verification gates for one patched finding, budget-aware

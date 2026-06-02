@@ -434,6 +434,13 @@ class ScanConfig:
     # only and feature-flagged OFF by default — flip ON in v1.1 after
     # measurement. See docs/dast_301_variant_analysis.md.
     enable_phase_d: bool = False
+    # v15 verified remediation: after Phase C neutralizes the reported
+    # exploit, run the functional-preservation + adversarial-variant gates
+    # (and budget-capped retry) to upgrade a bare NEUTRALIZED into a
+    # CONFIDENCE-rated, class-complete fix. Only runs when remediation
+    # (Phase C) is enabled AND a finding was neutralized, so leaving it ON
+    # by default costs nothing on scans that don't produce a patch.
+    enable_remediation_verify: bool = True
     # SCAN-010 (v1.1): split L1 into three specialized prompts (VULNS /
     # BEHAVIORAL / CHAINS) fired in parallel on HIGH-triage routings.
     # When True (current default) HIGH-classified files dispatch to the
@@ -1512,6 +1519,7 @@ async def scan_file(
                 enable_phase_3_loop=cfg.enable_phase_3_loop,
                 phase_3_loop_max_turns=cfg.phase_3_loop_max_turns,
                 enable_phase_d=cfg.enable_phase_d,
+                enable_remediation_verify=cfg.enable_remediation_verify,
                 enable_per_scan_dep_install=cfg.enable_per_scan_dep_install,
                 enable_coverage_dedupe=cfg.enable_coverage_dedupe,
                 host_path=host_path,
