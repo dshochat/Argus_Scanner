@@ -112,3 +112,103 @@ def compute_confidence(
     if have_functional or have_variants:
         return CONFIDENCE_MEDIUM
     return CONFIDENCE_LOW
+
+
+# ── verification orchestration (Stage 2+3) ───────────────────────────
+#
+# The orchestrator is dependency-injected so it's fully unit-testable
+# without live LLM/sandbox calls:
+#   * run_functional()  -> bool | None
+#       Generate benign inputs, run the PATCHED code, return True if it
+#       still works, False if the patch broke it, None if not run.
+#   * run_adversarial(n) -> tuple[int, int]
+#       Generate + replay up to ``n`` novel exploit variants against the
+#       patched code; return (variants_tested, variants_fired).
+# Both are async. The phase-C caller supplies closures that do the real
+# inference + sandbox replay; tests supply stubs.
+
+
+@dataclass
+class VerifyOutcome:
+    confidence: str
+    poc_refuted: bool
+    functional_ok: bool | None
+    variants_total: int
+    variants_fired: int
+    budget_capped: bool
+    notes: list[str]
+
+    @property
+    def is_high_quality(self) -> bool:
+        return self.confidence == CONFIDENCE_HIGH
+
+    @property
+    def needs_retry(self) -> bool:
+        """A FAILED gate (broken patch or surviving variant) is the retry
+        trigger — regenerate the patch with this evidence."""
+        return self.confidence == CONFIDENCE_FAILED and self.poc_refuted
+
+
+async def verify_patch(
+    *,
+    poc_refuted: bool,
+    severity: str | None,
+    run_functional,
+    run_adversarial,
+    budget: VerifyBudget | None = None,
+) -> VerifyOutcome:
+    """Run the verification gates for one patched finding, budget-aware
+    and with greedy early-exit. Order is deliberate:
+
+      1. If the original PoC still fires, stop — nothing to verify.
+      2. Functional gate FIRST (cheapest, catches the worst failure: a
+         patch that 'fixes' by breaking the app). If it fails, skip the
+         adversarial spend — we already know we must retry.
+      3. Adversarial gate up to ``budget.variants`` (early-exit on the
+         first variant that still exploits — a shallow patch).
+
+    Returns a :class:`VerifyOutcome` with the confidence label + the
+    signals the caller needs to decide retry.
+    """
+    b = budget or verify_budget_for(severity)
+    notes: list[str] = []
+
+    if not poc_refuted:
+        notes.append("original exploit still fires against the patch")
+        return VerifyOutcome(
+            confidence=CONFIDENCE_FAILED, poc_refuted=False, functional_ok=None,
+            variants_total=0, variants_fired=0, budget_capped=False, notes=notes,
+        )
+
+    # ── functional-preservation gate (always; cheapest, runs first) ────
+    functional_ok: bool | None = None
+    if b.functional > 0:
+        functional_ok = await run_functional()
+        notes.append(f"functional gate: {'pass' if functional_ok else 'FAIL'}")
+        if functional_ok is False:
+            # Patch broke the app — don't spend on adversarial; retry.
+            return VerifyOutcome(
+                confidence=CONFIDENCE_FAILED, poc_refuted=True, functional_ok=False,
+                variants_total=0, variants_fired=0, budget_capped=False, notes=notes,
+            )
+
+    # ── adversarial variant gate (severity-tiered) ─────────────────────
+    variants_total = 0
+    variants_fired = 0
+    if b.variants > 0:
+        variants_total, variants_fired = await run_adversarial(b.variants)
+        notes.append(
+            f"adversarial gate: {variants_fired}/{variants_total} variants still exploited"
+        )
+
+    confidence = compute_confidence(
+        poc_refuted=True,
+        functional_ok=functional_ok,
+        variants_total=variants_total,
+        variants_fired=variants_fired,
+    )
+    return VerifyOutcome(
+        confidence=confidence, poc_refuted=True, functional_ok=functional_ok,
+        variants_total=variants_total, variants_fired=variants_fired,
+        budget_capped=False, notes=notes,
+    )

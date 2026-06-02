@@ -1,6 +1,9 @@
 """Unit tests for the remediation verification foundation:
-per-severity budget policy + the patch-confidence model."""
+per-severity budget policy + the patch-confidence model + the
+verification orchestrator (Stage 2+3)."""
 from __future__ import annotations
+
+import asyncio
 
 from dast.remediation_verify import (
     CONFIDENCE_FAILED,
@@ -10,6 +13,7 @@ from dast.remediation_verify import (
     VerifyBudget,
     compute_confidence,
     verify_budget_for,
+    verify_patch,
 )
 
 # ── budget policy ────────────────────────────────────────────────────
@@ -93,3 +97,87 @@ def test_confidence_low_when_poc_replay_only() -> None:
     assert compute_confidence(
         poc_refuted=True, functional_ok=None, variants_total=0, variants_fired=0
     ) == CONFIDENCE_LOW
+
+
+# ── verification orchestrator (Stage 2+3) ────────────────────────────
+
+
+def test_verify_skips_all_gates_when_poc_still_fires() -> None:
+    async def func():  # must not run
+        raise AssertionError("functional gate should not run")
+
+    async def adv(n):
+        raise AssertionError("adversarial gate should not run")
+
+    out = asyncio.run(
+        verify_patch(poc_refuted=False, severity="critical",
+                     run_functional=func, run_adversarial=adv)
+    )
+    assert out.confidence == CONFIDENCE_FAILED
+    assert out.needs_retry is False  # nothing was fixed → not a retryable patch
+
+
+def test_verify_functional_fail_skips_adversarial_and_signals_retry() -> None:
+    calls = {"adv": 0}
+
+    async def func():
+        return False  # patch broke the app
+
+    async def adv(n):
+        calls["adv"] += 1
+        return (n, 0)
+
+    out = asyncio.run(
+        verify_patch(poc_refuted=True, severity="critical",
+                     run_functional=func, run_adversarial=adv)
+    )
+    assert out.confidence == CONFIDENCE_FAILED
+    assert out.functional_ok is False
+    assert calls["adv"] == 0  # early-exit: don't spend adversarial budget
+    assert out.needs_retry is True
+
+
+def test_verify_high_when_functional_passes_and_no_variant_fires() -> None:
+    async def func():
+        return True
+
+    async def adv(n):
+        return (n, 0)
+
+    out = asyncio.run(
+        verify_patch(poc_refuted=True, severity="critical",
+                     run_functional=func, run_adversarial=adv)
+    )
+    assert out.confidence == CONFIDENCE_HIGH
+    assert out.is_high_quality is True
+    assert out.variants_total == 5  # critical budget
+
+
+def test_verify_failed_and_retries_when_a_variant_still_exploits() -> None:
+    async def func():
+        return True
+
+    async def adv(n):
+        return (n, 1)  # shallow patch: one variant still gets through
+
+    out = asyncio.run(
+        verify_patch(poc_refuted=True, severity="high",
+                     run_functional=func, run_adversarial=adv)
+    )
+    assert out.confidence == CONFIDENCE_FAILED
+    assert out.variants_fired == 1
+    assert out.needs_retry is True
+
+
+def test_verify_medium_for_low_severity_no_variants() -> None:
+    async def func():
+        return True
+
+    async def adv(n):
+        raise AssertionError("low severity budgets zero variants")
+
+    out = asyncio.run(
+        verify_patch(poc_refuted=True, severity="low",
+                     run_functional=func, run_adversarial=adv)
+    )
+    assert out.confidence == CONFIDENCE_MEDIUM  # functional pass, no variants run
