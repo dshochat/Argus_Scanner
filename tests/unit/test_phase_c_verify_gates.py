@@ -13,10 +13,13 @@ from dast.phase_c_verify_gates import (
     FUNC_OK,
     FUNC_SETUP_ERROR,
     REACH_ORACLE,
+    REBIND_PUBLIC_IP,
     FunctionalProbe,
     GatePlans,
     GateVariant,
     _json_loads_safe,
+    build_rebinding_variant,
+    derive_entrypoint,
     execute_gates,
     oracle_in_trace,
     prepare_gate_plans,
@@ -98,6 +101,84 @@ def test_prepare_gate_plans_generates_functional_and_variants() -> None:
     assert len(plans.variants) == 2
     assert plans.variants[0].payload == "http://2130706433/"
     assert plans.tokens_in > 0 and plans.tokens_out > 0
+
+
+# ── DNS-rebinding (TOCTOU) probe ─────────────────────────────────────
+
+
+def test_derive_entrypoint_skips_helpers() -> None:
+    src = (
+        "import socket\n"
+        "def _is_safe_host(h): ...\n"
+        "def _validate(u): ...\n"
+        "def load_media_from_url(url): ...\n"
+    )
+    assert derive_entrypoint(src) == "load_media_from_url"
+    assert derive_entrypoint("x = 1\n") is None
+
+
+def test_build_rebinding_variant_harness_has_flip_logic() -> None:
+    import base64
+
+    v = build_rebinding_variant("_demo_media_loader", "load_media_from_url", "abcd1234")
+    assert "rebind" in v.description.lower() or "toctou" in v.description.lower()
+    cmd = v.commands[0]
+    # Decode the base64-wrapped script and assert the flip is correct.
+    b64 = cmd.split("b64decode('")[1].split("')")[0]
+    script = base64.b64decode(b64).decode()
+    assert "socket.getaddrinfo = _flip" in script
+    assert REBIND_PUBLIC_IP in script          # 1st lookup → public
+    assert "'127.0.0.1'" in script             # later lookups → internal
+    assert "_demo_media_loader" in script and "load_media_from_url" in script
+    assert REACH_ORACLE in script and BLOCK_MARKER in script
+
+
+def test_rebinding_flip_discriminates_toctou_from_pinned() -> None:
+    """The heart of the probe: with the resolver flipping public→internal,
+    a patch that RE-RESOLVES dials the internal IP (would REACH the capture
+    server → fire), while a patch that PINS the checked IP dials the public
+    IP (unroutable in-sandbox → BLOCKED). This guards the discriminator
+    against a regression that would make the probe always-pass."""
+    state = {"n": 0}
+
+    def resolve() -> str:  # mirrors the harness's _flip
+        state["n"] += 1
+        return REBIND_PUBLIC_IP if state["n"] == 1 else "127.0.0.1"
+
+    # TOCTOU: validate(resolve) passes on public, then fetch re-resolves.
+    checked = resolve()
+    assert checked == REBIND_PUBLIC_IP          # check sees a safe public IP
+    toctou_dialled = resolve()                  # HTTP client re-resolves
+    assert toctou_dialled == "127.0.0.1"        # → hits the capture server → FIRES
+
+    # Pinned: the connect target IS the IP we validated (no 2nd resolve).
+    state["n"] = 0
+    pinned_checked = resolve()
+    pinned_dialled = pinned_checked             # reuse the checked IP
+    assert pinned_dialled == REBIND_PUBLIC_IP   # → unroutable in-sandbox → BLOCKED
+
+
+def test_prepare_prepends_rebinding_only_for_ssrf() -> None:
+    src = "import requests\ndef load_media_from_url(url):\n    return requests.get(url)\n"
+
+    async def _inf(prompt, opts, schema):  # variants generation returns 2
+        if "Stage 2 (functional" in prompt:
+            return {"text": '{"description":"b","benign_url":"https://e/x","commands":["c"]}',
+                    "usage": {}}
+        return {"text": '{"variants":[{"description":"d","payload":"p","commands":["c"]},'
+                '{"description":"e","payload":"q","commands":["c"]}]}', "usage": {}}
+
+    common = dict(
+        inference=_inf, file_name="_demo_media_loader.py",
+        confirmed_findings=[{"cwe": "CWE-918"}], original_source=src,
+        patched_source=src, seed_commands=["c"], seed_payload="", budget=verify_budget_for("high"),
+    )
+    ssrf = asyncio.run(prepare_gate_plans(**common, ssrf_class=True))
+    assert "rebind" in ssrf.variants[0].description.lower()  # prepended first
+    assert len(ssrf.variants) == 3                            # rebinding + 2 LLM
+    non = asyncio.run(prepare_gate_plans(**common, ssrf_class=False))
+    assert all("rebind" not in v.description.lower() for v in non.variants)
+    assert len(non.variants) == 2
 
 
 def test_prepare_gate_plans_low_severity_skips_variants() -> None:

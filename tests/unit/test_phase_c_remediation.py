@@ -956,7 +956,9 @@ async def test_phase_c_gates_high_confidence_when_class_complete() -> None:
     assert ver is not None
     assert ver["confidence"] == "HIGH"
     assert ver["functional_ok"] is True
-    assert ver["variants_total"] == 5 and ver["variants_fired"] == 0
+    # 5 LLM encoding variants + 1 deterministic DNS-rebinding probe (SSRF).
+    assert ver["variants_total"] == 6 and ver["variants_fired"] == 0
+    assert any("rebind" in (v.get("description") or "").lower() for v in ver["variants"])
     assert result["needs_retry"] is False
     pf = result["per_finding"][0]
     assert pf["post_patch_status"] == "NEUTRALIZED"

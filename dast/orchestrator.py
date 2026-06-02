@@ -4117,6 +4117,14 @@ async def _run_phase_c_verify_gates(
     gate_image_hint = raw_hint if isinstance(raw_hint, str) and raw_hint else "lean"
     gate_timeout = int(seed_plan_dict.get("timeout_sec") or 30)
 
+    # SSRF-class findings get the deterministic DNS-rebinding (TOCTOU)
+    # probe in addition to the LLM encoding variants.
+    ssrf_class = any(
+        "918" in str(h.get("cwe") or "")
+        or "ssrf" in str(h.get("type") or h.get("cwe") or "").lower()
+        for h in confirmed
+    )
+
     try:
         gate_plans = await prepare_gate_plans(
             inference=inference,
@@ -4127,6 +4135,7 @@ async def _run_phase_c_verify_gates(
             seed_commands=seed_commands,
             seed_payload=seed_payload,
             budget=budget,
+            ssrf_class=ssrf_class,
         )
 
         # Re-inject patched bytes (Stage-1 restored originals) and replay

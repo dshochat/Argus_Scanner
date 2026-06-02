@@ -2707,6 +2707,15 @@ REQUIREMENTS:
      and DNS-to-internal names bypass it. Reject URL userinfo, normalize
      before parsing so validator and HTTP client agree on the host, and
      disable auto-redirects OR re-run the IP check after EVERY redirect.
+     CRITICAL — defeat TOCTOU / DNS-rebinding: the IP you VALIDATED must be
+     the IP you CONNECT to. Do NOT validate the host and then hand the
+     original hostname back to the HTTP client, which re-resolves DNS — a
+     TTL-0 rebind returns a safe IP to your check and an internal IP to the
+     fetch. PIN the resolved IP: connect to the validated IP directly and
+     carry the original hostname only in the `Host` header (and SNI for
+     TLS) — e.g. a custom `requests.adapters.HTTPAdapter` that overrides
+     resolution, or `urllib3 ... assert_hostname` / a connection bound to
+     the checked address. One resolution, reused for check AND connect.
    * Command injection: never build a shell string from input — argv list
      with shell=False (or shlex.quote each component).
    * Path traversal: resolve to a real absolute path, confirm it's inside

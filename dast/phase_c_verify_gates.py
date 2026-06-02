@@ -62,6 +62,13 @@ FUNC_BROKEN = "ARGUS_FUNC_BROKEN"
 # so a flaky mock can't fabricate a "patch broke the app" retry.
 FUNC_SETUP_ERROR = "ARGUS_FUNC_SETUP_ERROR"
 
+# DNS-rebinding (TOCTOU) probe: a public, ipaddress-"global" address that
+# the patch's resolve-and-check will ACCEPT on the validation lookup, but
+# which is unroutable inside the no-egress sandbox — so a patch that PINS
+# this IP fails to connect (blocked), while a patch that RE-RESOLVES gets
+# the flipped 127.0.0.1 and reaches the capture server (fired).
+REBIND_PUBLIC_IP = "93.184.216.34"
+
 # A submit-against-patched callback: the orchestrator injects the patched
 # bytes into the sandbox content map, then hands us this to replay a plan
 # against them and return the trace (or raise).
@@ -300,29 +307,36 @@ ORIGINAL sandbox harness (TEMPLATE for imports / entrypoint call shape):
 ```
 
 RUNTIME ENVIRONMENT (critical):
-- The sandbox hijacks ALL DNS to 127.0.0.1, so a real benign fetch would
-  be (correctly) blocked by any sound SSRF patch. You therefore MUST
-  MOCK so the patched validation sees a PUBLIC address and NO real
-  network call happens:
-    * Monkeypatch `socket.getaddrinfo` to return a PUBLIC IP
-      (e.g. 93.184.216.34) for the benign host, so the patch's
-      resolve-and-check logic passes it.
-    * Mock the egress call the code uses (e.g. `requests.get` /
-      `urllib.request.urlopen`) to return a dummy successful response
-      (status 200, small body) — no real traffic.
-  Install the mocks BEFORE importing/calling the entrypoint.
+- The sandbox hijacks ALL DNS to 127.0.0.1 AND has NO outbound network.
+  So you cannot rely on a real fetch succeeding. You MUST make the patch's
+  VALIDATION see a public address:
+    * Monkeypatch `socket.getaddrinfo` so the benign host resolves to a
+      PUBLIC IP (e.g. 93.184.216.34) — this lets the patch's resolve-and-
+      check logic ACCEPT the host. Install it BEFORE calling the entrypoint.
+- The goal is to prove the patch does NOT over-block a legitimate host —
+  i.e. the URL gets PAST validation. Whether the subsequent socket connect
+  succeeds is irrelevant here (the sandbox has no egress, and a rebind-safe
+  patch deliberately connects to the pinned IP, which will be unreachable).
 - Then call the SAME entrypoint as the seed harness with a LEGITIMATE
   public URL (e.g. https://example.com/image.png).
 
 HARNESS CONTRACT (deterministic classification — TWO distinct phases):
-- Phase A (setup): install the mocks + import the module inside their OWN
-  try/except. If THIS fails (mock target missing, import error, etc.),
-  print `{FUNC_SETUP_ERROR}` and exit — this is a test-harness problem,
-  NOT evidence about the patch, so don't conflate it with a regression.
+- Phase A (setup): install the getaddrinfo monkeypatch + import the module
+  inside their OWN try/except. If THIS fails (import error, etc.), print
+  `{FUNC_SETUP_ERROR}` and exit — a harness problem, not patch evidence.
 - Phase B (the actual test): call the entrypoint with the legitimate URL
-  in a SEPARATE try/except. Print `{FUNC_OK}` if it returns successfully
-  (legitimate request preserved); print `{FUNC_BROKEN}` ONLY if the
-  ENTRYPOINT itself raises (the patch over-blocked a valid input).
+  in a SEPARATE try/except, and classify by WHAT failed:
+    * Returns normally → print `{FUNC_OK}` (request preserved).
+    * Raises a NETWORK/CONNECTION error (ConnectionError, OSError, socket
+      error, requests.exceptions.ConnectionError/Timeout, urllib3
+      NewConnectionError, MaxRetryError) → print `{FUNC_OK}`. The host was
+      ACCEPTED and only the sandbox's missing egress stopped the connect —
+      that is NOT an over-block.
+    * Raises a VALIDATION rejection (ValueError or any error whose message
+      says the host/scheme/address was blocked/disallowed/not allowed) →
+      print `{FUNC_BROKEN}`. THIS is the over-block we care about.
+  Catch the network-error classes BEFORE the broad except so they map to
+  OK, not BROKEN.
 - Keep it to a single `python -c` command.
 
 Return STRICT JSON:
@@ -355,6 +369,7 @@ async def prepare_gate_plans(
     seed_commands: list[str],
     seed_payload: str,
     budget: VerifyBudget,
+    ssrf_class: bool = False,
 ) -> GatePlans:
     """Generate the functional probe + adversarial variants up front.
 
@@ -431,10 +446,94 @@ async def prepare_gate_plans(
         except Exception as exc:  # noqa: BLE001
             plans.notes.append(f"adversarial generation failed: {type(exc).__name__}")
 
+    # Deterministic DNS-rebinding (TOCTOU) probe — the one bypass class the
+    # LLM encoding-variants can't surface. Added for SSRF patches via an
+    # in-VM resolver flip (no image change). Prepended so it always runs.
+    if ssrf_class and budget.variants > 0:
+        import uuid as _uuid  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        module_name = _Path(file_name).stem if file_name else ""
+        entry_func = derive_entrypoint(original_source)
+        if module_name and entry_func:
+            plans.variants.insert(
+                0,
+                build_rebinding_variant(module_name, entry_func, _uuid.uuid4().hex[:8]),
+            )
+        else:
+            plans.notes.append(
+                "rebinding probe skipped: could not derive module/entrypoint"
+            )
+
     return plans
 
 
 # ── plan construction + execution (sandbox; INSIDE the lock) ─────────
+
+
+def derive_entrypoint(original_source: str) -> str | None:
+    """Best-effort: the public entrypoint of the vulnerable file — the
+    last top-level ``def`` whose name isn't underscore-prefixed (helpers
+    like ``_validate_url`` are skipped). Used to target the rebinding
+    harness at the same function the exploit hit."""
+    import re  # noqa: PLC0415
+
+    defs = re.findall(r"^def ([A-Za-z][A-Za-z0-9_]*)\(", original_source or "", re.M)
+    public = [d for d in defs if not d.startswith("_")]
+    chosen = public or defs
+    return chosen[-1] if chosen else None
+
+
+def _rebinding_harness(module_name: str, entry_func: str, marker: str) -> list[str]:
+    """A self-classifying DNS-rebinding harness, base64-wrapped to dodge
+    all shell quoting. It monkeypatches ``socket.getaddrinfo`` so the
+    FIRST lookup of the probe host returns a public IP (passes the patch's
+    check) and EVERY later lookup returns 127.0.0.1 (the rebind). Both the
+    patch's validation and the HTTP client resolve through it.
+
+      * patch RE-RESOLVES (TOCTOU)  → fetch hits 127.0.0.1 capture server → REACHED
+      * patch PINS the checked IP   → fetch dials the public IP → no route → BLOCKED
+    """
+    import base64  # noqa: PLC0415
+
+    script = (
+        "import importlib, socket\n"
+        "_orig = socket.getaddrinfo\n"
+        "_st = {'n': 0}\n"
+        "def _flip(host, *a, **k):\n"
+        "    if 'argus-rebind' in str(host):\n"
+        "        _st['n'] += 1\n"
+        f"        ip = '{REBIND_PUBLIC_IP}' if _st['n'] == 1 else '127.0.0.1'\n"
+        "        try:\n"
+        "            port = int(a[0]) if a and a[0] else 0\n"
+        "        except Exception:\n"
+        "            port = 0\n"
+        "        return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (ip, port))]\n"
+        "    return _orig(host, *a, **k)\n"
+        "socket.getaddrinfo = _flip\n"
+        f"m = importlib.import_module('{module_name}')\n"
+        "try:\n"
+        f"    getattr(m, '{entry_func}')('http://argus-rebind-{marker}.test/{marker}')\n"
+        f"    print('{REACH_ORACLE}')\n"
+        "except Exception as e:\n"
+        f"    print('{BLOCK_MARKER}', type(e).__name__)\n"
+    )
+    b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    return [f"python3 -c \"import base64; exec(base64.b64decode('{b64}').decode())\""]
+
+
+def build_rebinding_variant(module_name: str, entry_func: str, marker: str) -> GateVariant:
+    """A deterministic, Argus-controlled adversarial variant that tests
+    TOCTOU / DNS-rebinding resistance (the one bypass class static
+    encodings can't surface). Always worth running for an SSRF patch."""
+    return GateVariant(
+        description=(
+            "DNS rebinding (TOCTOU) — resolver returns a public IP to the "
+            "validation check, then 127.0.0.1 to the fetch"
+        ),
+        payload=f"http://argus-rebind-{marker}.test/  [resolver flips public→127.0.0.1]",
+        commands=_rebinding_harness(module_name, entry_func, marker),
+    )
 
 
 def make_gate_plan(
@@ -541,7 +640,11 @@ async def execute_gates(
         return result
 
     async def run_adversarial(n: int) -> tuple[int, int]:
-        chosen = plans.variants[:n]
+        # prepare_gate_plans already sized the list (LLM variants capped at
+        # the budget, plus the deterministic rebinding probe prepended for
+        # SSRF). Run them ALL — the rebinding probe is intentionally beyond
+        # the LLM cap and must not be truncated.
+        chosen = plans.variants
         tested = 0
         fired = 0
         for v in chosen:
