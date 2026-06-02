@@ -2681,29 +2681,48 @@ that DAST has confirmed contains real, runtime-exploitable vulnerabilities.
 Produce a PATCHED version of the file that NEUTRALIZES every confirmed
 vulnerability while preserving the file's legitimate behavior.
 
-REQUIREMENTS:
-1. Apply minimal, surgical changes — do not refactor unrelated code.
-2. For each confirmed finding, eliminate the exploit path. Acceptable
-   strategies (in order of preference):
-   a. Replace the unsafe call with a safe equivalent (e.g., remove
-      exec() of decoded blobs; use ast.literal_eval for trusted data;
-      use shlex.quote / parameterized queries).
-   b. Add validation/sanitization at the input boundary if the unsafe
-      operation cannot be removed.
-   c. Remove the entire unsafe code path if it serves no legitimate
-      purpose (the file is a backdoor / malware stub).
-3. The patched file must be syntactically valid in the original
-   language. If you remove a function body, replace it with a clear
-   stub (e.g., 'pass' for Python, 'return null;' for JS).
-4. Do NOT add new dependencies, new functionality, new comments
-   unrelated to the security fix, or library imports the original
-   file did not already have unless strictly required for the fix.
-5. Output the COMPLETE patched file in 'patched_source' — full
-   text, ready to write to disk. Do not omit any unchanged sections.
+CORE PRINCIPLE — fix the vulnerability CLASS, not the one observed payload.
+The patch is re-tested with NOVEL exploit VARIANTS (alternate encodings,
+representations, and bypass techniques), not just the original PoC. A fix
+that blocks only the exact payload you were shown WILL BE REJECTED. Assume
+an attacker who has read your patch and will try every equivalent form.
 
-The patched file will be re-tested in the same sandbox environment
-that confirmed the original exploits. Your goal: every confirmed
-hypothesis should fail to fire against the patched file.
+REQUIREMENTS:
+1. Apply minimal, surgical changes — do not refactor unrelated code. You
+   MAY add STANDARD-LIBRARY imports needed for a correct fix (e.g.
+   `ipaddress`, `socket`, `urllib.parse`, `shlex`, `html`). "Minimal"
+   means "don't refactor", NOT "avoid the right defensive primitive".
+2. For each finding, eliminate the exploit path for the WHOLE class:
+   a. Prefer a safe equivalent (parameterized queries; argv list with
+      shell=False or shlex.quote; ast.literal_eval; safe deserializers).
+   b. If validating input, use a COMPLETE positive check — never a
+      denylist of the specific strings you observed.
+   c. Remove the unsafe path entirely if it serves no legitimate purpose.
+3. Class-completeness (apply whichever fit the findings):
+   * SSRF / URL fetch: RESOLVE the host to an IP and reject via
+     `ipaddress` if `.is_private / .is_loopback / .is_link_local /
+     .is_reserved / .is_multicast` (covers 127/8, 10/8, 172.16/12,
+     192.168/16, 169.254/16 metadata, ::1, …). Do NOT rely on
+     hostname/string matching — decimal/hex/octal/IPv6-mapped encodings
+     and DNS-to-internal names bypass it. Reject URL userinfo, normalize
+     before parsing so validator and HTTP client agree on the host, and
+     disable auto-redirects OR re-run the IP check after EVERY redirect.
+   * Command injection: never build a shell string from input — argv list
+     with shell=False (or shlex.quote each component).
+   * Path traversal: resolve to a real absolute path, confirm it's inside
+     an allowed base dir; reject `..`, symlinks, NUL bytes.
+   * Deserialization: replace pickle/yaml.load/eval with safe loaders.
+4. PRESERVE legitimate behavior. The patch is functionally re-tested with
+   BENIGN inputs that MUST still succeed — do not over-restrict (e.g.
+   don't drop a scheme/host the code legitimately needs). A patch that
+   breaks normal use is REJECTED even if it stops the exploit.
+5. Syntactically valid in the original language. Output the COMPLETE
+   patched file in 'patched_source' — full text, ready to write to disk;
+   omit nothing.
+
+The patched file is re-tested in the same sandbox that confirmed the
+originals, PLUS with novel exploit variants and benign functional inputs.
+Goal: every variant fails to fire AND legitimate behavior still works.
 
 OUTPUT JSON conforming to the provided schema (one object).
 """
