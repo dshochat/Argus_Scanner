@@ -303,6 +303,19 @@ async def _run_mcp_scan(args: argparse.Namespace) -> int:
                 update={"tools": [t for t in surface.tools if t.name in tool_allowlist]}
             )
 
+    # ── per-scan probe context ─────────────────────────────────────────
+    # The auth-bypass probe only fires when the operator configured an
+    # auth token (otherwise the target is unauthenticated by design and
+    # "bypass" is meaningless — see AuthBypassProbe). Thread that signal
+    # to the probe instance before build/evaluate.
+    auth_token_configured = (
+        getattr(args, "auth", "none") == "token"
+        and bool(getattr(args, "auth_token", None))
+    )
+    for probe in PROBE_REGISTRY:
+        if getattr(probe, "probe_class", None) == "auth_bypass":
+            probe.auth_token_configured = auth_token_configured  # type: ignore[attr-defined]
+
     # ── build probe spec from registry ─────────────────────────────────
     all_requests: list[ProbeRequest] = []
     for probe in PROBE_REGISTRY:

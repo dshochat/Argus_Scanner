@@ -13,6 +13,14 @@ a ``default_auth_token`` AND a probe sets ``override_auth_token=""``,
 the harness runs the call unauthenticated. v1 emits PAIRS — one
 authed, one unauthed — per tool, so the evaluator can diff them.
 
+Gating: this probe only runs when the operator configured an auth
+token for the scan (``--auth token --auth-token ...``). Without one,
+the target is unauthenticated *by the operator's own configuration*,
+so there is nothing to "bypass" — the probe stays silent rather than
+flagging every public tool (the dominant false positive, e.g. a fetch
+server that returns data on every call). The CLI sets
+``auth_token_configured`` before ``evaluate`` runs.
+
 Confirmation: the unauthed response's content has length > 0 (the
 server didn't refuse) AND the JSON-RPC envelope has no ``error`` AND
 the response shape matches the authed version (same keys at top
@@ -44,6 +52,17 @@ class AuthBypassProbe:
     """Authorization-bypass probe (CWE-862)."""
 
     probe_class: str = "auth_bypass"
+
+    def __init__(self) -> None:
+        # Whether the operator configured an auth token for this scan
+        # (``--auth token --auth-token ...``). Set per-scan by the CLI
+        # before ``evaluate`` runs. When False, the target tool is
+        # unauthenticated *by the operator's own configuration* — there
+        # is nothing to "bypass", so the probe stays silent rather than
+        # flagging every public tool as an auth bypass. This kills the
+        # dominant false positive: an intentionally-unauthenticated tool
+        # (e.g. a fetch server) returning data on every call.
+        self.auth_token_configured: bool = False
 
     def build_requests(self, surface: MCPSurfaceMap) -> list[ProbeRequest]:
         """For every tool, emit a paired (authed, unauthed) call.
@@ -94,6 +113,13 @@ class AuthBypassProbe:
         responses: list[ProbeResponse],
         network_captures: list[dict],
     ) -> list[MCPFinding]:
+        # No auth token configured → the operator has declared the
+        # target unauthenticated; "bypass" is meaningless. Stay silent
+        # to avoid flagging every public tool. (Re-run with
+        # ``--auth token --auth-token ...`` to actually test enforcement.)
+        if not self.auth_token_configured:
+            return []
+
         my = [r for r in responses if r.probe_class == self.probe_class]
         if not my:
             return []

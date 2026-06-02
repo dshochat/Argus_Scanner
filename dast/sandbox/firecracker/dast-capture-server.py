@@ -343,6 +343,23 @@ def _drop_privileges() -> None:
         return
     for username, uid, gid in target_uids:
         try:
+            # CRITICAL: captured.jsonl was created root-owned (0644) when
+            # the server wrote its startup sentinels. After we setuid to
+            # the drop target, log_capture() appends would EACCES — which
+            # silently drops EVERY captured request (the bug that made
+            # network_call_captured evidence vanish for both MCP and DAST
+            # scans). Hand the log file to the drop target first so it
+            # stays writable post-drop.
+            try:
+                os.chown(CAPTURE_PATH, uid, gid)
+            except OSError as chown_exc:
+                log_capture(
+                    {
+                        "kind": "capture_log_chown_failed",
+                        "user": username,
+                        "error": f"{type(chown_exc).__name__}: {chown_exc!s}"[:200],
+                    }
+                )
             os.setgroups([])  # drop supplementary groups
             os.setgid(gid)
             os.setuid(uid)

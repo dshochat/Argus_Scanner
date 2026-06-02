@@ -60,16 +60,25 @@ fill in the values from steps 1, 4, and 5):
 # Required for DAST
 FLY_API_TOKEN=fly_token_from_step_4
 ARGUS_DAST_FLY_APP=argus-dast-yourhandle
-ECHO_DAST_IMAGE_LEAN=registry.fly.io/argus-dast-yourhandle:lean-v1
-ECHO_DAST_IMAGE_RICH_PYTHON=registry.fly.io/argus-dast-yourhandle:rich_python-v1
-ECHO_DAST_IMAGE_ML_TOOLS=registry.fly.io/argus-dast-yourhandle:ml_tools-v1
+# IMPORTANT: copy the EXACT image refs that build_and_push_multi.sh
+# printed at the end of step 5 — do not hardcode the version below.
+# The `-v1` here is only the default for a first build; `<N>` increments
+# every time you rebuild a Dockerfile (so a re-run with IMAGE_VERSION=v2
+# yields `:lean-v2`, etc.).
+ECHO_DAST_IMAGE_LEAN=registry.fly.io/argus-dast-yourhandle:lean-v<N>
+ECHO_DAST_IMAGE_RICH_PYTHON=registry.fly.io/argus-dast-yourhandle:rich_python-v<N>
+ECHO_DAST_IMAGE_ML_TOOLS=registry.fly.io/argus-dast-yourhandle:ml_tools-v<N>
 ```
 
 The image tags follow the pattern
 `registry.fly.io/<your-app>:<tier>-v<N>` where `<N>` matches
 `IMAGE_VERSION` from step 5 (default `v1`; override with
 `IMAGE_VERSION=v2 bash build_and_push_multi.sh` when you change a
-Dockerfile).
+Dockerfile). The build script prints the exact `ECHO_DAST_IMAGE_*`
+lines to paste — use those rather than guessing the version. **All
+three tiers must be rebuilt together when you change a shared component
+(e.g. `dast-capture-server.py` / `dast-init.sh` / `entrypoint.py`),
+since they bake the same scripts.**
 
 ## The three sandbox tiers
 

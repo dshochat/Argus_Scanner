@@ -360,9 +360,19 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
 
+        # Give the capture-server a beat to flush the last probe's
+        # egress to /tmp/captured.jsonl before we read it.
+        time.sleep(0.4)
         result_payload = {
             "surface": surface_dump,
             "responses": responses,
+            # Fold the in-sandbox capture-server's observed egress into
+            # the result file so it rides the RELIABLE probe_result_chunk
+            # transport (the entrypoint's separate network_call_captured
+            # log events can be lost to Fly log-shipping lag on long
+            # runs). Normalised to the {host, path, ...} shape the host's
+            # SSRF/redirect evaluators expect.
+            "network_captures": _collect_captures(),
             "diagnostics": diagnostics,
         }
     finally:
@@ -382,6 +392,92 @@ def main(argv: list[str] | None = None) -> int:
 
     _write_result(args.result, payload=result_payload)
     return 0
+
+
+_CAPTURE_SENTINELS = frozenset(
+    {
+        "server_start",
+        "tcp_server_start",
+        "dns_server_start",
+        "accept_error",
+        "capture_error",
+        "bind_error",
+        "dns_error",
+        "dns_bind_error",
+    }
+)
+
+
+def _collect_captures(path: str = "/tmp/captured.jsonl") -> list[dict[str, Any]]:
+    """Read the in-sandbox capture-server log and normalise each
+    observed egress into the ``{host, path, ...}`` shape the host-side
+    SSRF / redirect evaluators match against.
+
+    The capture-server records the request host inside
+    ``headers["host"]`` and the path at top level; the evaluators expect
+    a top-level ``host`` + ``path``. We bridge that here. Sentinels
+    (server-bind / error records) are dropped. Best-effort — any read /
+    parse error yields an empty list rather than failing the scan.
+    """
+    out: list[dict[str, Any]] = []
+    if not os.path.exists(path):
+        return out
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except Exception:  # noqa: BLE001
+        return out
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        kind = rec.get("kind")
+        if kind in _CAPTURE_SENTINELS:
+            continue
+        if kind == "http_request":
+            headers = rec.get("headers") or {}
+            host = ""
+            if isinstance(headers, dict):
+                # capture-server lowercases header keys.
+                host = headers.get("host") or headers.get("Host") or ""
+            out.append(
+                {
+                    "capture_kind": "http_request",
+                    "host": host,
+                    "path": rec.get("path") or "",
+                    "method": rec.get("method") or "",
+                    "scheme": "http",
+                    "peer": rec.get("peer"),
+                }
+            )
+        elif kind == "dns_query":
+            out.append(
+                {
+                    "capture_kind": "dns_query",
+                    "host": rec.get("qname") or "",
+                    "path": "",
+                    "qtype": rec.get("qtype"),
+                    "responded_with": rec.get("responded_with"),
+                }
+            )
+        elif kind == "tls_clienthello":
+            out.append(
+                {
+                    "capture_kind": "tls_clienthello",
+                    "host": rec.get("sni") or "",
+                    "path": "",
+                    "peer": rec.get("peer"),
+                }
+            )
+        else:
+            out.append({"capture_kind": kind or "unknown", "host": "", "path": ""})
+    return out
 
 
 def _write_result(

@@ -436,6 +436,79 @@ async def test_parse_trace_attributes_probe_class_from_request(
     assert result.responses[0].probe_class == "ssrf"
 
 
+async def test_parse_trace_merges_harness_network_captures() -> None:
+    """The harness folds the in-sandbox capture-server log into its
+    result payload (reliable transport). _parse_trace must surface those
+    in ``network_captures`` so the SSRF/redirect evaluators can confirm
+    — even when the trace carried no network_call_captured log events."""
+    from dast.sandbox.client import SandboxTrace
+
+    harness_result = {
+        "surface": {"target": "x", "transport": "stdio"},
+        "responses": [],
+        "network_captures": [
+            {
+                "capture_kind": "http_request",
+                "host": "metadata.google.internal",
+                "path": "/computeMetadata/v1/",
+                "method": "GET",
+                "scheme": "http",
+            }
+        ],
+    }
+    trace = SandboxTrace(
+        plan_id="x",
+        file_id="y",
+        hypothesis_id="z",
+        events=[],  # no log-event captures at all
+        exit_code=0,
+        stdout_excerpt="",
+        stderr_excerpt="",
+        elapsed_ms=10,
+        probe_result_json=json.dumps(harness_result),
+    )
+    result = _parse_trace(trace, probes=[], launch_command="x")
+    assert len(result.network_captures) == 1
+    assert result.network_captures[0]["host"] == "metadata.google.internal"
+    assert result.network_captures[0]["path"] == "/computeMetadata/v1/"
+
+
+async def test_harness_collect_captures_normalises_records(tmp_path: Any) -> None:
+    """The in-sandbox harness reads /tmp/captured.jsonl and normalises
+    http_request records (host from headers → top-level) so the host's
+    SSRF evaluator can match them. Sentinels are dropped."""
+    from mcp_scanner.sandbox_probe_harness import _collect_captures
+
+    cap_file = tmp_path / "captured.jsonl"
+    cap_file.write_text(
+        "\n".join(
+            [
+                '{"kind": "server_start", "ports": [80, 443, 53]}',
+                '{"kind": "http_request", "method": "GET", "path": "/computeMetadata/v1/",'
+                ' "headers": {"host": "metadata.google.internal"}, "peer": "127.0.0.1:5"}',
+                '{"kind": "dns_query", "qname": "evil.example", "qtype": 1,'
+                ' "responded_with": "127.0.0.1"}',
+                "not json",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    caps = _collect_captures(str(cap_file))
+    # server_start sentinel + the malformed line are dropped.
+    assert len(caps) == 2
+    http = next(c for c in caps if c["capture_kind"] == "http_request")
+    assert http["host"] == "metadata.google.internal"
+    assert http["path"] == "/computeMetadata/v1/"
+    dns = next(c for c in caps if c["capture_kind"] == "dns_query")
+    assert dns["host"] == "evil.example"
+
+
+async def test_harness_collect_captures_missing_file_is_empty() -> None:
+    from mcp_scanner.sandbox_probe_harness import _collect_captures
+
+    assert _collect_captures("/nonexistent/path/captured.jsonl") == []
+
+
 # ── ProbeResponse / ProbeRequest dataclass sanity ────────────────────
 
 

@@ -470,6 +470,16 @@ def _parse_trace(
             )
         )
 
+    # Network captures: the harness folds the in-sandbox capture-server
+    # log into its result payload (reliable probe_result_chunk
+    # transport), already normalised to {host, path, ...}. Prefer that
+    # over the entrypoint's separate network_call_captured log events,
+    # which can be dropped by Fly log-shipping lag on long runs. Merge
+    # both so we don't lose either source.
+    for cap in payload.get("network_captures") or []:
+        if isinstance(cap, dict):
+            network_captures.append(cap)
+
     diagnostics.extend(str(d) for d in (payload.get("diagnostics") or []))
 
     return SandboxedSessionResult(

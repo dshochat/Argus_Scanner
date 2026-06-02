@@ -244,6 +244,14 @@ def _ok_response(probe_id: str, tool: str, text: str) -> ProbeResponse:
     )
 
 
+def _authed_probe() -> AuthBypassProbe:
+    """An AuthBypassProbe with a token configured (the CLI sets this
+    per-scan; tests that expect findings must opt in)."""
+    p = AuthBypassProbe()
+    p.auth_token_configured = True
+    return p
+
+
 def test_auth_bypass_evaluate_confirmed_when_unauthed_mirrors_authed() -> None:
     surface = _surface_with_url_and_admin_tools()
     responses = [
@@ -252,7 +260,7 @@ def test_auth_bypass_evaluate_confirmed_when_unauthed_mirrors_authed() -> None:
         _ok_response("authbp-admin_lookup-noauth", "admin_lookup",
                      '{"user_id": "1", "role": "admin", "api_key": "AKIA-X"}'),
     ]
-    findings = AuthBypassProbe().evaluate(surface, responses, [])
+    findings = _authed_probe().evaluate(surface, responses, [])
     assert len(findings) == 1
     f = findings[0]
     assert f.confirmed is True
@@ -262,15 +270,32 @@ def test_auth_bypass_evaluate_confirmed_when_unauthed_mirrors_authed() -> None:
     assert "admin" in f.authed_diff["unauthed_excerpt"]
 
 
+def test_auth_bypass_silent_when_token_not_configured() -> None:
+    """Default (no --auth-token) → the target is unauthenticated by the
+    operator's own config, so there's nothing to bypass. Even a perfect
+    authed/unauthed mirror must NOT produce a finding (kills the dominant
+    false positive against intentionally-public tools)."""
+    surface = _surface_with_url_and_admin_tools()
+    responses = [
+        _ok_response("authbp-admin_lookup-withauth", "admin_lookup",
+                     '{"role": "admin"}'),
+        _ok_response("authbp-admin_lookup-noauth", "admin_lookup",
+                     '{"role": "admin"}'),
+    ]
+    # AuthBypassProbe() defaults auth_token_configured=False.
+    assert AuthBypassProbe().evaluate(surface, responses, []) == []
+
+
 def test_auth_bypass_evaluate_heuristic_when_no_authed_sample() -> None:
-    """If the operator didn't pass --auth-token, we still flag unauthed
-    responses that returned data — just at lower confidence."""
+    """With a token configured but only the unauthed sample present, we
+    still flag the unauthed response that returned data — at lower
+    confidence (no authed comparison to confirm against)."""
     surface = _surface_with_url_and_admin_tools()
     responses = [
         _ok_response("authbp-admin_lookup-noauth", "admin_lookup",
                      '{"role": "admin"}'),
     ]
-    findings = AuthBypassProbe().evaluate(surface, responses, [])
+    findings = _authed_probe().evaluate(surface, responses, [])
     assert len(findings) == 1
     assert findings[0].confirmed is False
 
@@ -295,7 +320,7 @@ def test_auth_bypass_evaluate_no_finding_when_unauthed_rejected() -> None:
             is_error=True,
         ),
     ]
-    findings = AuthBypassProbe().evaluate(surface, responses, [])
+    findings = _authed_probe().evaluate(surface, responses, [])
     assert findings == []
 
 
@@ -311,7 +336,7 @@ def test_auth_bypass_evaluate_no_finding_on_different_responses() -> None:
         _ok_response("authbp-admin_lookup-noauth", "admin_lookup",
                      "hello"),
     ]
-    findings = AuthBypassProbe().evaluate(surface, responses, [])
+    findings = _authed_probe().evaluate(surface, responses, [])
     # Unauthed had content → heuristic finding emitted.
     assert len(findings) == 1
     assert findings[0].confirmed is False
