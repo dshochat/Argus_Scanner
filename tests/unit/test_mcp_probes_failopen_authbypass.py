@@ -52,133 +52,97 @@ def test_fail_open_build_requests_only_url_host_params() -> None:
     assert all(r.tool_name == "fetch_url" for r in reqs)
 
 
-def test_fail_open_build_requests_fan_out_one_per_payload() -> None:
-    """6 payloads × 1 URL param = 6 probes for fetch_url."""
+def test_fail_open_build_requests_emits_direct_and_confusion_pair() -> None:
+    """One (direct, confusion) pair per URL param — the differential the
+    evaluator needs to prove a real bypass."""
     surface = _surface_with_url_and_admin_tools()
     reqs = FailOpenProbe().build_requests(surface)
-    assert len(reqs) == 6
-    payload_names = [r.probe_id.rsplit("-", 1)[-1] for r in reqs]
-    expected = {
-        "userinfo_confusion",
-        "null_bytes",
-        "oversize",
-        "empty",
-        "not_a_url",
-        "wrong_type_int",
-    }
-    assert expected == set(payload_names)
-
-
-def test_fail_open_build_requests_wrong_type_int_carries_int() -> None:
-    surface = _surface_with_url_and_admin_tools()
-    reqs = FailOpenProbe().build_requests(surface)
-    wrong = next(r for r in reqs if r.probe_id.endswith("wrong_type_int"))
-    assert wrong.arguments["url"] == 42
+    assert len(reqs) == 2
+    suffixes = {r.probe_id.rsplit("-", 1)[-1] for r in reqs}
+    assert suffixes == {"direct", "confusion"}
+    confusion = next(r for r in reqs if r.probe_id.endswith("confusion"))
+    # Looks external (userinfo) but resolves to the internal metadata host.
+    assert confusion.arguments["url"] == (
+        "http://allowed.example@metadata.google.internal/argus-fo-bypass"
+    )
+    direct = next(r for r in reqs if r.probe_id.endswith("direct"))
+    assert direct.arguments["url"] == "http://metadata.google.internal/argus-fo-direct"
 
 
 # ── fail-open: evaluate ─────────────────────────────────────────────
 
 
-def test_fail_open_evaluate_confirmed_on_internal_bypass_capture() -> None:
-    """Confirmed ONLY when the confusion payload (looks external, resolves
-    internal) reaches an internal host on the unique bypass path. The
-    unique path is the attribution key — it can't be contaminated by the
-    SSRF/redirect probes' captures."""
-    surface = _surface_with_url_and_admin_tools()
-    responses = [
+def _fo_pair(direct_resp: dict, confusion_resp: dict) -> list[ProbeResponse]:
+    return [
         ProbeResponse(
-            probe_id="failopen-fetch_url-url-userinfo_confusion",
+            probe_id="failopen-fetch_url-url-direct",
+            probe_class="fail_open",
+            tool_name="fetch_url",
+            arguments={"url": "http://metadata.google.internal/argus-fo-direct"},
+            response=direct_resp,
+            is_error="error" in direct_resp,
+        ),
+        ProbeResponse(
+            probe_id="failopen-fetch_url-url-confusion",
             probe_class="fail_open",
             tool_name="fetch_url",
             arguments={
                 "url": "http://allowed.example@metadata.google.internal/argus-fo-bypass"
             },
-            response={"jsonrpc": "2.0", "id": 1, "result": {"content": []}},
-        )
+            response=confusion_resp,
+        ),
     ]
-    captures = [
-        {
-            "host": "metadata.google.internal",
-            "path": "/argus-fo-bypass",
-            "scheme": "http",
-            "method": "GET",
-        }
+
+
+_OK = {"jsonrpc": "2.0", "id": 1, "result": {"content": []}}
+_BLOCKED = {"jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "blocked"}}
+
+
+def test_fail_open_confirmed_on_differential_bypass() -> None:
+    """Confirm ONLY on a real differential: the confusion leg reached
+    internal but the DIRECT internal URL was blocked (no direct capture)."""
+    surface = _surface_with_url_and_admin_tools()
+    responses = _fo_pair(_BLOCKED, _OK)
+    captures = [  # only the confusion leg landed
+        {"host": "metadata.google.internal", "path": "/argus-fo-bypass", "scheme": "http"}
     ]
     findings = FailOpenProbe().evaluate(surface, responses, captures)
     assert len(findings) == 1
     f = findings[0]
     assert f.confirmed is True
-    assert f.cwe == "CWE-755"
+    assert f.cwe == "CWE-918"
     assert "fetch_url" in f.target_locus
 
 
-def test_fail_open_does_not_confirm_on_external_or_offpath_capture() -> None:
-    """FP fix: a capture to a benign external host, or one not on the
-    unique bypass path, must NOT confirm fail-open (the old logic falsely
-    confirmed off any non-canary capture)."""
+def test_fail_open_silent_when_no_host_control() -> None:
+    """The FP fix: if the DIRECT internal URL ALSO reached internal, there's
+    no defense to bypass — it's plain SSRF. fail-open stays SILENT so the
+    SSRF probe owns it (no duplicate finding on unprotected servers)."""
     surface = _surface_with_url_and_admin_tools()
-    responses = [
-        ProbeResponse(
-            probe_id="failopen-fetch_url-url-null_bytes",
-            probe_class="fail_open",
-            tool_name="fetch_url",
-            arguments={"url": "http://example.com/\x00"},
-            response={"jsonrpc": "2.0", "id": 1, "result": {"content": []}},
-        )
-    ]
-    # Benign external host on a non-bypass path → no confirm, no heuristic
-    # (empty content).
-    captures = [{"host": "example.com", "path": "/", "scheme": "http"}]
-    assert FailOpenProbe().evaluate(surface, responses, captures) == []
-    # Even a loopback capture (the SSRF probe's territory) must not
-    # confirm fail-open — it's not on the unique bypass path.
-    captures2 = [{"host": "127.0.0.1", "path": "/", "scheme": "http"}]
-    assert FailOpenProbe().evaluate(surface, responses, captures2) == []
-
-
-def test_fail_open_evaluate_skips_ssrf_attributed_capture() -> None:
-    """A capture whose host matches an SSRF canary signature should
-    NOT be attributed to fail-open (it belongs to the SSRF probe)."""
-    surface = _surface_with_url_and_admin_tools()
-    responses = [
-        ProbeResponse(
-            probe_id="failopen-fetch_url-url-null_bytes",
-            probe_class="fail_open",
-            tool_name="fetch_url",
-            arguments={"url": "x"},
-            # Non-error result, so heuristic might still fire below.
-            response={"jsonrpc": "2.0", "id": 1, "result": {"content": []}},
-        )
-    ]
+    responses = _fo_pair(_OK, _OK)
     captures = [
-        {"host": "169.254.169.254", "path": "/latest/meta-data/", "scheme": "http"}
+        {"host": "metadata.google.internal", "path": "/argus-fo-direct", "scheme": "http"},
+        {"host": "metadata.google.internal", "path": "/argus-fo-bypass", "scheme": "http"},
     ]
-    findings = FailOpenProbe().evaluate(surface, responses, captures)
-    # Should NOT have a confirmed finding; no heuristic either since
-    # the response has empty content.
-    assert findings == []
+    assert FailOpenProbe().evaluate(surface, responses, captures) == []
 
 
-def test_fail_open_evaluate_heuristic_on_200_for_malformed_input() -> None:
-    """Non-error response for malformed input → heuristic finding."""
+def test_fail_open_silent_off_external_or_offpath_capture() -> None:
+    """Captures to benign external hosts, or off the unique bypass path
+    (e.g. the SSRF probe's loopback / IMDS hits), must not confirm."""
     surface = _surface_with_url_and_admin_tools()
-    responses = [
-        ProbeResponse(
-            probe_id="failopen-fetch_url-url-null_bytes",
-            probe_class="fail_open",
-            tool_name="fetch_url",
-            arguments={"url": "http://x/\x00"},
-            response={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {"content": [{"type": "text", "text": "got data"}]},
-            },
+    responses = _fo_pair(_BLOCKED, _OK)
+    # External host on a non-bypass path:
+    assert FailOpenProbe().evaluate(surface, responses, [{"host": "example.com", "path": "/"}]) == []
+    # SSRF probe's loopback capture (not on the fail-open bypass path):
+    assert FailOpenProbe().evaluate(surface, responses, [{"host": "127.0.0.1", "path": "/"}]) == []
+    # IMDS on the SSRF canary path (not the fail-open bypass path):
+    assert (
+        FailOpenProbe().evaluate(
+            surface, responses, [{"host": "169.254.169.254", "path": "/latest/meta-data/"}]
         )
-    ]
-    findings = FailOpenProbe().evaluate(surface, responses, [])
-    assert len(findings) == 1
-    assert findings[0].confirmed is False
-    assert "Suspected fail-open" in findings[0].title
+        == []
+    )
 
 
 def test_fail_open_evaluate_no_finding_when_server_rejects() -> None:
