@@ -4459,12 +4459,27 @@ async def _run_phase_c_fix_verify(
     verdict_out = (verdict_resp.get("usage") or {}).get("completion_tokens", 0) or 0
 
     # ── Step 4: per-finding NEUTRALIZED / STILL_EXPLOITABLE / UNVERIFIABLE
+    from dast.remediation_verify import compute_confidence  # noqa: PLC0415
+
     per_finding: list[dict] = []
     for ref in findings_validated:
         h = hyp_by_ref.get(ref) or {}
         hid = h.get("id") or ref
         new_v = new_v_by_hid.get(hid)
         status = _post_patch_status(new_v)
+        # Patch-confidence for a NEUTRALIZED claim. Stage 1: based on the
+        # original-PoC replay ONLY (no functional / adversarial gates yet),
+        # so a verified-refuted finding is LOW confidence by construction —
+        # honest until those gates raise it. Non-NEUTRALIZED findings carry
+        # no confidence (nothing was claimed fixed).
+        confidence = None
+        if status == "NEUTRALIZED":
+            confidence = compute_confidence(
+                poc_refuted=True,
+                functional_ok=None,
+                variants_total=0,
+                variants_fired=0,
+            )
         per_finding.append(
             {
                 "finding_ref": ref,
@@ -4472,6 +4487,7 @@ async def _run_phase_c_fix_verify(
                 "original_status": "CONFIRMED",
                 "post_patch_status": status,
                 "post_patch_verdict": new_v or "unknown",
+                "confidence": confidence,
             }
         )
 

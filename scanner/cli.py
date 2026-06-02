@@ -225,7 +225,9 @@ def format_markdown(result: ScanResult) -> str:
             ref = pf.get("finding_ref", "?")
             orig = pf.get("original_status", "?")
             post = (pf.get("post_patch_status") or "?").upper()
-            lines.append(f"- **{ref}**: {orig} → **{post}**")
+            conf = pf.get("confidence")
+            conf_str = f" (confidence: {conf})" if conf else ""
+            lines.append(f"- **{ref}**: {orig} → **{post}**{conf_str}")
             change = fixes_by_ref.get(ref)
             if change:
                 lines.append(f"  - patch: {change}")

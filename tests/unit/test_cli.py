@@ -114,7 +114,7 @@ def test_format_markdown_renders_remediation() -> None:
         "n_unverifiable": 1,
         "per_finding": [
             {"finding_ref": "H001", "original_status": "CONFIRMED",
-             "post_patch_status": "NEUTRALIZED"},
+             "post_patch_status": "NEUTRALIZED", "confidence": "HIGH"},
             {"finding_ref": "H002", "original_status": "CONFIRMED",
              "post_patch_status": "UNVERIFIABLE"},
         ],
@@ -129,7 +129,7 @@ def test_format_markdown_renders_remediation() -> None:
     assert "`informational`" in out
     assert "1 NEUTRALIZED" in out
     assert "1 UNVERIFIABLE" in out
-    assert "**H001**: CONFIRMED → **NEUTRALIZED**" in out
+    assert "**H001**: CONFIRMED → **NEUTRALIZED** (confidence: HIGH)" in out
     assert "replaced shell=True with an argv list" in out
     assert "Swapped string interpolation" in out
 
