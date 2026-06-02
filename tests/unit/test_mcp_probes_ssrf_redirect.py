@@ -280,8 +280,11 @@ def test_redirect_evaluate_confirmed_on_post_redirect_capture() -> None:
     captures = [
         # Initial decoy fetch.
         {"host": "argus-redirect-canary.example", "path": "/redirect/aws-imds"},
-        # Post-redirect (this is the smoking gun).
-        {"host": "169.254.169.254", "path": "/latest/meta-data/"},
+        # The target followed our 302 to the internal SINK — the smoking
+        # gun. The sink host is requested by nothing else, so this is
+        # unambiguously attributable to a redirect-follow (no contamination
+        # from the SSRF probe's direct loopback/IMDS canaries).
+        {"host": "argus-redirect-sink.internal", "path": "/sunk"},
     ]
     findings = probe.evaluate(surface, responses, captures)
     assert len(findings) == 1
@@ -290,6 +293,36 @@ def test_redirect_evaluate_confirmed_on_post_redirect_capture() -> None:
     assert f.cwe == "CWE-601"
     assert f.severity == "high"  # confirmed redirect CVSS 8.1 → high
     assert "follows 30x" in f.title
+
+
+def test_redirect_does_not_confirm_off_ssrf_loopback_capture() -> None:
+    """FP fix: a loopback/IMDS capture (the SSRF probe's territory) must
+    NOT confirm the redirect probe. Only the unique internal sink host —
+    reachable solely by following our 302 — confirms a redirect-follow."""
+    surface = _surface_with_fetch_tool()
+    probe = RedirectProbe()
+    responses = [
+        ProbeResponse(
+            probe_id="redirect-fetch_url-url-public_to_localhost",
+            probe_class="redirect_internal",
+            tool_name="fetch_url",
+            arguments={"url": "http://argus-redirect-canary.example/redirect/loopback"},
+            response={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {"content": [{"type": "text", "text": "ok"}]},
+            },
+        )
+    ]
+    # Decoy fetch + a 127.0.0.1 capture that the SSRF probe produced —
+    # this used to falsely confirm the redirect.
+    captures = [
+        {"host": "argus-redirect-canary.example", "path": "/redirect/loopback"},
+        {"host": "127.0.0.1", "path": "/"},
+    ]
+    findings = probe.evaluate(surface, responses, captures)
+    assert len(findings) == 1
+    assert findings[0].confirmed is False  # heuristic, NOT confirmed
 
 
 def test_redirect_evaluate_heuristic_when_no_post_redirect_capture() -> None:

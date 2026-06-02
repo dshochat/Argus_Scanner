@@ -167,13 +167,31 @@ def handle_tcp(conn: socket.socket, addr: tuple, listen_port: int) -> None:
         log_capture(record)
 
         try:
-            conn.sendall(
-                b"HTTP/1.1 200 OK\r\n"
-                b"Content-Type: application/json\r\n"
-                b"Content-Length: 16\r\n"
-                b"\r\n"
-                b'{"status":"ok"}\n'
-            )
+            req_path = http.get("path", "") if http is not None else ""
+            if req_path.startswith("/redirect/"):
+                # Redirect-follow probe support: issue a REAL 30x to a
+                # unique internal sink host. A client that follows
+                # redirects without re-validating the destination lands
+                # on argus-redirect-sink.internal (DNS-hijacked to
+                # loopback) — observable as a distinctly-attributable
+                # capture that no probe requests directly, so it can
+                # only mean "the target followed our redirect to
+                # internal". The sink path is deliberately NOT under
+                # /redirect/ to avoid an infinite redirect loop.
+                conn.sendall(
+                    b"HTTP/1.1 302 Found\r\n"
+                    b"Location: http://argus-redirect-sink.internal/sunk\r\n"
+                    b"Content-Length: 0\r\n"
+                    b"\r\n"
+                )
+            else:
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Content-Length: 16\r\n"
+                    b"\r\n"
+                    b'{"status":"ok"}\n'
+                )
         except Exception:
             pass
     except Exception as e:

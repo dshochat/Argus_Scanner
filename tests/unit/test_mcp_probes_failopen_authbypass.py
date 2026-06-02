@@ -59,9 +59,9 @@ def test_fail_open_build_requests_fan_out_one_per_payload() -> None:
     assert len(reqs) == 6
     payload_names = [r.probe_id.rsplit("-", 1)[-1] for r in reqs]
     expected = {
+        "userinfo_confusion",
         "null_bytes",
         "oversize",
-        "control_chars",
         "empty",
         "not_a_url",
         "wrong_type_int",
@@ -79,7 +79,43 @@ def test_fail_open_build_requests_wrong_type_int_carries_int() -> None:
 # ── fail-open: evaluate ─────────────────────────────────────────────
 
 
-def test_fail_open_evaluate_confirmed_on_unattributed_capture() -> None:
+def test_fail_open_evaluate_confirmed_on_internal_bypass_capture() -> None:
+    """Confirmed ONLY when the confusion payload (looks external, resolves
+    internal) reaches an internal host on the unique bypass path. The
+    unique path is the attribution key — it can't be contaminated by the
+    SSRF/redirect probes' captures."""
+    surface = _surface_with_url_and_admin_tools()
+    responses = [
+        ProbeResponse(
+            probe_id="failopen-fetch_url-url-userinfo_confusion",
+            probe_class="fail_open",
+            tool_name="fetch_url",
+            arguments={
+                "url": "http://allowed.example@metadata.google.internal/argus-fo-bypass"
+            },
+            response={"jsonrpc": "2.0", "id": 1, "result": {"content": []}},
+        )
+    ]
+    captures = [
+        {
+            "host": "metadata.google.internal",
+            "path": "/argus-fo-bypass",
+            "scheme": "http",
+            "method": "GET",
+        }
+    ]
+    findings = FailOpenProbe().evaluate(surface, responses, captures)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.confirmed is True
+    assert f.cwe == "CWE-755"
+    assert "fetch_url" in f.target_locus
+
+
+def test_fail_open_does_not_confirm_on_external_or_offpath_capture() -> None:
+    """FP fix: a capture to a benign external host, or one not on the
+    unique bypass path, must NOT confirm fail-open (the old logic falsely
+    confirmed off any non-canary capture)."""
     surface = _surface_with_url_and_admin_tools()
     responses = [
         ProbeResponse(
@@ -90,17 +126,14 @@ def test_fail_open_evaluate_confirmed_on_unattributed_capture() -> None:
             response={"jsonrpc": "2.0", "id": 1, "result": {"content": []}},
         )
     ]
-    # Capture is for evil.com — NOT a SSRF/redirect canary host →
-    # attributable to fail-open.
-    captures = [
-        {"host": "evil.com", "path": "/exfil", "scheme": "http", "method": "GET"}
-    ]
-    findings = FailOpenProbe().evaluate(surface, responses, captures)
-    assert len(findings) == 1
-    f = findings[0]
-    assert f.confirmed is True
-    assert f.cwe == "CWE-755"
-    assert "fetch_url" in f.target_locus
+    # Benign external host on a non-bypass path → no confirm, no heuristic
+    # (empty content).
+    captures = [{"host": "example.com", "path": "/", "scheme": "http"}]
+    assert FailOpenProbe().evaluate(surface, responses, captures) == []
+    # Even a loopback capture (the SSRF probe's territory) must not
+    # confirm fail-open — it's not on the unique bypass path.
+    captures2 = [{"host": "127.0.0.1", "path": "/", "scheme": "http"}]
+    assert FailOpenProbe().evaluate(surface, responses, captures2) == []
 
 
 def test_fail_open_evaluate_skips_ssrf_attributed_capture() -> None:

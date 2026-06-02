@@ -122,7 +122,7 @@ class RedirectProbe:
                 if canary is None:
                     continue
                 for cap in network_captures:
-                    if _capture_matches_redirect_target(cap, canary):
+                    if _capture_is_sink_hit(cap):
                         confirmed_hit = (r, canary, cap)
                         break
                 if confirmed_hit is not None:
@@ -181,13 +181,19 @@ def _lookup_canary_by_probe_id(probe_id: str) -> _RedirectCanary | None:
     return None
 
 
-def _capture_matches_redirect_target(cap: dict, canary: _RedirectCanary) -> bool:
-    host = (cap.get("host") or "").lower()
-    path = cap.get("path") or ""
-    return (
-        canary.redirect_target_host.lower() in host
-        and canary.redirect_target_path in path
-    )
+# The in-sandbox capture-server answers any ``/redirect/*`` decoy with a
+# real 302 to this host. It is NEVER requested directly by any probe, so
+# a capture for it is unambiguous proof the target FOLLOWED the redirect
+# into internal space — no contamination with the SSRF probe's direct
+# loopback / IMDS canaries (the bug this replaced).
+_SINK_HOST = "argus-redirect-sink.internal"
+
+
+def _capture_is_sink_hit(cap: dict) -> bool:
+    """True when a capture shows the target reached the internal redirect
+    sink — i.e. it followed our 30x without re-validating the
+    destination."""
+    return _SINK_HOST in (cap.get("host") or "").lower()
 
 
 def _pick_heuristic_response(rs: list[ProbeResponse]) -> ProbeResponse | None:
@@ -233,24 +239,24 @@ def _build_redirect_finding(
         else "Suspected redirect-to-internal"
     )
     title = (
-        f"{title_prefix}: {tool_name}({param_name}) follows 30x → "
-        f"{canary.redirect_target_host}"
+        f"{title_prefix}: {tool_name}({param_name}) follows 30x redirect "
+        f"into internal space"
     )
     explanation = (
         f"Tool ``{tool_name}`` accepts a URL via ``{param_name}``. Argus "
-        f"supplied an external-looking URL (``{canary.decoy_url}``) "
-        f"that returns a 30x Location header pointing at "
-        f"``http://{canary.redirect_target_host}{canary.redirect_target_path}``. "
+        f"supplied an external-looking decoy (``{canary.decoy_url}``); the "
+        f"in-sandbox redirector answered with a 302 to an internal host. "
         + (
-            "The sandbox capture-server observed the server following the "
-            "redirect to the internal target — exploitation is confirmed. "
-            "The server's URL allowlist (if any) is checked before the "
-            "first request but NOT after the redirect."
+            "The capture-server then observed the server reaching that "
+            "internal sink — confirming it follows cross-origin redirects "
+            "WITHOUT re-validating the post-redirect destination "
+            "(CWE-601 → CWE-918). An allowlist checked only on the first "
+            "request is bypassed this way."
             if confirmed
             else "The server's response shape suggests it fetched the "
-            "decoy URL; sandbox didn't observe the post-redirect egress "
-            "directly. Treat as suspected pending an OOB-listener "
-            "confirmation."
+            "decoy URL, but the sandbox didn't observe it following the "
+            "redirect to internal. Treat as suspected; confirm with an "
+            "OOB redirector (``--oob``)."
         )
     )
     fix = (

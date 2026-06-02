@@ -55,13 +55,35 @@ class _FailOpenPayload:
     description: str
 
 
-# Payloads that target different validator paths:
-#   * ``null_bytes`` — most URL parsers raise on \\x00 before scheme check.
-#   * ``oversize`` — string-length guards (httpx caps URL length).
-#   * ``control_chars`` — unicode-normalisation-time exceptions.
-#   * ``empty`` — passes type=string but trips startswith() / urlparse().
-#   * ``not_a_url_like_string`` — clearly malformed; tests post-parse path.
+# Unique path stamped on the confusion payloads so a resulting network
+# capture is attributable to THIS probe (no other probe uses this path)
+# — that's what lets us confirm a bypass without contaminating off the
+# SSRF / redirect probes' captures.
+_FO_BYPASS_PATH = "/argus-fo-bypass"
+
+# Hosts that mean "the bypass reached internal space".
+_INTERNAL_HOSTS: tuple[str, ...] = (
+    "metadata.google.internal",
+    "169.254.169.254",
+    "127.0.0.1",
+    "localhost",
+)
+
+# Payloads split into two intents:
+#   * CONFIRMING (userinfo/parser confusion): the URL LOOKS external
+#     (allowed.example) but its effective host is INTERNAL. A naive
+#     host-allowlist that trusts the apparent host fails open. If the
+#     server fetches the internal host (attributed capture on
+#     _FO_BYPASS_PATH), that's a confirmed bypass.
+#   * PROBING (malformed/garbage): drive parsers into exception paths;
+#     a non-error response is a heuristic "validator absent / swallowed".
 _PAYLOADS_FOR_URL: tuple[_FailOpenPayload, ...] = (
+    _FailOpenPayload(
+        name="userinfo_confusion",
+        value=f"http://allowed.example@metadata.google.internal{_FO_BYPASS_PATH}",
+        description="userinfo-confusion URL — looks like allowed.example, "
+        "resolves to the internal metadata host (host-allowlist bypass)",
+    ),
     _FailOpenPayload(
         name="null_bytes",
         value="http://example.com/\x00.\x00internal",
@@ -71,11 +93,6 @@ _PAYLOADS_FOR_URL: tuple[_FailOpenPayload, ...] = (
         name="oversize",
         value="http://" + ("a" * 8192) + ".example/",
         description="oversize URL (~8 KiB) to trip length guards",
-    ),
-    _FailOpenPayload(
-        name="control_chars",
-        value="http://example.com/\r\nHost: 169.254.169.254\r\n\r\n",
-        description="CRLF injection canary (validator should reject)",
     ),
     _FailOpenPayload(
         name="empty",
@@ -147,22 +164,24 @@ class FailOpenProbe:
             grouped.setdefault((r.tool_name, pname), []).append(r)
 
         for (tool_name, param_name), rs in grouped.items():
-            # Confirmation: ANY of these adversarial payloads landed
-            # a network capture (despite being malformed input that
-            # SHOULD have been rejected). That's a fail-open.
+            # Confirmation: the userinfo-confusion payload reached an
+            # INTERNAL host on our unique bypass path. The path
+            # (_FO_BYPASS_PATH) is requested by NOTHING else, so the
+            # capture is unambiguously attributable to this probe — it
+            # can't be contaminated by the SSRF / redirect probes'
+            # captures (the false-positive bug this replaced).
             confirmed_hit: tuple[ProbeResponse, dict] | None = None
-            for r in rs:
-                for cap in network_captures:
-                    # The fail-open probe doesn't have specific canary
-                    # hosts — any outbound HTTP from these payloads is
-                    # itself the signal. Filter out captures that the
-                    # SSRF / redirect probes would attribute (those
-                    # have specific canary host signatures).
-                    if _is_unattributed_capture(cap):
-                        confirmed_hit = (r, cap)
-                        break
-                if confirmed_hit is not None:
-                    break
+            bypass_cap = next(
+                (c for c in network_captures if _capture_attests_internal_bypass(c)),
+                None,
+            )
+            if bypass_cap is not None:
+                attributed = next(
+                    (rr for rr in rs if _FO_BYPASS_PATH in str(rr.arguments)),
+                    None,
+                )
+                if attributed is not None:
+                    confirmed_hit = (attributed, bypass_cap)
 
             if confirmed_hit is not None:
                 r, cap = confirmed_hit
@@ -237,23 +256,18 @@ def _args_with_payload(tool: object, param_name: str, payload: object) -> dict[s
     return args
 
 
-def _is_unattributed_capture(cap: dict) -> bool:
-    """A capture is "unattributed" (i.e. NOT one of the SSRF /
-    redirect probes' specific canary hits) when its host doesn't
-    match any canonical canary signature.
-
-    This keeps the fail-open probe from double-counting captures
-    the SSRF or redirect probes already own.
+def _capture_attests_internal_bypass(cap: dict) -> bool:
+    """True iff a capture proves a fail-open confusion payload reached
+    internal space: it must be on THIS probe's unique bypass path AND
+    target an internal host. The unique path is the attribution key —
+    no other probe requests it, so this can't be contaminated by the
+    SSRF / redirect probes' captures (the FP this replaced).
     """
     host = (cap.get("host") or "").lower()
-    canonical_hosts = (
-        "169.254.169.254",
-        "metadata.google.internal",
-        "argus-redirect-canary.example",
-        "2852039166",
-        "0xa9fea9fe",
-    )
-    return not any(canon in host for canon in canonical_hosts)
+    path = cap.get("path") or ""
+    if _FO_BYPASS_PATH not in path:
+        return False
+    return any(h in host for h in _INTERNAL_HOSTS)
 
 
 def _pick_heuristic_response(rs: list[ProbeResponse]) -> ProbeResponse | None:
@@ -299,9 +313,12 @@ def _build_finding(
         f"supplied a payload designed to drive the validator into an "
         f"exception path (note: ``{response.note}``). "
         + (
-            "The sandbox capture-server observed an unattributed outbound "
-            "connection despite the validator boundary — exploitation "
-            "confirmed: the protection mechanism silently bypasses on error."
+            "The URL's apparent host is external (``allowed.example``) but "
+            "its EFFECTIVE host (via userinfo confusion) is the internal "
+            "metadata service. The capture-server observed the server "
+            "fetching that internal host on Argus's unique bypass path — "
+            "confirmed: a host-allowlist that trusts the apparent host is "
+            "bypassed and the request reaches internal space."
             if confirmed
             else "The server returned a non-error tool result for the "
             "malformed input, suggesting the validator either never ran or "
