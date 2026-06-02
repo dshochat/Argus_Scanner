@@ -1,6 +1,8 @@
 # Argus Scanner
 
-**Verified vulnerability remediation at machine scale.** Static scanners give CISOs more findings to triage; Argus closes them. Argus stacks three layers — deterministic preprocessing, semantic LLM reasoning, runtime sandbox validation — each doing what it's fastest at, so a vulnerability goes from detection to verified, sandbox-tested patch in minutes instead of weeks. The LLM designs the exploit; a Firecracker microVM proves it fires. The LLM writes the patch; the same sandbox replays the same exploit against the patched code. You ship kernel-evidence-verified fixes, not tickets that pile up.
+**Verified vulnerability remediation at machine scale.** Static scanners give security teams more findings to triage; Argus closes them. Argus stacks three layers — deterministic preprocessing, semantic LLM reasoning, runtime sandbox validation — each doing what it's fastest at, so a vulnerability goes from detection to verified, sandbox-tested patch in minutes instead of weeks. The LLM designs the exploit; a Firecracker microVM proves it fires. The LLM writes the patch; the same sandbox replays the same exploit against the patched code. You ship kernel-evidence-verified fixes, not tickets that pile up.
+
+**Beyond code:** Argus also scans live **MCP servers** for runtime vulnerabilities — SSRF (incl. cloud metadata), redirect-to-internal, fail-open validation, and auth bypass — with the same sandbox-verified evidence, pointed at your AI tool surface.
 
 Open source. BYOK. Apache 2.0.
 
