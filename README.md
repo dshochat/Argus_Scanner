@@ -6,6 +6,8 @@ Open source. BYOK. Apache 2.0.
 
 ## Install
 
+**1. Install + run the static + LLM cascade** (1 minute):
+
 ```bash
 pip install argus-ai-scanner
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -14,7 +16,50 @@ argus scan path/to/file.py            # single file
 argus scan-repo .                     # whole repo
 ```
 
-That's it. With just an Anthropic key, Argus runs the L1 cascade. Add a Fly.io sandbox (see [docs/dast-setup.md](docs/dast-setup.md), 10 min one-time) to turn on Validation + Remediation.
+With just an Anthropic key you get fast static + LLM triage. Useful — but it stops at *"this looks vulnerable."*
+
+**2. Turn on the runtime sandbox** (one-time, ~15 min — *this is the core of Argus*):
+
+The sandbox is the moat: it runs the model-designed exploit in a Firecracker microVM, so a finding goes from *"looks vulnerable"* to a kernel-evidence-**`CONFIRMED`** exploit **plus** an auto-patch replay-tested against that same exploit. Set it up once; every scan afterward gets Validation + Remediation automatically.
+
+You need a [Fly.io](https://fly.io) account (free tier covers it; Fly requires a card on file) and the `flyctl` CLI:
+
+```bash
+# Install flyctl:
+#   macOS / Linux / WSL   →  curl -L https://fly.io/install.sh | sh
+#   Windows PowerShell    →  iwr https://fly.io/install.ps1 -useb | iex
+
+# The sandbox Dockerfiles + build scripts live in the repo, so clone it:
+git clone https://github.com/dshochat/Argus_Scanner.git
+cd Argus_Scanner/dast/sandbox/firecracker
+
+# Pick a globally-unique Fly app name, then authenticate:
+export ARGUS_DAST_FLY_APP=argus-dast-<your-handle>     # PowerShell: $env:ARGUS_DAST_FLY_APP="argus-dast-<your-handle>"
+flyctl auth login
+
+# Create the app + build & push the sandbox images (first build ~10-30 min, cached after):
+bash preflight.sh                                      # PowerShell: ./preflight.ps1
+flyctl tokens create deploy --app "$ARGUS_DAST_FLY_APP" --expiry 720h
+bash build_and_push_multi.sh
+```
+
+`build_and_push_multi.sh` prints the exact env values to save. Add them to your `.env` (next to `ANTHROPIC_API_KEY`):
+
+```env
+FLY_API_TOKEN=<deploy token from the step above>
+ARGUS_DAST_FLY_APP=argus-dast-<your-handle>
+ECHO_DAST_IMAGE_LEAN=<ref printed by build_and_push_multi.sh>
+ECHO_DAST_IMAGE_RICH_PYTHON=<ref printed by build_and_push_multi.sh>
+ECHO_DAST_IMAGE_ML_TOOLS=<ref printed by build_and_push_multi.sh>
+```
+
+Verify (from the repo root) — a known-vulnerable file should come back **`CONFIRMED`** with a sandbox event trace:
+
+```bash
+argus scan samples/regression_v1/high_with_vuln.py
+```
+
+That's it — `argus scan` / `argus scan-repo` now run Validation + Remediation on every suspicious file. Full walkthrough + troubleshooting: [docs/dast-setup.md](docs/dast-setup.md).
 
 ## What a scan looks like
 
