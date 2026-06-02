@@ -1106,10 +1106,12 @@ def _add_mcp_target_args(
         type=str,
         default=None,
         metavar="CMD",
-        help="Local MCP server launch command, e.g. 'uvx some-mcp-server'. "
-        "``argus mcp scan`` always runs stdio targets inside the Firecracker "
-        "sandbox (safety contract); ``enumerate`` runs direct-subprocess "
-        "for fast local recon.",
+        help="Local MCP server launch command run INSIDE the sandbox, e.g. "
+        "'python -m mcp_server_fetch' (+ --sandbox-pip mcp-server-fetch). "
+        "``argus mcp scan`` runs stdio targets in the Firecracker sandbox "
+        "when FLY_API_TOKEN is configured (falls back to direct-subprocess "
+        "with a warning otherwise, or use --unsafe-direct-stdio); "
+        "``enumerate`` always runs direct-subprocess for fast local recon.",
     )
 
     p.add_argument(
@@ -1194,6 +1196,47 @@ def _add_mcp_target_args(
         metavar="LIST",
         help="Comma-separated subset of tool names to scan (default: all). "
         "Useful for narrowing a re-run after a partial scan.",
+    )
+
+    # ── stdio sandbox knobs (active scan only) ─────────────────────────
+    # Active stdio scans run the (untrusted) MCP server INSIDE the
+    # Firecracker sandbox. The server's launch deps must be installed in
+    # the VM first; declare them here. Requires FLY_API_TOKEN +
+    # ECHO_DAST_IMAGE_LEAN in the environment / .env (same config the
+    # DAST cascade uses) — see docs/dast-setup.md.
+    p.add_argument(
+        "--sandbox-pip",
+        action="append",
+        default=[],
+        metavar="PKG",
+        help="pip package(s) to install in the sandbox before launching a "
+        "stdio MCP server (e.g. --sandbox-pip mcp-server-fetch). Repeatable. "
+        "The FIRST package installs WITH its dependencies (it's the server "
+        "distribution); any additional packages install --no-deps.",
+    )
+    p.add_argument(
+        "--sandbox-npm",
+        action="append",
+        default=[],
+        metavar="PKG",
+        help="npm package(s) to install in the sandbox before launching a "
+        "Node stdio MCP server. Repeatable. Installed with --ignore-scripts.",
+    )
+    p.add_argument(
+        "--sandbox-image-hint",
+        choices=("lean", "rich_python", "ml_tools"),
+        default="lean",
+        help="Which sandbox image tier to launch the stdio target in. "
+        "Default: lean (Python stdlib + Node + network tools).",
+    )
+    p.add_argument(
+        "--unsafe-direct-stdio",
+        action="store_true",
+        help="Run an stdio scan as a DIRECT host subprocess instead of in "
+        "the sandbox. Probe traffic then originates from your machine — only "
+        "use against servers you fully trust. Without this flag, an stdio "
+        "scan requires FLY_API_TOKEN (sandboxed); if it's missing Argus "
+        "warns and falls back to direct-subprocess mode.",
     )
 
 
@@ -2407,6 +2450,9 @@ def main(argv: list[str] | None = None) -> int:
         if mcp_command == "enumerate":
             return asyncio.run(_run_mcp_enumerate(args))
         if mcp_command == "scan":
+            # Load .env so FLY_API_TOKEN / ECHO_DAST_IMAGE_* (the DAST
+            # sandbox config) reach the stdio sandbox launcher.
+            _load_argus_env()
             return asyncio.run(_run_mcp_scan(args))
         print(
             "error: 'argus mcp' requires a subcommand (enumerate|scan). "

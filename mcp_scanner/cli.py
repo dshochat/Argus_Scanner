@@ -432,20 +432,108 @@ async def _drive_session(
 
     Returns a ``SandboxedSessionResult``.
     """
-    from mcp_scanner.sandbox_launcher import LocalMCPSession  # noqa: PLC0415
-
     if label == "stdio":
-        session = LocalMCPSession(target)
-        return await session.drive(
-            probes,
-            default_auth_token=getattr(args, "auth_token", None) or None,
-        )
+        return await _drive_stdio_session(target, args, probes)
 
     # Remote HTTP path: drive via a fresh httpx client per probe — no
     # sandbox needed because the target is already remote. We reuse
     # the same probe / response data shape so the reporter doesn't
     # care which path produced the result.
     return await _drive_remote_session(target, label, args, probes)
+
+
+async def _drive_stdio_session(
+    target: str,
+    args: argparse.Namespace,
+    probes: list[Any],
+) -> Any:
+    """Drive an stdio MCP scan.
+
+    Safety contract: the stdio server is an untrusted binary, so the
+    active scan runs it INSIDE the Firecracker sandbox (controlled
+    egress → SSRF canaries hit the in-sandbox capture-server, never
+    real infrastructure). That requires the DAST Fly config
+    (``FLY_API_TOKEN`` + ``ECHO_DAST_IMAGE_LEAN``).
+
+    Fallbacks, loudest-first:
+      * ``--unsafe-direct-stdio`` → direct host subprocess (operator
+        explicitly accepts host-network probe traffic; trusted targets
+        / CI only).
+      * No ``FLY_API_TOKEN`` → warn that the scan is NOT sandboxed and
+        fall back to a direct subprocess so the command still works.
+    """
+    import os  # noqa: PLC0415
+
+    from mcp_scanner.sandbox_launcher import LocalMCPSession  # noqa: PLC0415
+
+    default_auth_token = getattr(args, "auth_token", None) or None
+
+    if getattr(args, "unsafe_direct_stdio", False):
+        sys.stderr.write(
+            "[argus] --unsafe-direct-stdio: running the MCP server as a "
+            "DIRECT host subprocess (NOT sandboxed). Probe traffic "
+            "originates from this machine.\n"
+        )
+        return await LocalMCPSession(target).drive(
+            probes, default_auth_token=default_auth_token
+        )
+
+    if not os.environ.get("FLY_API_TOKEN", "").strip():
+        sys.stderr.write(
+            "[argus] WARNING: FLY_API_TOKEN not set — cannot sandbox the "
+            "stdio target. Falling back to a DIRECT host subprocess; probe "
+            "traffic will originate from this machine. Set FLY_API_TOKEN + "
+            "ECHO_DAST_IMAGE_LEAN (see docs/dast-setup.md) for sandboxed "
+            "scans, or pass --unsafe-direct-stdio to silence this.\n"
+        )
+        return await LocalMCPSession(target).drive(
+            probes, default_auth_token=default_auth_token
+        )
+
+    # ── sandboxed path ─────────────────────────────────────────────────
+    from dast.sandbox.client import (  # noqa: PLC0415
+        FirecrackerSandboxClient,
+        FlyMachinesClient,
+    )
+    from dast.sandbox.multi_image_wiring import (  # noqa: PLC0415
+        MultiImageWiringConfig,
+    )
+    from mcp_scanner.sandbox_launcher import FirecrackerMCPSession  # noqa: PLC0415
+
+    cfg = MultiImageWiringConfig.from_env()
+    hint = getattr(args, "sandbox_image_hint", "lean") or "lean"
+    image_ref = cfg.image_refs.get(hint) or cfg.image_refs["lean"]
+    fly = FlyMachinesClient(
+        app_name=cfg.fly_app_name,
+        api_token=cfg.fly_api_token,
+        region=cfg.fly_region,
+    )
+    # A single Firecracker client (no multi-image routing needed for one
+    # scan) so FirecrackerMCPSession can stage the harness directly via
+    # its ``additional_files_map``.
+    sandbox = FirecrackerSandboxClient(fly_client=fly, image=image_ref)
+
+    pip_pkgs = list(getattr(args, "sandbox_pip", None) or [])
+    npm_pkgs = list(getattr(args, "sandbox_npm", None) or [])
+    # The first --sandbox-pip entry is the server distribution: install
+    # it WITH dependencies (it must import to launch). Extras install
+    # --no-deps (the safe default for pinned modules).
+    own_dist = pip_pkgs[0] if pip_pkgs else ""
+
+    sys.stderr.write(
+        f"[argus] sandboxed stdio scan via Fly image '{hint}' "
+        f"({image_ref}); launching: {target}\n"
+    )
+    session = FirecrackerMCPSession(
+        sandbox,
+        launch_command=target,
+        image_hint=hint,
+        runtime_packages=pip_pkgs,
+        runtime_npm_packages=npm_pkgs,
+        own_dist_name=own_dist,
+        timeout_sec=240,
+    )
+    return await session.drive(probes, default_auth_token=default_auth_token)
 
 
 async def _drive_remote_session(

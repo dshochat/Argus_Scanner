@@ -141,7 +141,7 @@ argus scan path/to/file.py --scan-model claude-opus-4-8 --reasoning-model claude
 
 # Scan a live MCP server (no API key needed — probes are deterministic)
 argus mcp enumerate --stdio "python -m my_mcp_server"     # recon only
-argus mcp scan --stdio "python -m my_mcp_server"          # active probes, sandboxed
+argus mcp scan --stdio "python3 -m my_mcp_server" --sandbox-pip my-mcp-pkg   # active probes; server runs in the Firecracker sandbox (needs Fly DAST config)
 argus mcp scan --url https://mcp.example.com/mcp --authorized   # remote (consent-gated)
 ```
 

@@ -178,12 +178,13 @@ def stub_sandbox_with_recorded_plan() -> Any:
     )
 
     submitted_plans: list[Any] = []
-    additional_files_seen: dict[str, dict[str, str]] = {}
+    additional_files_seen: dict[str, dict[str, bytes]] = {}
 
     class _Stub:
         # Real FirecrackerSandboxClient has this attr; we mirror so the
-        # launcher's hasattr() check passes.
-        additional_files_map: dict[str, dict[str, str]] = {}
+        # launcher's hasattr() check passes. Values are bytes (matches
+        # FirecrackerSandboxClient.additional_files_map).
+        additional_files_map: dict[str, dict[str, bytes]] = {}
 
         async def submit(self, plan: Any) -> SandboxTrace:
             submitted_plans.append(plan)
@@ -299,9 +300,11 @@ async def test_firecracker_session_builds_well_formed_plan(
     staged = files_seen[plan.file_id]
     assert "mcp_probe_harness.py" in staged
     assert "mcp_probe_spec.json" in staged
+    # Staged values are BYTES (the sandbox client tars them as bytes).
     # The harness file content should look like our harness (sanity
     # check — first line is the shebang or docstring).
-    assert "argus" in staged["mcp_probe_harness.py"].lower()
+    assert isinstance(staged["mcp_probe_harness.py"], bytes)
+    assert b"argus" in staged["mcp_probe_harness.py"].lower()
 
     # Trace was parsed back: harness's reported surface + responses
     # are surfaced on the SandboxedSessionResult.

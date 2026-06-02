@@ -16,14 +16,19 @@ argus mcp scan        # active scan — run the probe catalog
 ### Against a local MCP server (stdio)
 
 ```bash
-# Enumerate (no attacks):
-argus mcp enumerate --stdio "python -m my_mcp_server" --report md
+# Enumerate (no attacks) — runs the server directly on your host, recon only:
+argus mcp enumerate --stdio "python3 -m my_mcp_server" --report md
 
-# Active scan:
-argus mcp scan --stdio "python -m my_mcp_server" --report md
+# Active scan — runs the (untrusted) server INSIDE the Firecracker sandbox.
+# Declare the server's install package so the sandbox can launch it:
+argus mcp scan --stdio "python3 -m my_mcp_server" \
+               --sandbox-pip my-mcp-server-package \
+               --report md
 ```
 
-Stdio targets are launched as subprocesses on your host. The fixture vulnerable server (`tests/fixtures/mcp/vulnerable_server.py`) is a handy way to see what a finding-rich scan looks like.
+`enumerate` runs the server directly on your host (recon only — no attack payloads). `scan` runs the server **inside the Firecracker sandbox** so SSRF/redirect probes hit the in-sandbox capture-server instead of real infrastructure. That requires the DAST Fly config (`FLY_API_TOKEN` + `ECHO_DAST_IMAGE_LEAN` — see [dast-setup.md](dast-setup.md)); the server's launch dependencies are installed in the VM via `--sandbox-pip` (Python, first package installs with deps) / `--sandbox-npm` (Node).
+
+If `FLY_API_TOKEN` is **not** set, `scan` warns and falls back to running the server as a direct host subprocess (probe traffic then originates from your machine). Pass `--unsafe-direct-stdio` to opt into that explicitly for servers you fully trust. The fixture vulnerable server (`tests/fixtures/mcp/vulnerable_server.py`) is a handy way to see what a finding-rich scan looks like.
 
 ### Against a remote MCP server (HTTP)
 
@@ -75,7 +80,7 @@ Each finding carries `confirmed: true/false` — confirmed requires evidence (sa
 
 Blind-SSRF confirmation needs the target to actually fetch a URL we control:
 
-- **Local stdio scan** — uses the in-sandbox capture-server (DNS-hijacked, records every HTTP/HTTPS/TCP egress). No external setup needed.
+- **Local stdio scan (sandboxed)** — uses the in-sandbox capture-server (DNS-hijacked, records HTTP/HTTPS/TCP egress to hostnames). Requires the DAST Fly config (`FLY_API_TOKEN` + `ECHO_DAST_IMAGE_LEAN`); no per-scan external setup beyond that. Direct-IP egress to link-local ranges (e.g. a literal `169.254.169.254`) has no route inside the VM, so those land as heuristic findings (the server's "connection failed" response is still evidence it attempted the fetch).
 
 - **Remote HTTP scan** — two options:
   - `--oob https://abc.interact.sh` — operator brings their own interactsh / dnslog / webhook.site endpoint.
@@ -83,7 +88,7 @@ Blind-SSRF confirmation needs the target to actually fetch a URL we control:
 
 ## Safety contract
 
-- Remote URL scans **refuse to attack** without `--authorized`. Stdio scans skip the gate (sandbox-protected).
+- Remote URL scans **refuse to attack** without `--authorized`. Stdio scans skip the gate because the (untrusted) server runs inside the Firecracker sandbox with isolated egress — provided `FLY_API_TOKEN` is configured. Without it, Argus warns and falls back to a direct host subprocess (or pass `--unsafe-direct-stdio` to opt in explicitly).
 - `--scope-deny <cidr>` (repeatable) drops any probe whose canary URL targets a denied IP range. Defense in depth on top of the sandbox / OOB isolation.
 - Argus-managed OOB listener binds to `0.0.0.0` (must be reachable from target); stderr-prints a warning at startup.
 

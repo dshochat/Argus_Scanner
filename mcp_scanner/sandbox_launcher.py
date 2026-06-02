@@ -282,6 +282,7 @@ class FirecrackerMCPSession:
         image_hint: str = _DEFAULT_IMAGE_HINT,
         runtime_packages: list[str] | None = None,
         runtime_npm_packages: list[str] | None = None,
+        own_dist_name: str = "",
         timeout_sec: int = 120,
     ) -> None:
         self._sandbox = sandbox_client
@@ -289,6 +290,12 @@ class FirecrackerMCPSession:
         self._image_hint = image_hint
         self._runtime_packages = list(runtime_packages or [])
         self._runtime_npm_packages = list(runtime_npm_packages or [])
+        # The MCP server's own distribution name. Routed to the
+        # WITH-dependencies pip install path inside the sandbox (the
+        # server needs its deps to launch), unlike the default --no-deps
+        # used for attacker-controllable import names. See
+        # dast.sandbox.client._partition_env.
+        self._own_dist_name = own_dist_name
         self._timeout_sec = timeout_sec
 
     async def drive(
@@ -315,10 +322,13 @@ class FirecrackerMCPSession:
         # Wire the harness + spec into the plan as multi-file staging.
         # The sandbox client's ``additional_files_map`` keyed by file_id
         # delivers these into /workspace before commands run.
-        additional_files: dict[str, dict[str, str]] = {
+        # NOTE: the sandbox client's _pack_additional_files tars the
+        # values as BYTES (dast.sandbox.client._pack_additional_files),
+        # so encode here — passing str silently breaks staging.
+        additional_files: dict[str, dict[str, bytes]] = {
             file_id: {
-                "mcp_probe_harness.py": harness_source,
-                "mcp_probe_spec.json": probe_spec,
+                "mcp_probe_harness.py": harness_source.encode("utf-8"),
+                "mcp_probe_spec.json": probe_spec.encode("utf-8"),
             }
         }
 
@@ -337,6 +347,7 @@ class FirecrackerMCPSession:
             image_hint=self._image_hint,
             runtime_packages=self._runtime_packages,
             runtime_npm_packages=self._runtime_npm_packages,
+            own_dist_name=self._own_dist_name,
             file_name="mcp_probe_spec.json",  # sentinel — actual target is the launch cmd
         )
 
