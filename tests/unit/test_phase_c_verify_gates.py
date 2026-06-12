@@ -51,13 +51,31 @@ def _trace(stdout: str = "", stderr: str = "", events: list[Any] | None = None) 
     return SimpleNamespace(stdout_excerpt=stdout, stderr_excerpt=stderr, events=events or [])
 
 
-def test_oracle_in_trace_stdout_stderr_and_events() -> None:
+def test_oracle_in_trace_matches_printed_marker_only() -> None:
+    # The harness's printed marker (stdout/stderr) is authoritative.
     assert oracle_in_trace(_trace(stdout=f"x {REACH_ORACLE} y"), REACH_ORACLE)
     assert oracle_in_trace(_trace(stderr=f"boom {FUNC_BROKEN}"), FUNC_BROKEN)
-    ev = SimpleNamespace(kind="network_call_captured", payload=f"hit {REACH_ORACLE}")
-    assert oracle_in_trace(_trace(events=[ev]), REACH_ORACLE)
     assert not oracle_in_trace(_trace(stdout="nothing here"), REACH_ORACLE)
     assert not oracle_in_trace(_trace(), "")  # empty oracle never matches
+
+
+def test_oracle_ignores_capture_events_regression() -> None:
+    """REGRESSION (found via Opus 4.8 full DAST): a sandbox capture event
+    must NOT count as the oracle firing. The patched code's OWN getaddrinfo
+    (DNS-hijacked → capture server logs a network event) was being counted
+    as the exploit 'reaching' the target, falsely FIRING good patches that
+    resolve-then-reject. Only the harness's printed stdout marker counts."""
+    # A captured network event that even contains the marker string must
+    # NOT trigger — classification is stdout/stderr only.
+    ev = SimpleNamespace(kind="network_call_captured", payload=f"hit {REACH_ORACLE}")
+    assert oracle_in_trace(_trace(events=[ev]), REACH_ORACLE) is False
+    # The real-world shape: harness printed BLOCKED, but a DNS/network event
+    # exists from the patch's own resolution → must stay "not fired".
+    blocked = _trace(
+        stdout="ARGUS_VARIANT_BLOCKED ValueError",
+        events=[SimpleNamespace(kind="dns_query", payload="qname=2130706433")],
+    )
+    assert oracle_in_trace(blocked, REACH_ORACLE) is False
 
 
 # ── generation (stubbed inference) ───────────────────────────────────

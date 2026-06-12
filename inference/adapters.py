@@ -8,11 +8,61 @@ triage); other providers will be reintroduced for v2 benchmark mode (ARG-007).
 
 import json
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Tuple
 
 log = logging.getLogger("ed-bm-adapters")
+
+# Models at/after this (major, minor) removed the legacy extended-thinking
+# API (``thinking.type=enabled`` + ``budget_tokens`` → 400) and require
+# adaptive thinking + ``output_config.effort``. Opus 4.6 / Sonnet 4.6 and
+# earlier still accept the legacy path (deprecated), so we keep using it
+# there to preserve the explicit budget knob the cascade was tuned with.
+_ADAPTIVE_THINKING_MIN = (4, 7)
+_MODEL_VERSION_RE = re.compile(r"(?:opus|sonnet|haiku)-(\d+)-(\d+)")
+
+
+def _requires_adaptive_thinking(model_id: str) -> bool:
+    """True if ``model_id`` rejects legacy ``thinking.type=enabled`` and
+    needs adaptive thinking (Opus 4.7 / 4.8 and any later Claude)."""
+    m = _MODEL_VERSION_RE.search(model_id or "")
+    if not m:
+        return False
+    return (int(m.group(1)), int(m.group(2))) >= _ADAPTIVE_THINKING_MIN
+
+
+def _budget_to_effort(thinking_budget: int) -> str:
+    """Map the legacy ``budget_tokens`` knob onto an effort level. The
+    cascade's default 24000 ("extra high") → ``high`` — the recommended
+    floor for intelligence-sensitive work; smaller budgets scale down."""
+    if thinking_budget >= 20000:
+        return "high"
+    if thinking_budget >= 8000:
+        return "medium"
+    return "low"
+
+
+def _anthropic_thinking_kwargs(model_id: str, thinking_budget: int) -> dict[str, Any]:
+    """Return the model-correct thinking kwargs for an Anthropic call.
+
+    * ``thinking_budget < 1024`` → ``{}`` (caller wants thinking off; the
+      legacy path 400s on ``budget_tokens < 1024`` and adaptive has no
+      "off via budget" notion, so omit entirely).
+    * Opus 4.7+ → adaptive thinking + ``output_config.effort`` mapped from
+      the budget (legacy ``enabled`` 400s on these models).
+    * Opus 4.6 / Sonnet 4.6 / earlier → legacy ``enabled`` + budget_tokens
+      (unchanged — preserves the tuned, explicit-budget behavior).
+    """
+    if thinking_budget < 1024:
+        return {}
+    if _requires_adaptive_thinking(model_id):
+        return {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": _budget_to_effort(thinking_budget)},
+        }
+    return {"thinking": {"type": "enabled", "budget_tokens": thinking_budget}}
 
 
 class BaseModelAdapter(ABC):
@@ -306,11 +356,11 @@ class AnthropicAdapter(BaseModelAdapter):
         # caller's intent for thinking_budget<1024 is "disable extended
         # thinking entirely" — so we omit the thinking kwarg in that
         # case rather than send an invalid config.
-        if thinking_budget >= 1024:
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
-            }
+        # Model-correct thinking config: legacy enabled+budget for
+        # Opus 4.6 / Sonnet 4.6, adaptive+effort for Opus 4.7+ (which 400
+        # on the legacy API), omitted when the budget is below the 1024
+        # floor (caller wants thinking off).
+        kwargs.update(_anthropic_thinking_kwargs(self.model_id, thinking_budget))
 
         text_parts = []
         async with client.messages.stream(**kwargs) as stream:
@@ -396,11 +446,11 @@ class AnthropicAdapter(BaseModelAdapter):
         }
         # v15.10.1 (2026-05-20): same omit-on-<1024 logic as the
         # two-block path above. See that site for full rationale.
-        if thinking_budget >= 1024:
-            kwargs["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": thinking_budget,
-            }
+        # Model-correct thinking config: legacy enabled+budget for
+        # Opus 4.6 / Sonnet 4.6, adaptive+effort for Opus 4.7+ (which 400
+        # on the legacy API), omitted when the budget is below the 1024
+        # floor (caller wants thinking off).
+        kwargs.update(_anthropic_thinking_kwargs(self.model_id, thinking_budget))
 
         # Use streaming to avoid SDK timeout for long thinking requests
         text_parts = []

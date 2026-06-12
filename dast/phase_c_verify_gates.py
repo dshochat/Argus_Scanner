@@ -137,10 +137,19 @@ def _trace_excerpt(trace: Any, limit: int = 240) -> str:
 
 
 def oracle_in_trace(trace: Any, oracle: str) -> bool:
-    """True if ``oracle`` appears in the trace's stdout/stderr/events.
+    """True if the gate harness PRINTED ``oracle`` to stdout/stderr.
 
-    Mirrors the Phase A / Phase D literal-substring oracle so the gate
-    classification is consistent with the rest of DAST.
+    STDOUT/STDERR ONLY — deliberately NOT the sandbox capture events.
+    Our gate harnesses are self-classifying: they print an explicit marker
+    (``ARGUS_VARIANT_REACHED`` / ``ARGUS_VARIANT_BLOCKED`` / ``ARGUS_FUNC_*``)
+    that authoritatively states whether the request went through. Capture
+    events are the WRONG signal here: a correct resolve-to-IP patch makes
+    its own ``getaddrinfo`` call during validation, which the sandbox's
+    DNS-hijacked capture server logs as a network event — counting that as
+    the exploit "reaching" the target falsely FIRES every good patch that
+    resolves-then-rejects (observed on Opus 4.8: decimal-IP / IPv6-loopback
+    variants printed BLOCKED but were graded FIRED off the patch's own DNS
+    lookup). The printed marker is the ground truth; events are noise.
     """
     if not oracle:
         return False
@@ -148,10 +157,6 @@ def oracle_in_trace(trace: Any, oracle: str) -> bool:
     for field_name in ("stdout_excerpt", "stderr_excerpt"):
         val = getattr(trace, field_name, None)
         if isinstance(val, str) and needle in val.lower():
-            return True
-    for ev in getattr(trace, "events", None) or []:
-        payload_str = str(getattr(ev, "payload", "") or "")
-        if needle in payload_str.lower():
             return True
     return False
 
