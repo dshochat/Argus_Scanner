@@ -12,8 +12,9 @@ at machine speed — file after file, repo after repo.
 
 The catch with remediation at speed is that a fast wrong patch is worse than no
 patch. So Argus verifies the fix the same way it proved the bug: the LLM designs
-the exploit, a Firecracker microVM proves it fires, the LLM writes the patch, and
-the *same* sandbox replays the *same* exploit against the patched code. You ship
+the exploit, an isolated sandbox (local gVisor or a Firecracker microVM) proves it
+fires, the LLM writes the patch, and the *same* sandbox replays the *same* exploit
+against the patched code. You ship
 fixes with a kernel-level event trace behind them — not tickets that pile up,
 and not patches you have to manually re-check.
 
@@ -37,42 +38,44 @@ argus scan-repo .                     # whole repo
 
 With just an Anthropic key you get fast static + LLM triage. Useful — but it stops at *"this looks vulnerable."*
 
-**2. Turn on the runtime sandbox** (one-time, ~15 min — *this is the core of Argus*):
+**2. Turn on the runtime sandbox** (one-time — *this is the core of Argus*):
 
-The sandbox is the moat: it runs the model-designed exploit in a Firecracker microVM, so a finding goes from *"looks vulnerable"* to a kernel-evidence-**`CONFIRMED`** exploit **plus** an auto-patch replay-tested against that same exploit. Set it up once; every scan afterward gets Validation + Remediation automatically.
+The sandbox is the moat: it runs the model-designed exploit in an isolated microVM/container, so a finding goes from *"looks vulnerable"* to a kernel-evidence-**`CONFIRMED`** exploit **plus** an auto-patch replay-tested against that same exploit. Set it up once; every scan afterward gets Validation + Remediation automatically.
 
-You need a [Fly.io](https://fly.io) account (free tier covers it; Fly requires a card on file) and the `flyctl` CLI:
+Pick **where** sandboxes run with `ARGUS_DAST_RUNTIME` — both run the same image and produce the same evidence:
+
+**Option A — self-hosted gVisor (recommended; no cloud account, no egress).** Sandboxes run as local Docker containers under the gVisor (`runsc`) runtime — no Fly, no `FLY_API_TOKEN`. Works on any Linux host or Kubernetes node.
 
 ```bash
-# Install flyctl:
-#   macOS / Linux / WSL   →  curl -L https://fly.io/install.sh | sh
-#   Windows PowerShell    →  iwr https://fly.io/install.ps1 -useb | iex
+# Install Docker, then gVisor (runsc) and register it with Docker:
+#   https://gvisor.dev/docs/user_guide/install/  →  sudo runsc install && sudo systemctl restart docker
 
-# The sandbox Dockerfiles + build scripts live in the repo, so clone it:
+# Clone the repo (sandbox Dockerfiles + build scripts live in it) and build images into LOCAL Docker:
 git clone https://github.com/dshochat/Argus_Scanner.git
 cd Argus_Scanner/dast/sandbox/firecracker
-
-# Pick a globally-unique Fly app name, then authenticate:
-export ARGUS_DAST_FLY_APP=argus-dast-<your-handle>     # PowerShell: $env:ARGUS_DAST_FLY_APP="argus-dast-<your-handle>"
-flyctl auth login
-
-# Create the app + build & push the sandbox images (first build ~10-30 min, cached after):
-bash preflight.sh                                      # PowerShell: ./preflight.ps1
-flyctl tokens create deploy --app "$ARGUS_DAST_FLY_APP" --expiry 720h
-bash build_and_push_multi.sh
+bash build_local.sh            # builds argus-dast-sandbox:{lean,rich_python,ml_tools} (first build ~10-20 min, cached)
 ```
 
-`build_and_push_multi.sh` prints the exact env values to save. Add them to your `.env` (next to `ANTHROPIC_API_KEY`):
+Add to your `.env` (next to `ANTHROPIC_API_KEY`):
 
 ```env
-FLY_API_TOKEN=<deploy token from the step above>
-ARGUS_DAST_FLY_APP=argus-dast-<your-handle>
-ECHO_DAST_IMAGE_LEAN=<ref printed by build_and_push_multi.sh>
-ECHO_DAST_IMAGE_RICH_PYTHON=<ref printed by build_and_push_multi.sh>
-ECHO_DAST_IMAGE_ML_TOOLS=<ref printed by build_and_push_multi.sh>
+ARGUS_DAST_RUNTIME=gvisor
+ARGUS_DAST_GVISOR_IMAGE_LEAN=argus-dast-sandbox:lean
 ```
 
-Verify (from the repo root) — a known-vulnerable file should come back **`CONFIRMED`** with a sandbox event trace:
+**Option B — managed Fly.io (no local Docker).** Ephemeral Firecracker microVMs on your own Fly account. Needs a [Fly.io](https://fly.io) account (free tier covers it; card on file) + the `flyctl` CLI:
+
+```bash
+git clone https://github.com/dshochat/Argus_Scanner.git
+cd Argus_Scanner/dast/sandbox/firecracker
+export ARGUS_DAST_FLY_APP=argus-dast-<your-handle>     # PowerShell: $env:ARGUS_DAST_FLY_APP="argus-dast-<your-handle>"
+flyctl auth login
+bash preflight.sh                                      # PowerShell: ./preflight.ps1
+flyctl tokens create deploy --app "$ARGUS_DAST_FLY_APP" --expiry 720h
+bash build_and_push_multi.sh                           # prints the FLY_API_TOKEN + ECHO_DAST_IMAGE_* values to save in .env
+```
+
+Verify (either option, from the repo root) — a known-vulnerable file should come back **`CONFIRMED`** with a sandbox event trace:
 
 ```bash
 argus scan samples/regression_v1/high_with_vuln.py
@@ -110,7 +113,7 @@ The composition is the engineering. Each layer is structurally best-in-class for
 
 - **Deterministic preprocessing** — hash dedup, AST parsing, deobfuscation, known-malware hash lookup. Free, byte-deterministic. Argus never burns a token on what a hash match can decide.
 - **Semantic LLM** — reads intent, designs exploits, writes patches, judges sandbox traces. The only layer that can answer *"is this function supposed to take untrusted input?"* Two role-based tiers: a **scan tier** (default Sonnet 4.6 — triage + L1 + DAST probe inference) and a **deep-reasoning tier** (default Opus 4.6 — borderline escalation, adversarial reasoning, adjudication). Both defaults are overridable to *any* model in the Anthropic ecosystem — bump to a newer Opus, run Opus in both slots for a high-precision audit, or point either tier at a future Anthropic-API-compatible model — via `--scan-model` / `--reasoning-model`. No code edits, no lock-in.
-- **Runtime sandbox** (Firecracker microVM + kernel-syscall observation via bpftrace) — the ground-truth oracle. The only layer that can prove an exploit actually fired or a patch actually closed the hole.
+- **Runtime sandbox** (local **gVisor** container *or* managed **Firecracker** microVM; kernel-syscall observation via bpftrace on the Firecracker path) — the ground-truth oracle. The only layer that can prove an exploit actually fired or a patch actually closed the hole.
 
 Pure-SAST tools have no runtime. Classic DAST tools have no semantic reasoning. Pattern-based remediation tools generate patches without verification. Argus closes all three gaps in one pipeline.
 
@@ -124,7 +127,7 @@ Triage                    (Sonnet 4.6 default — CLEAN / LOW / HIGH)
 L1 analysis               (Sonnet 4.6 → Opus 4.6 escalation on borderline)
   ↓
 [default ON]
-Finding Validation        (each L1 finding re-run in Firecracker microVM)
+Finding Validation        (each L1 finding re-run in a sandbox — local gVisor or Fly Firecracker)
   ↓
 Remediation               (auto-patch + sandbox replay against original exploit)
   ↓
@@ -176,10 +179,10 @@ For CONFIRMED findings, the Remediation block adds a post-patch status:
 
 ## Enterprise invariants
 
-- **BYOK.** You pay Anthropic + Fly directly. Argus collects nothing.
-- **Zero telemetry.** Cascade-only mode: nothing leaves your machine. DAST mode: file content goes only to a Fly.io app *you own and control* — never to Argus-operated infrastructure.
-- **Hardware isolation.** Detonation happens in Firecracker microVMs (KVM hardware virtualization), ephemeral per-run, strict egress control.
-- **Local execution.** Self-contained pipeline; no SaaS dependency.
+- **BYOK.** You pay Anthropic directly (and Fly only if you choose the managed sandbox). Argus collects nothing.
+- **Zero telemetry.** Cascade-only mode: nothing leaves your machine. DAST mode: file content goes only to a sandbox *you run* — a **local gVisor container** (default, fully on-host) or a **Fly.io app you own and control** — never to Argus-operated infrastructure.
+- **Strong isolation.** Detonation happens in a **gVisor** user-space-kernel container or a **Firecracker** microVM (KVM), ephemeral per-run, with strict egress control (`--network=none` on the gVisor path — no real egress at all).
+- **Local execution.** Self-contained pipeline; with the gVisor runtime there's no SaaS or cloud dependency at all.
 
 ## CLI essentials
 
@@ -205,7 +208,7 @@ argus scan path/to/file.py --scan-model claude-opus-4-8 --reasoning-model claude
 
 # Scan a live MCP server (no API key needed — probes are deterministic)
 argus mcp enumerate --stdio "python -m my_mcp_server"     # recon only
-argus mcp scan --stdio "python3 -m my_mcp_server" --sandbox-pip my-mcp-pkg   # active probes; server runs in the Firecracker sandbox (needs Fly DAST config)
+argus mcp scan --stdio "python3 -m my_mcp_server" --sandbox-pip my-mcp-pkg   # active probes; server runs in the sandbox (needs DAST configured — gVisor or Fly)
 argus mcp scan --url https://mcp.example.com/mcp --authorized   # remote (consent-gated)
 ```
 
@@ -217,7 +220,7 @@ Full reference: `argus scan --help`, `argus scan-repo --help`, `argus install --
 |---|---|
 | Install + first scan | [docs/install.md](docs/install.md) |
 | MCP server scanning | [docs/mcp.md](docs/mcp.md) |
-| DAST sandbox setup (Fly.io) | [docs/dast-setup.md](docs/dast-setup.md) |
+| DAST sandbox setup (self-hosted gVisor / Fly.io) | [docs/dast-setup.md](docs/dast-setup.md) |
 | Architecture deep dive | [docs/architecture.md](docs/architecture.md) |
 | Cost guide | [docs/cost-guide.md](docs/cost-guide.md) |
 | API key sourcing | [docs/api-keys.md](docs/api-keys.md) |

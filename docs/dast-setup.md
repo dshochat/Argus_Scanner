@@ -204,9 +204,10 @@ plan.
 
 | Item | Typical |
 |---|---|
-| Fly machine time per scan | $0.05–$0.20 (one ephemeral microVM, runs 10-60s, per-second billed) |
+| Sandbox infra — **gVisor (self-hosted)** | **$0** — runs on your own host/node; no per-VM bill |
+| Sandbox infra — **Fly** machine time per scan | $0.05–$0.20 (one ephemeral microVM, runs 10-60s, per-second billed) |
 | Anthropic inference per scan | $0.20–$0.80 (default cascade) |
-| Image storage + push | $0 |
+| Image storage / build | $0 |
 
 Cap per-file spend with `--max-cost 1.00` (default is $1.00).
 

@@ -7,8 +7,9 @@ Get from zero to your first scan in 60 seconds.
 - Python 3.12+
 - An [Anthropic API key](https://console.anthropic.com/settings/keys) (`sk-ant-...`)
 
-That's it for the default install. Optional Fly.io account if you want
-DAST sandbox verification — see [dast-setup.md](dast-setup.md).
+That's it for the default install. DAST sandbox verification is optional
+and runs on either **Docker + gVisor** (self-hosted, no cloud account) or
+a **Fly.io** account — see [dast-setup.md](dast-setup.md).
 
 ## Install
 
@@ -54,27 +55,28 @@ argus scan samples/regression_v1/high_with_vuln.py
 ```
 
 Expected: verdict `suspicious`, 2 CONFIRMED CWE-78 command-injection
-findings. If Fly is configured (see DAST setup), Argus also generates
-a patch and replays the exploit against it.
+findings. If a DAST sandbox is configured (gVisor or Fly; see DAST
+setup), Argus also generates a patch and replays the exploit against it.
 
 ## What gets enabled by default (v1.11)
 
 | Stage | Default |
 |---|:---:|
 | Triage + L1 (Sonnet 4.6 → Opus 4.6 escalation) | ✅ ON |
-| **Finding Validation** (sandbox re-runs each L1 finding) | ✅ ON (needs Fly) |
-| **Remediation** (auto-patch + exploit replay) | ✅ ON (needs Fly) |
+| **Finding Validation** (sandbox re-runs each L1 finding) | ✅ ON (needs a DAST sandbox) |
+| **Remediation** (auto-patch + exploit replay) | ✅ ON (needs a DAST sandbox) |
 | Exploit Discovery / Behavioral Profiling / Adversarial Reasoning | Opt-in via flags |
 
-Without Fly configured, Argus gracefully degrades to cascade-only
-verdicts (L1 only). With Fly, Validation + Remediation fire on every
-suspicious / malicious verdict.
+Without a DAST sandbox configured, Argus gracefully degrades to
+cascade-only verdicts (L1 only). With one (self-hosted gVisor or Fly),
+Validation + Remediation fire on every suspicious / malicious verdict.
 
 ## Optional: DAST sandbox
 
-To enable Finding Validation + Remediation, set up your own Fly.io
-sandbox app. **One-time setup, ~10-30 min.** Full guide:
-[dast-setup.md](dast-setup.md).
+To enable Finding Validation + Remediation, stand up a sandbox — a
+**local gVisor container** (recommended; no cloud — set
+`ARGUS_DAST_RUNTIME=gvisor`) or a **managed Fly.io** app. **One-time
+setup.** Full guide: [dast-setup.md](dast-setup.md).
 
 ## Optional: cheaper triage
 
@@ -96,10 +98,12 @@ current directory or its parents, or your key isn't exported in the
 OS environment. Fix: `cp .env.example .env` and fill in the key, then
 re-run from the same directory.
 
-**`DAST disabled: missing Fly config`** (info log, not an error).
-You're running without `FLY_API_TOKEN` + the three image vars set.
-Argus skips DAST gracefully and returns L1-only verdicts. To enable
-DAST, follow [dast-setup.md](dast-setup.md).
+**`DAST runner not configured`** (info log, not an error). You're
+running without a DAST sandbox set up — for gVisor:
+`ARGUS_DAST_RUNTIME=gvisor` + Docker/`runsc` + the local image; for Fly:
+`FLY_API_TOKEN` + the image vars. Argus skips DAST gracefully and
+returns L1-only verdicts. To enable it, follow
+[dast-setup.md](dast-setup.md).
 
 **`Cost cap exceeded: $X > $1.00`**. A pathological file hit the per-
 file cap. Raise with `--max-cost 2.00` for that run, or `--max-cost 0`

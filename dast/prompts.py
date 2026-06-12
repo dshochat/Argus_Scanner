@@ -2711,11 +2711,20 @@ REQUIREMENTS:
      the IP you CONNECT to. Do NOT validate the host and then hand the
      original hostname back to the HTTP client, which re-resolves DNS — a
      TTL-0 rebind returns a safe IP to your check and an internal IP to the
-     fetch. PIN the resolved IP: connect to the validated IP directly and
-     carry the original hostname only in the `Host` header (and SNI for
-     TLS) — e.g. a custom `requests.adapters.HTTPAdapter` that overrides
-     resolution, or `urllib3 ... assert_hostname` / a connection bound to
-     the checked address. One resolution, reused for check AND connect.
+     fetch. PIN the resolved IP. PREFER a socket-level pin: resolve +
+     validate ONCE, then connect to the validated *numeric* IP via
+     `socket.create_connection((validated_ip, port))` — a numeric IP is not
+     re-resolved, so there is no rebind window — carrying the original
+     hostname only in the `Host` header (and SNI for TLS).
+     WARNING: a `requests.adapters.HTTPAdapter` that overrides ONLY
+     `get_connection(...)` is a NO-OP on requests >= 2.32 — `send()` calls
+     `get_connection_with_tls_context(...)`, so the override never runs and
+     the client silently re-resolves the hostname (the rebind succeeds and
+     the patch only LOOKS pinned). If you use an adapter, override
+     `get_connection_with_tls_context` (and `get_connection` for older
+     requests), or mount a `urllib3.PoolManager` with a pinned resolver —
+     but the socket-level pin above is simpler and version-proof.
+     One resolution, reused for check AND connect.
    * Command injection: never build a shell string from input — argv list
      with shell=False (or shlex.quote each component).
    * Path traversal: resolve to a real absolute path, confirm it's inside
