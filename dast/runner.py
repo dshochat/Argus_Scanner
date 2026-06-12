@@ -56,6 +56,7 @@ from dast.sandbox.client import (
     MultiImageSandboxClient,
     SandboxClient,
 )
+from dast.sandbox.gvisor import DockerGvisorSandboxClient, find_docker
 from dast.validator import HypothesisValidator
 
 log = logging.getLogger("argus.dast.runner")
@@ -64,6 +65,19 @@ DastRunner = Callable[..., Awaitable[dict]]
 
 DEFAULT_FLY_APP = "argus-dast-sandbox"
 DEFAULT_FLY_REGION = "iad"
+
+# Self-hosted (gVisor / local Docker) substrate defaults. Used when
+# ARGUS_DAST_RUNTIME selects the gVisor path — no Fly dependency. Image
+# tags refer to LOCAL docker images the operator built with
+# dast/sandbox/firecracker/build_local.sh (or pulled into the local
+# daemon).
+DEFAULT_GVISOR_RUNTIME = "runsc"
+DEFAULT_GVISOR_NETWORK = "none"
+DEFAULT_GVISOR_IMAGE_LEAN = "argus-dast-sandbox:lean"
+DEFAULT_GVISOR_IMAGE_RICH_PYTHON = "argus-dast-sandbox:rich_python"
+DEFAULT_GVISOR_IMAGE_ML_TOOLS = "argus-dast-sandbox:ml_tools"
+# ARGUS_DAST_RUNTIME values that select the self-hosted gVisor substrate.
+_GVISOR_RUNTIME_ALIASES = frozenset({"gvisor", "local", "docker", "runsc", "self-hosted"})
 
 # Sonnet 4.6 pricing for cost estimation. DAST-103 will mix in Opus
 # (iter-3 escalation); refine the cost calc when that lands.
@@ -710,6 +724,93 @@ def _stage_project_tree_for_phase_d(
 # ── Production factory ─────────────────────────────────────────────────────
 
 
+def _make_gvisor_dast_runner_from_env(
+    api_key: str | None = None,
+    *,
+    scan_model: str = "claude-sonnet-4-6",
+    reasoning_model: str = "claude-opus-4-6",
+) -> DastRunner | None:
+    """Build the self-hosted DAST runner on the gVisor / local-Docker substrate.
+
+    Selected by ``ARGUS_DAST_RUNTIME`` ∈ {gvisor, local, docker,
+    self-hosted}. Needs NO Fly.io credentials — sandboxes run as local
+    containers under a gVisor (``runsc``) runtime. Returns ``None`` (so
+    the engine skips DAST gracefully) when prerequisites are missing.
+
+    Required:
+        ANTHROPIC_API_KEY (or pass via ``api_key``)
+        docker on PATH, with the gVisor runtime registered (``runsc
+        install``). The runtime registration is validated lazily — the
+        first plan surfaces a clear ``docker run`` error if it's absent.
+
+    Optional env:
+        ARGUS_DAST_GVISOR_RUNTIME   — OCI runtime name (default ``runsc``)
+        ARGUS_DAST_GVISOR_NETWORK   — docker network mode (default
+                                      ``none`` = no egress; capture server
+                                      on loopback intercepts all hostnames)
+        ARGUS_DAST_GVISOR_IMAGE_LEAN / _RICH_PYTHON / _ML_TOOLS —
+                                      LOCAL image tags (defaults
+                                      ``argus-dast-sandbox:<tier>``).
+                                      RICH_PYTHON / ML_TOOLS fall back to
+                                      LEAN when unset.
+    """
+    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    missing: list[str] = []
+    if not api_key:
+        missing.append("ANTHROPIC_API_KEY")
+    docker_path = find_docker()
+    if not docker_path:
+        missing.append("docker (not found on PATH)")
+    if missing:
+        log.info(
+            "DAST runner (gVisor) not configured (missing: %s); engine will skip DAST",
+            ", ".join(missing),
+        )
+        return None
+
+    runtime = os.environ.get("ARGUS_DAST_GVISOR_RUNTIME", DEFAULT_GVISOR_RUNTIME)
+    network = os.environ.get("ARGUS_DAST_GVISOR_NETWORK", DEFAULT_GVISOR_NETWORK)
+    image_lean = os.environ.get("ARGUS_DAST_GVISOR_IMAGE_LEAN", DEFAULT_GVISOR_IMAGE_LEAN)
+    image_rich_python = os.environ.get("ARGUS_DAST_GVISOR_IMAGE_RICH_PYTHON") or image_lean
+    image_ml_tools = os.environ.get("ARGUS_DAST_GVISOR_IMAGE_ML_TOOLS") or image_lean
+
+    log.info(
+        "DAST runner: gVisor substrate (runtime=%s, network=%s, images: "
+        "lean=%s rich_python=%s ml_tools=%s)",
+        runtime,
+        network,
+        image_lean,
+        image_rich_python,
+        image_ml_tools,
+    )
+
+    def _mk(image: str) -> DockerGvisorSandboxClient:
+        return DockerGvisorSandboxClient(
+            image=image,
+            docker_path=docker_path,
+            runtime=runtime,
+            network=network,
+        )
+
+    sandbox = MultiImageSandboxClient(
+        inner_by_hint={
+            "lean": _mk(image_lean),
+            "rich_python": _mk(image_rich_python),
+            "ml_tools": _mk(image_ml_tools),
+        },
+        fallback_hint="lean",
+    )
+
+    inference = make_dast_sonnet_inference(api_key, model_id=scan_model)
+    phase_3_inference = make_dast_opus_inference(api_key, model_id=reasoning_model)
+
+    return make_dast_runner(
+        inference=inference,
+        sandbox=sandbox,
+        phase_3_inference=phase_3_inference,
+    )
+
+
 def make_dast_runner_from_env(
     api_key: str | None = None,
     *,
@@ -742,7 +843,21 @@ def make_dast_runner_from_env(
     v1.8 P2b: env vars renamed from ECHO_DAST_IMAGE_MINIMAL/NETWORKED
     to ECHO_DAST_IMAGE_LEAN/RICH_PYTHON. If old names are still set
     when LEAN isn't, a migration error is logged.
+
+    Substrate selection (DAST-107): ``ARGUS_DAST_RUNTIME`` chooses where
+    sandboxes run. Default ``fly`` keeps the managed Firecracker path.
+    Any of ``gvisor`` / ``local`` / ``docker`` / ``self-hosted`` routes
+    to the local-Docker + gVisor substrate (see
+    :func:`_make_gvisor_dast_runner_from_env`) — the recommended default
+    for self-hosted deployments, which needs no ``FLY_API_TOKEN`` and no
+    managed cloud.
     """
+    runtime_mode = os.environ.get("ARGUS_DAST_RUNTIME", "fly").strip().lower()
+    if runtime_mode in _GVISOR_RUNTIME_ALIASES:
+        return _make_gvisor_dast_runner_from_env(
+            api_key, scan_model=scan_model, reasoning_model=reasoning_model
+        )
+
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     fly_token = os.environ.get("FLY_API_TOKEN", "")
     image_lean = os.environ.get("ECHO_DAST_IMAGE_LEAN", "")

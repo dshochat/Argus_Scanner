@@ -1,14 +1,120 @@
 # DAST sandbox setup
 
-Enable Finding Validation + Remediation by standing up your own Fly.io
-sandbox. **One-time, ~10-30 min.** After this, every suspicious /
-malicious verdict triggers runtime confirmation + auto-patch +
-exploit-replay against the patch.
+Enable Finding Validation + Remediation by standing up a sandbox. After
+this, every suspicious / malicious verdict triggers runtime confirmation
++ auto-patch + exploit-replay against the patch.
 
 Without DAST, Argus runs L1 cascade only — still useful, but no sandbox-
 grounded `CONFIRMED` evidence and no Remediation.
 
-## Prereqs
+## Choose a substrate
+
+Argus runs each exploit in a throwaway sandbox. You pick **where** those
+sandboxes run with the `ARGUS_DAST_RUNTIME` env var:
+
+| Substrate | `ARGUS_DAST_RUNTIME` | Runs where | Best for |
+|---|---|---|---|
+| **gVisor (local)** | `gvisor` | Local Docker + the gVisor (`runsc`) runtime — your own host or k8s node | **Self-hosted default.** No cloud account, no egress, no per-VM bill. BYO compute. |
+| **Fly.io (managed)** | `fly` *(default)* | Ephemeral Firecracker microVMs on your Fly account | Zero local infra; pay-per-VM; good for laptops / CI without Docker. |
+
+Both run the **same image** and produce the **same evidence** — only the
+launcher differs. gVisor is the recommended default for a self-hosted,
+customer-friendly deployment: sandboxes execute as local `runsc`
+containers with `--network=none`, so there's no managed cloud in the loop
+and no real egress. Pick one and follow Option A or Option B below.
+
+---
+
+## Option A — Self-hosted (gVisor, recommended)
+
+Run sandboxes as local Docker containers under the gVisor (`runsc`)
+runtime. No Fly account, no `FLY_API_TOKEN`. Works on any Linux host or
+Kubernetes node (via a `RuntimeClass`) with Docker + gVisor installed.
+
+### Prereqs
+
+- **Docker** (running).
+- **gVisor** (`runsc`) installed and registered as a Docker runtime. On a
+  stock Ubuntu host:
+
+  ```bash
+  # Install runsc from the gVisor apt repo
+  curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list
+  sudo apt-get update && sudo apt-get install -y runsc
+  # Register with Docker + restart, then verify
+  sudo runsc install && sudo systemctl restart docker
+  docker info --format '{{json .Runtimes}}'   # should list "runsc"
+  ```
+
+  No nested virtualization required (gVisor's `systrap` platform). On
+  Kubernetes, install gVisor on the node and add a `RuntimeClass` named
+  `runsc`.
+
+### Setup (2 steps)
+
+```bash
+# 1. Build the sandbox images into your LOCAL Docker daemon.
+#    First run ~10-20 min (apt/npm/pip layers); cached on rebuilds.
+#    `lean` alone covers most exploits; build all three for full coverage.
+cd dast/sandbox/firecracker
+bash build_local.sh                 # or: bash build_local.sh lean
+
+# 2. Verify with a known-vulnerable scan
+cd ../../..
+ARGUS_DAST_RUNTIME=gvisor argus scan samples/regression_v1/high_with_vuln.py
+```
+
+If the scan prints `dast_attempted: True` with `CONFIRMED` findings,
+you're done.
+
+### .env vars
+
+```env
+# Select the self-hosted substrate (no FLY_API_TOKEN needed)
+ARGUS_DAST_RUNTIME=gvisor
+# Local image tags (defaults shown — build_local.sh prints these).
+# RICH_PYTHON / ML_TOOLS fall back to LEAN when unset.
+ARGUS_DAST_GVISOR_IMAGE_LEAN=argus-dast-sandbox:lean
+ARGUS_DAST_GVISOR_IMAGE_RICH_PYTHON=argus-dast-sandbox:rich_python
+ARGUS_DAST_GVISOR_IMAGE_ML_TOOLS=argus-dast-sandbox:ml_tools
+# Optional knobs:
+#   ARGUS_DAST_GVISOR_RUNTIME=runsc   # OCI runtime name (default runsc)
+#   ARGUS_DAST_GVISOR_NETWORK=none    # docker network mode; none = no egress
+```
+
+### Egress control
+
+The default `ARGUS_DAST_GVISOR_NETWORK=none` gives each sandbox only a
+loopback interface — **no real egress**. The in-VM capture server binds
+`127.0.0.1:53/80/443` and the sandbox's DNS is hijacked to it, so every
+hostname an exploit resolves is logged (and answered locally) while
+nothing leaves the host — a stronger guarantee than the managed path
+(the network interface is genuinely absent). Operators who need a
+controlled egress allowlist can point `ARGUS_DAST_GVISOR_NETWORK` at a
+custom Docker network.
+
+### Notes
+
+- **Privacy:** file content never leaves your host — it's passed to a
+  local container via env var, materialized in `/workspace`, executed,
+  then the container is removed. No cloud, no Argus infrastructure.
+- **Syscall observability:** the bpftrace kernel-tracing layer is
+  Firecracker-only (gVisor's user-space kernel has no kprobes); under
+  gVisor it is skipped cleanly and validation falls back to
+  language-level instrumentation. Verdicts are unaffected.
+- **Rebuilds:** when you change a shared component (`dast-init.sh`,
+  `dast-capture-server.py`, `entrypoint.py`) re-run `build_local.sh` to
+  rebuild the affected tier(s).
+
+---
+
+## Option B — Managed (Fly.io)
+
+**One-time, ~10-30 min.** Sandboxes run as ephemeral Firecracker microVMs
+on your own Fly.io account.
+
+### Prereqs
 
 - A [Fly.io account](https://fly.io) with a payment method on file
   (free tier covers DAST usage; Fly requires a card)
@@ -16,7 +122,7 @@ grounded `CONFIRMED` evidence and no Remediation.
   - macOS / Linux / WSL: `curl -L https://fly.io/install.sh | sh`
   - Windows PowerShell: `iwr https://fly.io/install.ps1 -useb | iex`
 
-## Setup (6 commands)
+### Setup (6 commands)
 
 ```bash
 # 1. Pick your own globally-unique Fly app name. The default
@@ -51,7 +157,7 @@ argus scan samples/regression_v1/high_with_vuln.py
 If step 6 prints `dast_attempted: True` with `CONFIRMED` findings,
 you're done.
 
-## .env vars
+### .env vars
 
 Add these to your `.env` (the `.env.example` already has them — just
 fill in the values from steps 1, 4, and 5):

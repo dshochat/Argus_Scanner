@@ -720,6 +720,166 @@ def _pack_additional_files(additional_files: dict[str, bytes]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shared sandbox contract: env builder + event-log parser
+# ---------------------------------------------------------------------------
+#
+# These two functions are the single source of truth for (a) the env-var
+# contract handed to the in-VM ``entrypoint.py`` and (b) parsing the
+# entrypoint's JSON event lines back into :class:`SandboxEvent` objects.
+# Both the Firecracker (Fly.io) client and the gVisor (local Docker)
+# client delegate here so the two substrates can NEVER drift on the
+# contract — a drift would silently change verdicts between the hosted
+# and self-hosted runtimes. ``FirecrackerSandboxClient._build_env`` /
+# ``_parse_log_lines`` are kept as thin wrappers so existing call sites
+# and unit tests are unaffected.
+
+
+def build_sandbox_env(
+    plan: SandboxPlan,
+    *,
+    file_content_map: dict[str, bytes],
+    additional_files_map: dict[str, dict[str, bytes]],
+    entry_rel_path_map: dict[str, str],
+) -> dict[str, str]:
+    """Build the env-var dict the in-VM entrypoint reads for ``plan``.
+
+    Substrate-independent: the same dict is shipped to a Fly machine
+    (via the Machines API ``env`` field) or to a local container (via
+    ``docker run -e``). Empty values are dropped to keep the env compact
+    and to preserve the "unset == legacy behavior" contract older images
+    rely on.
+    """
+    # Locate the file's content from the registered map
+    content = file_content_map.get(plan.file_id, b"")
+    encoded = base64.b64encode(gzip.compress(content)).decode("ascii") if content else ""
+
+    # v1.9.2 debug: log multi-file staging state per plan so we can
+    # verify the sibling tarball + entry-rel-path are actually being
+    # shipped to the sandbox. Costs nothing — env_build is per-plan
+    # not per-event. Remove once smoke confirms.
+    try:
+        import sys as _sys  # noqa: PLC0415
+        _siblings = additional_files_map.get(plan.file_id) or {}
+        _erp = entry_rel_path_map.get(plan.file_id, "")
+        _mod = _derive_python_module_name(_erp)
+        print(
+            f"[argus.dast.sandbox.debug] build_env "
+            f"file_id={plan.file_id[:16]} plan={plan.plan_id} "
+            f"siblings={len(_siblings)} entry_rel={_erp!r} "
+            f"module_name={_mod!r}",
+            file=_sys.stderr,
+        )
+    except Exception:
+        pass
+
+    # Pattern list for code_pattern_observed events. Phase B
+    # hypotheses have an upstream_chain.upstream_condition that
+    # serves as the pattern target.
+    ctx = plan.synthesis_context or {}
+    uc = ctx.get("upstream_chain") or {}
+    cond = (uc.get("upstream_condition") or "").strip()
+    patterns: list[str] = []
+    if cond and len(cond) >= 5 and len(cond) <= 100:
+        # Use the upstream condition itself as a pattern string.
+        # Crude but effective for the common cases observed in the
+        # 7-file run (e.g., "user: root", "uses: actions/setup-node@v3").
+        patterns.append(cond)
+
+    # Strip any directory components and reject empty / traversal
+    # attempts. Falls back to file_id (the SHA256) so unauthored
+    # callers keep a non-empty value, but extension-routed
+    # languages (Node `require`, Java class loader, etc.) only
+    # work when callers populate plan.file_name with the real
+    # basename.
+    raw_name = (plan.file_name or "").strip()
+    safe_name = Path(raw_name).name if raw_name else ""
+    file_name = safe_name or plan.file_id
+
+    env = {
+        "PLAN_ID": plan.plan_id,
+        "FILE_ID": plan.file_id,
+        "HYPOTHESIS_ID": plan.hypothesis_id,
+        "FILE_NAME": file_name,
+        "FILE_CONTENT_B64GZ": encoded,
+        "PLAN_COMMANDS": json.dumps(plan.commands),
+        "PLAN_TIMEOUT_SEC": str(plan.timeout_sec),
+        "EXPECTED_EVIDENCE": (ctx.get("expected_evidence") if isinstance(ctx, dict) else "")
+        or "",
+        "EXPECTED_PATTERNS": json.dumps(patterns) if patterns else "",
+        # P2a (v1.8): list of pip packages to install in the
+        # sandbox before plan commands run. Empty (= no install) on
+        # plans where the orchestrator chose not to populate
+        # runtime_packages — typically lean tier or
+        # ``enable_per_scan_dep_install=False``.
+        #
+        # v0.3 split: ``runtime_packages`` is partitioned by the
+        # top-PyPI allowlist into two groups before being shipped
+        # to dast-init.sh:
+        #   * ``RUNTIME_PACKAGES`` — names NOT in the allowlist;
+        #     installed with ``pip install --no-deps`` (v0.1
+        #     contract — safe default for attacker-named packages).
+        #   * ``RUNTIME_PACKAGES_ALLOWLISTED`` — names in the
+        #     curated allowlist; installed with full transitive
+        #     resolution, since we trust those packages'
+        #     maintainer-declared dep graphs.
+        #
+        # Old images without the v0.3 init.sh hook ignore the
+        # ``_ALLOWLISTED`` var and behave like v0.1 (everything
+        # goes through ``RUNTIME_PACKAGES``+ --no-deps), so the
+        # rollout is back-compatible. Names are validated shell-
+        # safe before they reach here (see
+        # ``preprocessing.imports._is_safe_pkg_name``).
+        **_partition_env(
+            plan.runtime_packages,
+            own_dist_name=getattr(plan, "own_dist_name", "") or "",
+        ),
+        # JS DAST parity (v1.8): npm packages for .js/.mjs/.cjs
+        # targets. dast-init.sh installs with --ignore-scripts to
+        # neutralize the primary npm threat (postinstall hooks).
+        # Old images ignore this env var; the dast-init.sh update
+        # rolls in the same image rebuild as the v0.3 pip split.
+        **_npm_env(plan.runtime_npm_packages),
+        # Multi-file project staging (v11, 2026-05-17): tar.gz of
+        # sibling project files keyed by path relative to entry
+        # file's directory. dast-init.sh extracts to /workspace
+        # (preserving structure) so the entry's relative imports
+        # resolve at runtime. Old images without the v11 dast-init.sh
+        # update ignore this env var; the staged single file at
+        # /workspace/<FILE_NAME> still works (v10 single-file flow
+        # unchanged). Empty when no siblings — caller's filter drops.
+        #
+        # additional_files_map is keyed by plan.file_id (same
+        # pattern as file_content_map above) and populated by the
+        # runner once per scan; every plan for that file_id sees
+        # the same sibling set.
+        "ADDITIONAL_FILES_TARGZ_B64": _pack_additional_files(
+            additional_files_map.get(plan.file_id, {})
+        ),
+        # v12 (2026-05-17): entry-rel-path. When set, dast-init.sh
+        # stages the entry file at /workspace/<ENTRY_REL_PATH>
+        # instead of /workspace/<FILE_NAME>. Empty / unset →
+        # v11 behavior (entry at /workspace/<FILE_NAME>). Honored
+        # only by v12+ dast-init; older images ignore the var.
+        "ENTRY_REL_PATH": entry_rel_path_map.get(plan.file_id, ""),
+        # v1.9.2: package-qualified Python module name derived from
+        # ENTRY_REL_PATH. Set whenever the entry file lives in a
+        # Python package subdir (e.g. ``jsonpickle/unpickler.py``)
+        # — derived as ``jsonpickle.unpickler``. Plans that import
+        # a package member MUST use this dotted form, not the bare
+        # basename, otherwise relative-import statements
+        # (``from . import ...``) inside the entry file fail with
+        # ImportError. Empty when entry is a flat file at /workspace
+        # root or the sibling resolver didn't run.
+        "MODULE_NAME": _derive_python_module_name(
+            entry_rel_path_map.get(plan.file_id, "")
+        ),
+    }
+    # Env values must be strings; drop empty values to keep config
+    # compact (the substrate accepts but the ENV becomes implicit "").
+    return {k: v for k, v in env.items() if v != ""}
+
+
+# ---------------------------------------------------------------------------
 # Firecracker (Fly.io) sandbox client
 # ---------------------------------------------------------------------------
 
@@ -1172,134 +1332,16 @@ class FirecrackerSandboxClient:
     # ---- helpers ---------------------------------------------------------
 
     def _build_env(self, plan: SandboxPlan) -> dict[str, str]:
-        # Locate the file's content from the registered map
-        content = self.file_content_map.get(plan.file_id, b"")
-        encoded = base64.b64encode(gzip.compress(content)).decode("ascii") if content else ""
-
-        # v1.9.2 debug: log multi-file staging state per plan so we can
-        # verify the sibling tarball + entry-rel-path are actually being
-        # shipped to the sandbox. Costs nothing — env_build is per-plan
-        # not per-event. Remove once smoke confirms.
-        try:
-            import sys as _sys  # noqa: PLC0415
-            _siblings = self.additional_files_map.get(plan.file_id) or {}
-            _erp = self.entry_rel_path_map.get(plan.file_id, "")
-            _mod = _derive_python_module_name(_erp)
-            print(
-                f"[argus.dast.sandbox.debug] build_env "
-                f"file_id={plan.file_id[:16]} plan={plan.plan_id} "
-                f"siblings={len(_siblings)} entry_rel={_erp!r} "
-                f"module_name={_mod!r}",
-                file=_sys.stderr,
-            )
-        except Exception:
-            pass
-
-        # Pattern list for code_pattern_observed events. Phase B
-        # hypotheses have an upstream_chain.upstream_condition that
-        # serves as the pattern target.
-        ctx = plan.synthesis_context or {}
-        uc = ctx.get("upstream_chain") or {}
-        cond = (uc.get("upstream_condition") or "").strip()
-        patterns: list[str] = []
-        if cond and len(cond) >= 5 and len(cond) <= 100:
-            # Use the upstream condition itself as a pattern string.
-            # Crude but effective for the common cases observed in the
-            # 7-file run (e.g., "user: root", "uses: actions/setup-node@v3").
-            patterns.append(cond)
-
-        # Strip any directory components and reject empty / traversal
-        # attempts. Falls back to file_id (the SHA256) so unauthored
-        # callers keep a non-empty value, but extension-routed
-        # languages (Node `require`, Java class loader, etc.) only
-        # work when callers populate plan.file_name with the real
-        # basename.
-        raw_name = (plan.file_name or "").strip()
-        safe_name = Path(raw_name).name if raw_name else ""
-        file_name = safe_name or plan.file_id
-
-        env = {
-            "PLAN_ID": plan.plan_id,
-            "FILE_ID": plan.file_id,
-            "HYPOTHESIS_ID": plan.hypothesis_id,
-            "FILE_NAME": file_name,
-            "FILE_CONTENT_B64GZ": encoded,
-            "PLAN_COMMANDS": json.dumps(plan.commands),
-            "PLAN_TIMEOUT_SEC": str(plan.timeout_sec),
-            "EXPECTED_EVIDENCE": (ctx.get("expected_evidence") if isinstance(ctx, dict) else "")
-            or "",
-            "EXPECTED_PATTERNS": json.dumps(patterns) if patterns else "",
-            # P2a (v1.8): list of pip packages to install in the
-            # sandbox before plan commands run. Empty (= no install) on
-            # plans where the orchestrator chose not to populate
-            # runtime_packages — typically lean tier or
-            # ``enable_per_scan_dep_install=False``.
-            #
-            # v0.3 split: ``runtime_packages`` is partitioned by the
-            # top-PyPI allowlist into two groups before being shipped
-            # to dast-init.sh:
-            #   * ``RUNTIME_PACKAGES`` — names NOT in the allowlist;
-            #     installed with ``pip install --no-deps`` (v0.1
-            #     contract — safe default for attacker-named packages).
-            #   * ``RUNTIME_PACKAGES_ALLOWLISTED`` — names in the
-            #     curated allowlist; installed with full transitive
-            #     resolution, since we trust those packages'
-            #     maintainer-declared dep graphs.
-            #
-            # Old images without the v0.3 init.sh hook ignore the
-            # ``_ALLOWLISTED`` var and behave like v0.1 (everything
-            # goes through ``RUNTIME_PACKAGES``+ --no-deps), so the
-            # rollout is back-compatible. Names are validated shell-
-            # safe before they reach here (see
-            # ``preprocessing.imports._is_safe_pkg_name``).
-            **_partition_env(
-                plan.runtime_packages,
-                own_dist_name=getattr(plan, "own_dist_name", "") or "",
-            ),
-            # JS DAST parity (v1.8): npm packages for .js/.mjs/.cjs
-            # targets. dast-init.sh installs with --ignore-scripts to
-            # neutralize the primary npm threat (postinstall hooks).
-            # Old images ignore this env var; the dast-init.sh update
-            # rolls in the same image rebuild as the v0.3 pip split.
-            **_npm_env(plan.runtime_npm_packages),
-            # Multi-file project staging (v11, 2026-05-17): tar.gz of
-            # sibling project files keyed by path relative to entry
-            # file's directory. dast-init.sh extracts to /workspace
-            # (preserving structure) so the entry's relative imports
-            # resolve at runtime. Old images without the v11 dast-init.sh
-            # update ignore this env var; the staged single file at
-            # /workspace/<FILE_NAME> still works (v10 single-file flow
-            # unchanged). Empty when no siblings — caller's filter drops.
-            #
-            # additional_files_map is keyed by plan.file_id (same
-            # pattern as file_content_map above) and populated by the
-            # runner once per scan; every plan for that file_id sees
-            # the same sibling set.
-            "ADDITIONAL_FILES_TARGZ_B64": _pack_additional_files(
-                self.additional_files_map.get(plan.file_id, {})
-            ),
-            # v12 (2026-05-17): entry-rel-path. When set, dast-init.sh
-            # stages the entry file at /workspace/<ENTRY_REL_PATH>
-            # instead of /workspace/<FILE_NAME>. Empty / unset →
-            # v11 behavior (entry at /workspace/<FILE_NAME>). Honored
-            # only by v12+ dast-init; older images ignore the var.
-            "ENTRY_REL_PATH": self.entry_rel_path_map.get(plan.file_id, ""),
-            # v1.9.2: package-qualified Python module name derived from
-            # ENTRY_REL_PATH. Set whenever the entry file lives in a
-            # Python package subdir (e.g. ``jsonpickle/unpickler.py``)
-            # — derived as ``jsonpickle.unpickler``. Plans that import
-            # a package member MUST use this dotted form, not the bare
-            # basename, otherwise relative-import statements
-            # (``from . import ...``) inside the entry file fail with
-            # ImportError. Empty when entry is a flat file at /workspace
-            # root or the sibling resolver didn't run.
-            "MODULE_NAME": _derive_python_module_name(
-                self.entry_rel_path_map.get(plan.file_id, "")
-            ),
-        }
-        # Fly env values must be strings; drop empty values to keep
-        # config compact (Fly accepts but the ENV becomes implicit "").
-        return {k: v for k, v in env.items() if v != ""}
+        # Delegates to the shared, substrate-independent builder so the
+        # Fly and gVisor runtimes can never drift on the env contract.
+        # Kept as a method (not inlined at the call site) to preserve the
+        # existing unit-test surface (tests call ``client._build_env``).
+        return build_sandbox_env(
+            plan,
+            file_content_map=self.file_content_map,
+            additional_files_map=self.additional_files_map,
+            entry_rel_path_map=self.entry_rel_path_map,
+        )
 
     async def _get_logs(self, machine_id: str) -> list[str]:
         """Retrieve machine stdout via flyctl subprocess.
@@ -1385,99 +1427,9 @@ class FirecrackerSandboxClient:
     def _parse_log_lines(
         self, log_messages: list[str], plan: SandboxPlan
     ) -> tuple[list[SandboxEvent], int | None, str, str, int, str]:
-        """Parse the per-message strings returned by :meth:`_get_logs`.
-
-        Each ``log_messages[i]`` is the ``message`` field from a flyctl
-        log JSON entry — one stdout line from the entrypoint. Most are
-        JSON-encoded events; some are Fly init noise (e.g. "Machine
-        created and started in 4.487s") which we skip silently.
-
-        Returns: (events, exit_code, stdout_excerpt, stderr_excerpt,
-        elapsed_ms, probe_result_json).
-
-        ``probe_result_json`` is the reassembled contents of
-        ``/workspace/argus_probe_result.json`` from the sandbox,
-        delivered via ``probe_result_chunk`` events. Bypasses Fly's
-        per-log-line truncation that silently clips large
-        ``process_exit.stdout_excerpt`` payloads. Empty string when no
-        chunk events were emitted (older image without the file-based
-        transport, or harness didn't write to the result file).
-        """
-        events: list[SandboxEvent] = []
-        stdout_pieces: list[str] = []
-        stderr_pieces: list[str] = []
-        exit_code: int | None = None
-        elapsed_ms: int = 0
-        # Step-keyed chunks: {(step_idx) -> {chunk_idx -> content, total: N}}
-        # Most plans have a single step (or two: write + exec). We
-        # reassemble per-step then concat in step order. In practice
-        # only the EXEC step writes a probe result file, so this is
-        # almost always a single contiguous payload.
-        probe_chunks_by_step: dict[int, dict[int, str]] = {}
-        probe_total_by_step: dict[int, int] = {}
-
-        for msg in log_messages:
-            if not msg or not msg.strip().startswith("{"):
-                continue
-            try:
-                ev = json.loads(msg)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(ev, dict) or "kind" not in ev:
-                continue
-            kind = ev.get("kind")
-            payload = ev.get("payload") or {}
-            event_id = ev.get("event_id") or _hash_event_id(kind, payload)
-            events.append(SandboxEvent(event_id=event_id, kind=kind, payload=payload))
-
-            if kind == "process_exit":
-                so = payload.get("stdout_excerpt") or ""
-                se = payload.get("stderr_excerpt") or ""
-                if so:
-                    stdout_pieces.append(so)
-                if se:
-                    stderr_pieces.append(se)
-                if exit_code is None or (payload.get("exit_code") and exit_code == 0):
-                    exit_code = payload.get("exit_code")
-            elif kind == "probe_result_chunk":
-                step = int(payload.get("step") or 0)
-                idx = int(payload.get("chunk_index") or 0)
-                total = int(payload.get("total_chunks") or 0)
-                content = str(payload.get("content") or "")
-                probe_chunks_by_step.setdefault(step, {})[idx] = content
-                if total:
-                    probe_total_by_step[step] = total
-            elif kind == "execution_complete":
-                elapsed_ms = int(payload.get("elapsed_ms") or 0)
-
-        # Reassemble probe result. Concat in step order; within each
-        # step, concat chunks in index order. Missing chunks (e.g.,
-        # one of the events was lost) leave a gap — log a diagnostic
-        # but emit what we have so the trace parser can still attempt
-        # to recover. JSON loads from the parser side will fail on
-        # truncated content, which is the correct downstream signal
-        # (the parser returns an empty profile).
-        probe_result_parts: list[str] = []
-        for step in sorted(probe_chunks_by_step.keys()):
-            chunks = probe_chunks_by_step[step]
-            total = probe_total_by_step.get(step, len(chunks))
-            for idx in range(total):
-                if idx in chunks:
-                    probe_result_parts.append(chunks[idx])
-                # Missing chunk: skip — parser will fail to load and
-                # caller falls back to stdout. Diagnostic is the
-                # discrepancy between received and expected chunk
-                # counts which downstream operators can spot.
-        probe_result_json = "".join(probe_result_parts)
-
-        return (
-            events,
-            exit_code,
-            "\n".join(stdout_pieces)[:2000],
-            "\n".join(stderr_pieces)[:2000],
-            elapsed_ms,
-            probe_result_json,
-        )
+        # Delegates to the shared, substrate-independent parser. Kept as
+        # a method to preserve the existing call site / test surface.
+        return parse_sandbox_log_lines(log_messages, plan)
 
 
 def _hash_event_id(kind: str, payload: dict) -> str:
@@ -1485,6 +1437,106 @@ def _hash_event_id(kind: str, payload: dict) -> str:
         f"{kind}:{json.dumps(payload, sort_keys=True, default=str)}:{time.time_ns()}".encode()
     ).hexdigest()[:8]
     return f"evt-{h}"
+
+
+def parse_sandbox_log_lines(
+    log_messages: list[str], plan: SandboxPlan
+) -> tuple[list[SandboxEvent], int | None, str, str, int, str]:
+    """Parse in-VM entrypoint output lines into a structured trace tuple.
+
+    Substrate-independent. Each ``log_messages[i]`` is one stdout line
+    the entrypoint emitted — for Firecracker it's the ``message`` field
+    pulled out of a flyctl log JSON entry; for the gVisor/Docker runtime
+    it's a raw stdout line off ``docker run``. Either way most lines are
+    JSON-encoded events; non-JSON noise (init banners, etc.) is skipped
+    silently.
+
+    Returns: ``(events, exit_code, stdout_excerpt, stderr_excerpt,
+    elapsed_ms, probe_result_json)``.
+
+    ``probe_result_json`` is the reassembled contents of
+    ``/workspace/argus_probe_result.json`` from the sandbox, delivered
+    via ``probe_result_chunk`` events. Bypasses the per-log-line
+    truncation that silently clips large ``process_exit.stdout_excerpt``
+    payloads. Empty string when no chunk events were emitted (older image
+    without the file-based transport, or harness didn't write to the
+    result file).
+    """
+    events: list[SandboxEvent] = []
+    stdout_pieces: list[str] = []
+    stderr_pieces: list[str] = []
+    exit_code: int | None = None
+    elapsed_ms: int = 0
+    # Step-keyed chunks: {(step_idx) -> {chunk_idx -> content, total: N}}
+    # Most plans have a single step (or two: write + exec). We
+    # reassemble per-step then concat in step order. In practice
+    # only the EXEC step writes a probe result file, so this is
+    # almost always a single contiguous payload.
+    probe_chunks_by_step: dict[int, dict[int, str]] = {}
+    probe_total_by_step: dict[int, int] = {}
+
+    for msg in log_messages:
+        if not msg or not msg.strip().startswith("{"):
+            continue
+        try:
+            ev = json.loads(msg)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict) or "kind" not in ev:
+            continue
+        kind = ev.get("kind")
+        payload = ev.get("payload") or {}
+        event_id = ev.get("event_id") or _hash_event_id(kind, payload)
+        events.append(SandboxEvent(event_id=event_id, kind=kind, payload=payload))
+
+        if kind == "process_exit":
+            so = payload.get("stdout_excerpt") or ""
+            se = payload.get("stderr_excerpt") or ""
+            if so:
+                stdout_pieces.append(so)
+            if se:
+                stderr_pieces.append(se)
+            if exit_code is None or (payload.get("exit_code") and exit_code == 0):
+                exit_code = payload.get("exit_code")
+        elif kind == "probe_result_chunk":
+            step = int(payload.get("step") or 0)
+            idx = int(payload.get("chunk_index") or 0)
+            total = int(payload.get("total_chunks") or 0)
+            content = str(payload.get("content") or "")
+            probe_chunks_by_step.setdefault(step, {})[idx] = content
+            if total:
+                probe_total_by_step[step] = total
+        elif kind == "execution_complete":
+            elapsed_ms = int(payload.get("elapsed_ms") or 0)
+
+    # Reassemble probe result. Concat in step order; within each
+    # step, concat chunks in index order. Missing chunks (e.g.,
+    # one of the events was lost) leave a gap — log a diagnostic
+    # but emit what we have so the trace parser can still attempt
+    # to recover. JSON loads from the parser side will fail on
+    # truncated content, which is the correct downstream signal
+    # (the parser returns an empty profile).
+    probe_result_parts: list[str] = []
+    for step in sorted(probe_chunks_by_step.keys()):
+        chunks = probe_chunks_by_step[step]
+        total = probe_total_by_step.get(step, len(chunks))
+        for idx in range(total):
+            if idx in chunks:
+                probe_result_parts.append(chunks[idx])
+            # Missing chunk: skip — parser will fail to load and
+            # caller falls back to stdout. Diagnostic is the
+            # discrepancy between received and expected chunk
+            # counts which downstream operators can spot.
+    probe_result_json = "".join(probe_result_parts)
+
+    return (
+        events,
+        exit_code,
+        "\n".join(stdout_pieces)[:2000],
+        "\n".join(stderr_pieces)[:2000],
+        elapsed_ms,
+        probe_result_json,
+    )
 
 
 # ---------------------------------------------------------------------------

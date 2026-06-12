@@ -234,7 +234,15 @@ echo "[dast-init] capture server up (pid=$CAPTURE_PID, ports 80/443/53)" >&2
 SYSCALLS_LOG=/tmp/syscalls.jsonl
 SYSCALLS_ERR=/tmp/bpftrace.err
 SYSCALLS_PID_FILE=/tmp/bpftrace.pid
-if command -v bpftrace >/dev/null 2>&1; then
+# gVisor (runsc) presents a user-space kernel with NO real kprobes /
+# tracepoints, so bpftrace can never attach there. When running on the
+# self-hosted gVisor substrate, skip the attempt cleanly (informational,
+# NOT a syscall_observability_error) and let the orchestrator fall back
+# to language-level instrumentation. On Firecracker (Fly) the kernel is
+# real, uname won't match, and bpftrace runs exactly as before.
+if uname -r 2>/dev/null | grep -qi gvisor; then
+    echo "[dast-init] gVisor kernel detected — skipping bpftrace syscall observability (no kprobes under runsc)" >&2
+elif command -v bpftrace >/dev/null 2>&1; then
     if [ -f /usr/local/lib/argus-syscalls.bt ]; then
         # Truncate prior run output (defense vs. machine reuse)
         : >"$SYSCALLS_LOG"
