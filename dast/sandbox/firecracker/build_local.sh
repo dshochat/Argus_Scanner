@@ -103,8 +103,10 @@ for TIER in "${BUILD_LIST[@]}"; do
     echo "${VAR}=${BUILT_TAGS[$TIER]}"
 done
 echo
-echo "Then verify the runtime + a real plan:"
-echo "  docker run --rm --runtime=runsc --network=none ${BUILT_TAGS[${BUILD_LIST[0]}]:-$PREFIX:lean} \\"
-echo "    python3 -c 'print(1)'   # should print 1 under the gVisor kernel"
+echo "Verify gVisor actually runs the image (the ENTRYPOINT is dast-init.sh,"
+echo "so use --entrypoint to run a bare command):"
+echo "  docker run --rm --runtime=runsc --network=none --entrypoint python3 \\"
+echo "    ${BUILT_TAGS[${BUILD_LIST[0]}]:-$PREFIX:lean} -c 'import platform; print(platform.release())'"
+echo "  # prints a *-gvisor kernel release => runsc is intercepting"
 echo
 echo "Done."

@@ -220,19 +220,40 @@ async def test_submit_missing_docker_returns_failure_trace() -> None:
 
 @pytest.mark.asyncio
 async def test_submit_timeout_kills_container(monkeypatch: pytest.MonkeyPatch) -> None:
-    # deadline = timeout_sec(0) + boot_overhead_s(0) + long_poll_extra_s(0) = 0
+    # All budget components 0 + timeout_sec 0 → computed deadline = 0
     # → the hanging fake never completes → TimeoutError → kill + rm.
     run_proc = _FakeProc(hang=True)
     spy = _DockerSpy(run_proc=run_proc)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
 
-    c = _client(boot_overhead_s=0, long_poll_extra_s=0)
+    c = _client(boot_overhead_s=0, dep_install_budget_s=0, drain_headroom_s=0)
     trace = await c.submit(_plan(timeout_sec=0))
 
     assert trace.is_stub_no_trace is True
     assert "timeout" in trace.stderr_excerpt.lower()
     assert run_proc.killed is True  # the run container process was killed
     assert "rm" in spy.subcommands()  # force-remove backstop fired
+
+
+# ── per-plan deadline ─────────────────────────────────────────────────────────
+
+
+def test_deadline_scales_with_commands_no_install() -> None:
+    # No dep-install plan → deadline = boot + n*timeout + drain (NO 200s
+    # install budget). A hung no-install plan is killed promptly.
+    c = _client(boot_overhead_s=20, dep_install_budget_s=200, drain_headroom_s=30)
+    d = c._deadline_s(_plan(commands=["a", "b", "c"], timeout_sec=30))
+    assert d == 20 + 3 * 30 + 0 + 30  # 140s, NOT 290
+
+
+def test_deadline_adds_install_budget_only_when_installing() -> None:
+    c = _client(boot_overhead_s=20, dep_install_budget_s=200, drain_headroom_s=30)
+    base = _plan(commands=["a"], timeout_sec=30)
+    with_pip = _plan(commands=["a"], timeout_sec=30, runtime_packages=["selenium"])
+    with_npm = _plan(commands=["a"], timeout_sec=30, runtime_npm_packages=["lodash"])
+    assert c._deadline_s(base) == 20 + 30 + 0 + 30  # 80s
+    assert c._deadline_s(with_pip) == 20 + 30 + 200 + 30  # 280s
+    assert c._deadline_s(with_npm) == 20 + 30 + 200 + 30  # 280s
 
 
 # ── preflight ─────────────────────────────────────────────────────────────────

@@ -167,13 +167,25 @@ class DockerGvisorSandboxClient:
     entry_rel_path_map: dict[str, str] = field(default_factory=dict)
     cpus: float = 1.0
     pids_limit: int = 512
+    # Wall-clock headroom for container start + capture-server bind before
+    # the entrypoint begins executing plan commands. gVisor containers
+    # start in ~1-2s (no microVM boot), so this is generous.
     boot_overhead_s: int = 20
-    # Extra wall-clock budget on top of plan.timeout_sec + boot_overhead_s.
-    # Covers per-scan dep installs (pip --no-deps / npm --ignore-scripts)
-    # which dast-init.sh runs BEFORE the entrypoint. Mirrors the Fly
-    # client's long_poll_extra_s so both substrates wait equally long for
-    # heavy-dependency plans.
-    long_poll_extra_s: int = 240
+    # Per-plan deadline is COMPUTED, not flat (unlike the Fly client's
+    # long_poll_extra_s). The entrypoint runs each command sequentially
+    # capped at plan.timeout_sec, so the legitimate execution ceiling is
+    # len(commands) * timeout_sec. The dep-install budget is added ONLY for
+    # plans that actually install packages (dast-init.sh runs pip/npm
+    # BEFORE the entrypoint). This means a hung NO-install plan is killed in
+    # ~boot + n*timeout + drain instead of waiting a flat 240s — see
+    # ``_deadline_s``.
+    #
+    # dep_install_budget_s covers the in-container pip (--no-deps, 60s cap)
+    # + npm (--ignore-scripts, 180s cap) installs dast-init.sh performs.
+    dep_install_budget_s: int = 200
+    # Slack above the command-execution ceiling for the entrypoint's
+    # own setup/teardown (file staging, capture-log + probe-result drain).
+    drain_headroom_s: int = 30
     # Operator escape hatch: extra `docker run` args injected verbatim
     # before the image (e.g. ("--cpuset-cpus", "0-1") or an egress
     # allowlist setup). Empty by default.
@@ -194,6 +206,22 @@ class DockerGvisorSandboxClient:
             additional_files_map=self.additional_files_map,
             entry_rel_path_map=self.entry_rel_path_map,
         )
+
+    def _deadline_s(self, plan: SandboxPlan) -> float:
+        """Per-plan wall-clock cap for the whole ``docker run``.
+
+        Scales with the plan instead of a flat budget: the entrypoint runs
+        each command sequentially under ``plan.timeout_sec``, so the
+        legitimate execution ceiling is ``len(commands) * timeout_sec``.
+        The dep-install budget is added ONLY when the plan installs
+        packages. Net effect: a hung no-install plan is killed promptly
+        (≈ boot + n*timeout + drain) rather than after a flat 240s.
+        """
+        n_cmds = max(1, len(plan.commands))
+        exec_budget = n_cmds * plan.timeout_sec
+        needs_install = bool(plan.runtime_packages or plan.runtime_npm_packages)
+        install_budget = self.dep_install_budget_s if needs_install else 0
+        return float(self.boot_overhead_s + exec_budget + install_budget + self.drain_headroom_s)
 
     def _build_run_argv(self, plan: SandboxPlan, *, container_name: str, env_keys: list[str]) -> list[str]:
         memory_mb = SANDBOX_MEMORY_MB_BY_TIER.get(plan.image_hint, 2048)
@@ -260,7 +288,7 @@ class DockerGvisorSandboxClient:
         # Only the keys named in argv via `-e` are forwarded into the
         # container — the rest of os.environ (API keys) is not.
         child_env = {**os.environ, **env}
-        deadline_s = plan.timeout_sec + self.boot_overhead_s + self.long_poll_extra_s
+        deadline_s = self._deadline_s(plan)
 
         started = time.monotonic()
         try:
@@ -286,7 +314,10 @@ class DockerGvisorSandboxClient:
                     pass
                 return self._failure_trace(
                     plan,
-                    f"timeout after {deadline_s}s (plan_timeout={plan.timeout_sec}s); container killed",
+                    f"timeout after {deadline_s:.0f}s "
+                    f"(plan_timeout={plan.timeout_sec}s x {len(plan.commands)} cmds"
+                    f"{', +dep-install' if (plan.runtime_packages or plan.runtime_npm_packages) else ''}); "
+                    f"container killed",
                 )
 
             stdout = stdout_b.decode("utf-8", errors="replace")
