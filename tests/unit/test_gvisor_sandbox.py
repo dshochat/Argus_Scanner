@@ -69,9 +69,18 @@ class _DockerSpy:
     """Stand-in for ``asyncio.create_subprocess_exec`` that dispatches on
     the docker subcommand (argv[1]) and records every call."""
 
-    def __init__(self, *, run_proc: _FakeProc | None = None, info_proc: _FakeProc | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        run_proc: _FakeProc | None = None,
+        info_proc: _FakeProc | None = None,
+        logs_proc: _FakeProc | None = None,
+    ) -> None:
         self.run_proc = run_proc or _FakeProc()
         self.info_proc = info_proc or _FakeProc(b"{}", b"", 0)
+        # `docker logs <name>` output (used to salvage partial output on a
+        # timeout). Default empty (no partial events recovered).
+        self.logs_proc = logs_proc or _FakeProc(b"", b"", 0)
         self.calls: list[tuple[list[str], dict[str, str] | None]] = []
 
     async def __call__(
@@ -87,6 +96,8 @@ class _DockerSpy:
             return self.run_proc
         if sub == "info":
             return self.info_proc
+        if sub == "logs":
+            return self.logs_proc
         return _FakeProc(b"", b"", 0)  # rm / kill / anything else
 
     def run_call(self) -> tuple[list[str], dict[str, str] | None]:
@@ -233,6 +244,37 @@ async def test_submit_timeout_kills_container(monkeypatch: pytest.MonkeyPatch) -
     assert "timeout" in trace.stderr_excerpt.lower()
     assert run_proc.killed is True  # the run container process was killed
     assert "rm" in spy.subcommands()  # force-remove backstop fired
+
+
+@pytest.mark.asyncio
+async def test_submit_timeout_salvages_partial_events_via_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On timeout the adapter pulls `docker logs` BEFORE killing, so partial
+    # events fired before the hang are recovered (not discarded) — and the
+    # note names the step that was still running.
+    partial = (
+        b'{"event_id":"e1","kind":"execution_start","payload":{}}\n'
+        b'{"event_id":"e2","kind":"process_spawn","payload":{"step":0,"cmd":"echo a"}}\n'
+        b'{"event_id":"e3","kind":"process_exit","payload":'
+        b'{"step":0,"exit_code":0,"stdout_excerpt":"a"}}\n'
+        # step 1 spawned but never exits — this is the hung command
+        b'{"event_id":"e4","kind":"process_spawn","payload":{"step":1,"cmd":"hangs"}}\n'
+    )
+    run_proc = _FakeProc(hang=True)
+    spy = _DockerSpy(run_proc=run_proc, logs_proc=_FakeProc(stdout=partial, returncode=0))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+
+    c = _client(boot_overhead_s=0, dep_install_budget_s=0, drain_headroom_s=0)
+    trace = await c.submit(_plan(timeout_sec=0))
+
+    assert "logs" in spy.subcommands()  # pulled logs before killing
+    assert trace.is_stub_no_trace is False  # partial events salvaged
+    kinds = [e.kind for e in trace.events]
+    assert "execution_start" in kinds and "process_exit" in kinds
+    assert "partial event" in trace.stderr_excerpt.lower()
+    assert "hung at step 1" in trace.stderr_excerpt  # named the offending step
+    assert run_proc.killed is True
 
 
 # ── per-plan deadline ─────────────────────────────────────────────────────────

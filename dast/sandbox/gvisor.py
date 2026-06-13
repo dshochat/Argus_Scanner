@@ -69,6 +69,7 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from .client import (
     SANDBOX_MEMORY_MB_BY_TIER,
@@ -89,6 +90,26 @@ class DockerError(RuntimeError):
 def find_docker() -> str | None:
     """Locate the ``docker`` binary on PATH (None if absent)."""
     return shutil.which("docker")
+
+
+def _last_unfinished_step(events: list[Any]) -> int | None:
+    """The plan step that was running when the container hung: the highest
+    ``process_spawn`` step with no matching ``process_exit`` /
+    ``process_timeout``. Lets a timeout trace name the offending command."""
+    spawned: set[int] = set()
+    finished: set[int] = set()
+    for e in events:
+        payload = getattr(e, "payload", {}) or {}
+        step = payload.get("step")
+        if not isinstance(step, int):
+            continue
+        kind = getattr(e, "kind", None)
+        if kind == "process_spawn":
+            spawned.add(step)
+        elif kind in ("process_exit", "process_timeout"):
+            finished.add(step)
+    unfinished = spawned - finished
+    return max(unfinished) if unfinished else None
 
 
 async def gvisor_preflight(
@@ -270,6 +291,29 @@ class DockerGvisorSandboxClient:
         except Exception:
             pass
 
+    async def _docker_logs(self, container_name: str) -> str:
+        """Fetch a (still-running or stopped) container's stdout+stderr.
+
+        Used on timeout to salvage the entrypoint's partial output BEFORE
+        the container is killed — the entrypoint emits JSON events to
+        stdout, so this recovers whatever fired before the hang. stderr is
+        merged in (dast-init diagnostics). Best-effort; '' on any error.
+        """
+        if not self.docker_path:
+            return ""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.docker_path,
+                "logs",
+                container_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
+            return out_b.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+
     # ---- Protocol --------------------------------------------------------
 
     async def submit(self, plan: SandboxPlan) -> SandboxTrace:
@@ -305,19 +349,49 @@ class DockerGvisorSandboxClient:
             try:
                 stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=deadline_s)
             except asyncio.TimeoutError:
-                # Kill the container (its name is stable) AND the docker
-                # client process, then surface a timeout trace.
+                # The container is STILL RUNNING (it hung) — so grab its
+                # output-so-far via `docker logs` BEFORE killing it. A plain
+                # kill + empty trace discards everything the entrypoint
+                # emitted, which (a) blinds us to WHICH command hung and
+                # (b) throws away events that may already prove the finding.
+                # Salvaging the partial log turns a blind zero-event timeout
+                # into a debuggable, possibly-still-useful trace.
+                partial = await self._docker_logs(container_name)
                 await self._docker_force_remove(container_name)
                 try:
                     proc.kill()
                 except ProcessLookupError:
                     pass
-                return self._failure_trace(
-                    plan,
-                    f"timeout after {deadline_s:.0f}s "
+                (
+                    ev,
+                    exit_code,
+                    so,
+                    se,
+                    elapsed_ms,
+                    probe_json,
+                ) = parse_sandbox_log_lines(partial.splitlines(), plan)
+                if not elapsed_ms:
+                    elapsed_ms = int((time.monotonic() - started) * 1000)
+                last_cmd = _last_unfinished_step(ev)
+                note = (
+                    f"gvisor_timeout after {deadline_s:.0f}s "
                     f"(plan_timeout={plan.timeout_sec}s x {len(plan.commands)} cmds"
                     f"{', +dep-install' if (plan.runtime_packages or plan.runtime_npm_packages) else ''}); "
-                    f"container killed",
+                    f"{len(ev)} partial event(s) salvaged"
+                    f"{f'; hung at step {last_cmd}' if last_cmd is not None else ''}"
+                )
+                return SandboxTrace(
+                    plan_id=plan.plan_id,
+                    file_id=plan.file_id,
+                    hypothesis_id=plan.hypothesis_id,
+                    events=ev,
+                    exit_code=exit_code,
+                    stdout_excerpt=so,
+                    stderr_excerpt=(note + (" | " + se if se else ""))[:2000],
+                    elapsed_ms=elapsed_ms,
+                    is_stub_no_trace=(not ev),
+                    stub_synthesis_note=note[:200],
+                    probe_result_json=probe_json,
                 )
 
             stdout = stdout_b.decode("utf-8", errors="replace")
