@@ -1178,6 +1178,38 @@ def _build_parser() -> argparse.ArgumentParser:
         include_scan_flags=True,
     )
 
+    # ── argus dashboard — web UI over a Postgres store (v1.13) ─────────────
+    # Self-hosted dashboard visualizing scan -> validate -> remediate. Heavy
+    # deps (fastapi/uvicorn/sqlalchemy/asyncpg) ship under the [dashboard]
+    # extra and are lazy-imported in main(); flag definitions live HERE so
+    # ``argus --help`` renders cleanly without the extra (mirrors the mcp
+    # group above).
+    dashboard = sub.add_parser(
+        "dashboard",
+        help="Web dashboard for scan results (scan -> validate -> remediate). "
+        "Needs the [dashboard] extra + Postgres. See "
+        "``argus dashboard serve --help``.",
+    )
+    dash_sub = dashboard.add_subparsers(dest="dashboard_command", required=True)
+
+    _dash_serve = dash_sub.add_parser("serve", help="Run the dashboard web server (uvicorn).")
+    _dash_serve.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
+    _dash_serve.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000).")
+    _dash_serve.add_argument("--db-url", default=None, help="Postgres URL (else $ARGUS_DB_URL).")
+
+    _dash_initdb = dash_sub.add_parser("init-db", help="Create the dashboard tables (idempotent).")
+    _dash_initdb.add_argument("--db-url", default=None, help="Postgres URL (else $ARGUS_DB_URL).")
+
+    _dash_ingest = dash_sub.add_parser(
+        "ingest",
+        help="Load existing scan-result JSON (a .json file, a dir of *.json, "
+        "or a JSON array) into the dashboard DB.",
+    )
+    _dash_ingest.add_argument(
+        "path", type=Path, help="A .json file, a directory of *.json, or a JSON array."
+    )
+    _dash_ingest.add_argument("--db-url", default=None, help="Postgres URL (else $ARGUS_DB_URL).")
+
     return parser
 
 
@@ -1592,6 +1624,21 @@ async def _run_scan(args: argparse.Namespace) -> int:
         # display + sandbox staging path).
         host_path=str(file_path),
     )
+
+    # Dashboard persistence (optional). When ARGUS_DB_URL is set, write the
+    # result to Postgres so it appears in `argus dashboard`. Best-effort and
+    # lazy-imported — a missing [dashboard] extra or a DB outage must never
+    # change the scan's outcome or exit code.
+    _db_url = os.environ.get("ARGUS_DB_URL")
+    if _db_url:
+        try:
+            from dashboard.persistence import persist_scan_result
+
+            await persist_scan_result(
+                result.to_dict(), _db_url, run_label=str(file_path), source="scan"
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"argus: dashboard persistence skipped — {type(exc).__name__}", file=sys.stderr)
 
     if args.output == "json":
         print(format_json(result))
@@ -2089,6 +2136,25 @@ async def _run_scan_repo(args: argparse.Namespace) -> int:
         progress_cb=_progress,
     )
 
+    # Dashboard persistence (optional) — one run_id groups this invocation's
+    # files. Best-effort; never fails the scan (see _run_scan).
+    _db_url = os.environ.get("ARGUS_DB_URL")
+    if _db_url and report.results:
+        try:
+            import uuid as _uuid
+
+            from dashboard.persistence import persist_many
+
+            await persist_many(
+                [r.to_dict() for r in report.results],
+                _db_url,
+                run_id=_uuid.uuid4().hex,
+                run_label=str(root),
+                source="scan",
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"argus: dashboard persistence skipped — {type(exc).__name__}", file=sys.stderr)
+
     print(file=sys.stderr, flush=True)
     print(
         f"=== done: {len(report.results)} scanned, "
@@ -2568,6 +2634,16 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.command == "dashboard":
+        # Web dashboard (v1.13). Handlers + heavy deps live in dashboard.cli;
+        # lazy-import so the base CLI never loads fastapi/sqlalchemy. The
+        # dashboard package itself is always present (it's in the wheel), so
+        # run_dashboard does its own [dashboard]-extra availability check and
+        # prints an install hint. _load_argus_env() exposes ARGUS_DB_URL.
+        _load_argus_env()
+        from dashboard.cli import run_dashboard
+
+        return run_dashboard(args)
     return 1
 
 

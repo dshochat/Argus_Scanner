@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-surface-0 text-slate-200 antialiased;
+}
+
+::selection {
+  background: rgba(110, 168, 254, 0.3);
+}
+
+/* Slim, dark scrollbars to match the console aesthetic. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a3550 transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2a3550;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-surface-1 shadow-card;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset;
+  }
+  .stage-rail {
+    @apply absolute left-[19px] top-8 bottom-0 w-px bg-line;
+  }
+}

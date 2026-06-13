@@ -1,0 +1,27 @@
+# Convenience Postgres for the Argus dashboard. Not required in production —
+# point ARGUS_DB_URL at any Postgres you like.
+#
+#   docker compose -f dashboard/docker-compose.yml up -d
+#   export ARGUS_DB_URL=postgresql://argus:argus@localhost:5432/argus
+#   argus dashboard init-db
+#   argus dashboard serve         # http://127.0.0.1:8000
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: argus-dashboard-db
+    environment:
+      POSTGRES_USER: argus
+      POSTGRES_PASSWORD: argus
+      POSTGRES_DB: argus
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - argus_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argus"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  argus_pgdata:

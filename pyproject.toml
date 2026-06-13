@@ -84,6 +84,16 @@ mcp = [
     "mcp>=1.0.0",
 ]
 
+# Web dashboard (v1.13). Self-hosted UI over Postgres that visualizes the
+# scan -> validate -> remediate flow per file. Optional so the base scanner
+# stays DB-free. Install: pip install argus-ai-scanner[dashboard]
+dashboard = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.29.0",
+]
+
 [project.scripts]
 argus = "scanner.cli:main"
 
@@ -122,6 +132,11 @@ ignore = [
     "E402",
 ]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Depends()/Query() in argument defaults is the framework's
+# documented dependency-injection idiom, not a mutable-default bug (B008).
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
+
 [tool.mypy]
 strict = true
 python_version = "3.12"
@@ -134,6 +149,7 @@ build-backend = "hatchling.build"
 packages = [
     "adjudicator",
     "analysis",
+    "dashboard",
     "dast",
     "inference",
     "mcp_scanner",
@@ -143,11 +159,23 @@ packages = [
     "scanner",
     "shared",
 ]
+# The frontend SOURCE is never shipped in the wheel (only the compiled SPA).
+exclude = [
+    "dashboard/frontend/**",
+    "dashboard/**/node_modules/**",
+]
+
+# Force-include the compiled SPA. `force-include` is one of the only keys
+# that overrides hatch's default VCS/gitignore-based exclusion, so the
+# built assets ship even if a future .gitignore rule covers them.
+[tool.hatch.build.targets.wheel.force-include]
+"dashboard/server/static" = "dashboard/server/static"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "/adjudicator",
     "/analysis",
+    "/dashboard",
     "/dast",
     "/inference",
     "/mcp_scanner",

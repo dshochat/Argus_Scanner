@@ -214,6 +214,40 @@ argus mcp scan --url https://mcp.example.com/mcp --authorized   # remote (consen
 
 Full reference: `argus scan --help`, `argus scan-repo --help`, `argus install --help`, `argus mcp enumerate --help`.
 
+## Web dashboard
+
+A self-hosted dashboard visualizes the **scan → validate → remediate** flow per
+file — for developers (the code + fixes), security engineers (the exploit
+evidence), and management (how many findings are real, how many were auto-fixed
+and verified). React + FastAPI + Postgres, shipped **pre-built in the wheel** so
+running it needs no Node.
+
+```bash
+pip install "argus-ai-scanner[dashboard]"
+
+# 1. A Postgres to store results (or point ARGUS_DB_URL at your own)
+docker compose -f dashboard/docker-compose.yml up -d
+export ARGUS_DB_URL=postgresql://argus:argus@localhost:5432/argus
+
+# 2. Create the schema (idempotent)
+argus dashboard init-db
+
+# 3a. Scans auto-persist whenever ARGUS_DB_URL is set
+argus scan path/to/file.py
+# 3b. …or back-fill existing JSON output (a file, a dir of *.json, or an array)
+argus dashboard ingest ./results/
+
+# 4. Open it
+argus dashboard serve            # http://127.0.0.1:8000
+```
+
+Overview KPIs + charts, a filterable scans list, and a per-file detail that
+walks the three stages: SAST findings → DAST sandbox validation
+(CONFIRMED / BLOCKED / …) → verified remediation (functional gate, blocked
+adversarial variants, HIGH / MEDIUM / FAILED confidence). No auth — it binds to
+localhost; front it with your own proxy if you expose it. See
+[docs/dashboard.md](docs/dashboard.md).
+
 ## Documentation
 
 | Topic | Page |
@@ -221,6 +255,7 @@ Full reference: `argus scan --help`, `argus scan-repo --help`, `argus install --
 | Install + first scan | [docs/install.md](docs/install.md) |
 | MCP server scanning | [docs/mcp.md](docs/mcp.md) |
 | DAST sandbox setup (self-hosted gVisor / Fly.io) | [docs/dast-setup.md](docs/dast-setup.md) |
+| Web dashboard | [docs/dashboard.md](docs/dashboard.md) |
 | Architecture deep dive | [docs/architecture.md](docs/architecture.md) |
 | Cost guide | [docs/cost-guide.md](docs/cost-guide.md) |
 | API key sourcing | [docs/api-keys.md](docs/api-keys.md) |
