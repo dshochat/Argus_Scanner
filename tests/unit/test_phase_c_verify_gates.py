@@ -1,6 +1,7 @@
 """Unit tests for the Phase C verified-remediation gates (Stage 2+3):
 LLM generation (stubbed), deterministic oracle matching, and the live
 execute_gates → verify_patch wiring with a stubbed sandbox."""
+
 from __future__ import annotations
 
 import asyncio
@@ -18,8 +19,10 @@ from dast.phase_c_verify_gates import (
     GatePlans,
     GateVariant,
     _json_loads_safe,
+    build_adversarial_prompt,
     build_rebinding_variant,
     derive_entrypoint,
+    detect_variant_class,
     execute_gates,
     oracle_in_trace,
     prepare_gate_plans,
@@ -31,14 +34,13 @@ from dast.remediation_verify import (
     verify_budget_for,
 )
 
-
 # ── JSON parsing ─────────────────────────────────────────────────────
 
 
 def test_json_loads_safe_plain_and_fenced_and_garbage() -> None:
     assert _json_loads_safe('{"a": 1}') == {"a": 1}
     assert _json_loads_safe('```json\n{"a": 2}\n```') == {"a": 2}
-    assert _json_loads_safe("here you go: {\"a\": 3} thanks") == {"a": 3}
+    assert _json_loads_safe('here you go: {"a": 3} thanks') == {"a": 3}
     assert _json_loads_safe("not json at all") == {}
     assert _json_loads_safe("") == {}
     assert _json_loads_safe("[1,2,3]") == {}  # top-level must be an object
@@ -125,12 +127,7 @@ def test_prepare_gate_plans_generates_functional_and_variants() -> None:
 
 
 def test_derive_entrypoint_skips_helpers() -> None:
-    src = (
-        "import socket\n"
-        "def _is_safe_host(h): ...\n"
-        "def _validate(u): ...\n"
-        "def load_media_from_url(url): ...\n"
-    )
+    src = "import socket\ndef _is_safe_host(h): ...\ndef _validate(u): ...\ndef load_media_from_url(url): ...\n"
     assert derive_entrypoint(src) == "load_media_from_url"
     assert derive_entrypoint("x = 1\n") is None
 
@@ -145,8 +142,8 @@ def test_build_rebinding_variant_harness_has_flip_logic() -> None:
     b64 = cmd.split("b64decode('")[1].split("')")[0]
     script = base64.b64decode(b64).decode()
     assert "socket.getaddrinfo = _flip" in script
-    assert REBIND_PUBLIC_IP in script          # 1st lookup → public
-    assert "'127.0.0.1'" in script             # later lookups → internal
+    assert REBIND_PUBLIC_IP in script  # 1st lookup → public
+    assert "'127.0.0.1'" in script  # later lookups → internal
     assert "_demo_media_loader" in script and "load_media_from_url" in script
     assert REACH_ORACLE in script and BLOCK_MARKER in script
 
@@ -165,15 +162,15 @@ def test_rebinding_flip_discriminates_toctou_from_pinned() -> None:
 
     # TOCTOU: validate(resolve) passes on public, then fetch re-resolves.
     checked = resolve()
-    assert checked == REBIND_PUBLIC_IP          # check sees a safe public IP
-    toctou_dialled = resolve()                  # HTTP client re-resolves
-    assert toctou_dialled == "127.0.0.1"        # → hits the capture server → FIRES
+    assert checked == REBIND_PUBLIC_IP  # check sees a safe public IP
+    toctou_dialled = resolve()  # HTTP client re-resolves
+    assert toctou_dialled == "127.0.0.1"  # → hits the capture server → FIRES
 
     # Pinned: the connect target IS the IP we validated (no 2nd resolve).
     state["n"] = 0
     pinned_checked = resolve()
-    pinned_dialled = pinned_checked             # reuse the checked IP
-    assert pinned_dialled == REBIND_PUBLIC_IP   # → unroutable in-sandbox → BLOCKED
+    pinned_dialled = pinned_checked  # reuse the checked IP
+    assert pinned_dialled == REBIND_PUBLIC_IP  # → unroutable in-sandbox → BLOCKED
 
 
 def test_prepare_prepends_rebinding_only_for_ssrf() -> None:
@@ -181,19 +178,26 @@ def test_prepare_prepends_rebinding_only_for_ssrf() -> None:
 
     async def _inf(prompt, opts, schema):  # variants generation returns 2
         if "Stage 2 (functional" in prompt:
-            return {"text": '{"description":"b","benign_url":"https://e/x","commands":["c"]}',
-                    "usage": {}}
-        return {"text": '{"variants":[{"description":"d","payload":"p","commands":["c"]},'
-                '{"description":"e","payload":"q","commands":["c"]}]}', "usage": {}}
+            return {"text": '{"description":"b","benign_url":"https://e/x","commands":["c"]}', "usage": {}}
+        return {
+            "text": '{"variants":[{"description":"d","payload":"p","commands":["c"]},'
+            '{"description":"e","payload":"q","commands":["c"]}]}',
+            "usage": {},
+        }
 
     common = dict(
-        inference=_inf, file_name="_demo_media_loader.py",
-        confirmed_findings=[{"cwe": "CWE-918"}], original_source=src,
-        patched_source=src, seed_commands=["c"], seed_payload="", budget=verify_budget_for("high"),
+        inference=_inf,
+        file_name="_demo_media_loader.py",
+        confirmed_findings=[{"cwe": "CWE-918"}],
+        original_source=src,
+        patched_source=src,
+        seed_commands=["c"],
+        seed_payload="",
+        budget=verify_budget_for("high"),
     )
     ssrf = asyncio.run(prepare_gate_plans(**common, ssrf_class=True))
     assert "rebind" in ssrf.variants[0].description.lower()  # prepended first
-    assert len(ssrf.variants) == 3                            # rebinding + 2 LLM
+    assert len(ssrf.variants) == 3  # rebinding + 2 LLM
     non = asyncio.run(prepare_gate_plans(**common, ssrf_class=False))
     assert all("rebind" not in v.description.lower() for v in non.variants)
     assert len(non.variants) == 2
@@ -241,8 +245,7 @@ def _submit_classifier(rules: dict[str, str]):
 
 def _plans(n_variants: int, functional: bool = True) -> GatePlans:
     variants = [
-        GateVariant(description=f"v{i}", payload=f"http://variant{i}/", commands=["c"])
-        for i in range(n_variants)
+        GateVariant(description=f"v{i}", payload=f"http://variant{i}/", commands=["c"]) for i in range(n_variants)
     ]
     func = (
         FunctionalProbe(description="benign", benign_url="https://example.com/ok", commands=["c"])
@@ -355,3 +358,56 @@ def test_execute_gates_ambiguous_functional_marker_is_unknown() -> None:
     outcome, details = _exec(plans, submit)
     assert details["functional"]["ok"] is None
     assert outcome.confidence == CONFIDENCE_MEDIUM  # variants clean, functional unknown
+
+
+# ── class-dispatched adversarial gate (beyond SSRF) ──────────────────
+
+
+def test_detect_variant_class_by_cwe() -> None:
+    assert detect_variant_class([{"cwe": "CWE-918"}]) == "ssrf"
+    assert detect_variant_class([{"cwe": "CWE-78"}]) == "command_injection"
+    assert detect_variant_class([{"cwe": "CWE-89"}]) == "sqli"
+    assert detect_variant_class([{"cwe": "CWE-79"}]) == "xss"
+    assert detect_variant_class([{"cwe": "CWE-611"}]) == "xxe"
+    assert detect_variant_class([{"cwe": "CWE-22"}]) == "path_traversal"
+    assert detect_variant_class([{"cwe": "CWE-502"}]) == "deserialization"
+    assert detect_variant_class([{"cwe": "CWE-1336"}]) == "ssti"
+
+
+def test_detect_variant_class_by_keyword_and_fallback() -> None:
+    assert detect_variant_class([{"type": "reflected cross-site scripting"}]) == "xss"
+    assert detect_variant_class([{"description": "SQL injection in query"}]) == "sqli"
+    assert detect_variant_class([{"type": "os command injection"}]) == "command_injection"
+    # CWE wins over a misleading keyword.
+    assert detect_variant_class([{"cwe": "CWE-89", "type": "ssrf-ish"}]) == "sqli"
+    # No signal → generic.
+    assert detect_variant_class([{"type": "mystery"}]) == "generic"
+
+
+def test_adversarial_prompt_dispatches_per_class() -> None:
+    def _p(findings: list[dict[str, Any]]) -> str:
+        return build_adversarial_prompt(
+            file_name="f.py",
+            confirmed_findings=findings,
+            original_source="orig",
+            patched_source="patched",
+            seed_commands=["python3 -c 'pass'"],
+            seed_payload="seed",
+            n=3,
+        )
+
+    sqli = _p([{"cwe": "CWE-89"}])
+    assert "class `sqli`" in sqli
+    assert "in-memory SQLite" in sqli
+    assert "169.254.169.254" not in sqli  # NOT the SSRF menu
+
+    ssti = _p([{"cwe": "CWE-1336"}])
+    assert "class `ssti`" in ssti
+    assert "{{7*7}}" in ssti
+
+    ssrf = _p([{"cwe": "CWE-918"}])
+    assert "class `ssrf`" in ssrf
+    assert "169.254.169.254" in ssrf  # SSRF menu still intact
+
+    generic = _p([{"type": "mystery"}])
+    assert "class `generic`" in generic

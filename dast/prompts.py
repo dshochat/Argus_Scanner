@@ -2224,7 +2224,7 @@ def phase_b_runtime_probe_schema() -> dict[str, Any]:
                                             "class's __init__ has non-"
                                             "default kwargs. Example for "
                                             "IdentityTokenFile: "
-                                            "'{\"path\": \"/tmp/token\"}'."
+                                            '\'{"path": "/tmp/token"}\'.'
                                         ),
                                     },
                                 },
@@ -2343,8 +2343,7 @@ def phase_b_refinement_schema() -> dict[str, Any]:
                             "type": "string",
                             "maxLength": 1500,
                             "description": (
-                                "Which previous failure mode this input "
-                                "addresses, and why this shape might bypass it."
+                                "Which previous failure mode this input addresses, and why this shape might bypass it."
                             ),
                         },
                     },
@@ -2381,9 +2380,7 @@ def build_phase_b_refinement_prompt(
     """
     from dast.runtime_probe import MAX_REFINEMENT_ATTEMPTS  # noqa: PLC0415
 
-    body = _PHASE_B_REFINEMENT_BODY.replace(
-        "{MAX_REFINEMENT_ATTEMPTS}", str(MAX_REFINEMENT_ATTEMPTS)
-    )
+    body = _PHASE_B_REFINEMENT_BODY.replace("{MAX_REFINEMENT_ATTEMPTS}", str(MAX_REFINEMENT_ATTEMPTS))
 
     attempts_section = "\n".join(
         f"  Attempt {i + 1}:\n"
@@ -2730,6 +2727,32 @@ REQUIREMENTS:
    * Path traversal: resolve to a real absolute path, confirm it's inside
      an allowed base dir; reject `..`, symlinks, NUL bytes.
    * Deserialization: replace pickle/yaml.load/eval with safe loaders.
+   * SQL injection: use parameterized queries / prepared statements (bind
+     params), never string-format/concatenate input into SQL. Identifiers
+     that can't be bound (table/column names) → validate against a fixed
+     allowlist, don't interpolate raw.
+   * XSS: encode output for its EXACT sink context (HTML body / attribute /
+     JS / URL) at render time — not a blanket strip. If the value must
+     carry markup, run it through a sanitizer allowlist (bleach / DOMPurify).
+     Never reflect raw input into a page or `innerHTML`.
+   * XXE: disable external entities AND DTD processing on the parser —
+     Python `defusedxml` (or lxml `resolve_entities=False, no_network=True`);
+     Java `setFeature("disallow-doctype-decl", true)`. Don't just filter the
+     payload string.
+   * SSTI (template injection): never render user input AS template source.
+     Use a logic-less / sandboxed engine with autoescaping and pass user
+     data as DATA (context variables), not concatenated into the template.
+   * Broken access control / IDOR: add an explicit SERVER-SIDE authorization
+     check that the current principal may access the requested object — not
+     just authentication. Deny by default; never trust a client-supplied
+     id / role / `is_admin` flag.
+   * Hardcoded secrets: remove the credential/key/token from source; load
+     from env or a secret store. Note in the fix that the leaked secret
+     must be ROTATED (the patch alone doesn't un-leak it).
+   * Weak crypto: replace MD5/SHA-1, DES/RC4, ECB mode, static/zero IVs, and
+     `random` for security with vetted primitives — SHA-256+, AES-GCM (fresh
+     random nonce), argon2/bcrypt for passwords, `secrets` for tokens. Never
+     hand-roll crypto.
 4. PRESERVE legitimate behavior. The patch is functionally re-tested with
    BENIGN inputs that MUST still succeed — do not over-restrict (e.g.
    don't drop a scheme/host the code legitimately needs). A patch that
@@ -2753,10 +2776,7 @@ def phase_c_fix_schema() -> dict[str, Any]:
         "properties": {
             "patched_source": {
                 "type": "string",
-                "description": (
-                    "Complete patched file content. Must be the FULL "
-                    "source of the file (not a diff)."
-                ),
+                "description": ("Complete patched file content. Must be the FULL source of the file (not a diff)."),
             },
             "fix_summary": {
                 "type": "string",
@@ -2764,9 +2784,7 @@ def phase_c_fix_schema() -> dict[str, Any]:
             },
             "per_finding_fixes": {
                 "type": "array",
-                "description": (
-                    "One entry per confirmed finding; describe the specific change applied."
-                ),
+                "description": ("One entry per confirmed finding; describe the specific change applied."),
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
@@ -3774,9 +3792,7 @@ def _format_behavioral_profile(profile: dict[str, Any]) -> str:
                     memory_exec_observed=bool(value.get("memory_exec_observed")),
                     privilege_op_observed=bool(value.get("privilege_op_observed")),
                     ptrace_observed=bool(value.get("ptrace_observed")),
-                    kernel_module_load_observed=bool(
-                        value.get("kernel_module_load_observed")
-                    ),
+                    kernel_module_load_observed=bool(value.get("kernel_module_load_observed")),
                     write_target_paths=list(value.get("write_target_paths") or []),
                     network_events=list(value.get("network_events") or []),
                     bpftrace_meta=dict(value.get("bpftrace_meta") or {}),
@@ -3921,8 +3937,7 @@ def build_phase_3_loop_hypothesis_batch_prompt(
     addendum_block = ""
     if adversarial_addendum.strip():
         addendum_block = (
-            f"\n\n=== FORCED RECONSIDERATION (PHASE B+ EVIDENCE EXISTS) ===\n"
-            f"{adversarial_addendum.strip()}\n"
+            f"\n\n=== FORCED RECONSIDERATION (PHASE B+ EVIDENCE EXISTS) ===\n{adversarial_addendum.strip()}\n"
         )
     payload = (
         f"\n\n=== SOURCE FILE ===\n"
@@ -4154,9 +4169,7 @@ def build_post_trace_judge_prompt(
         f"{hypothesis.get('exploit_proof_if_observed', '')}"
     )
     trace_block = _format_trace_for_judge(trace)
-    interp_block = (
-        f"oracle_type: {interpreter_oracle_type}\nruntime_evidence: {interpreter_runtime_evidence}"
-    )
+    interp_block = f"oracle_type: {interpreter_oracle_type}\nruntime_evidence: {interpreter_runtime_evidence}"
     payload = (
         f"\n\n=== HYPOTHESIS ===\n{hyp_block}\n\n"
         f"=== SANDBOX TRACE ===\n{trace_block}\n\n"
@@ -4246,9 +4259,7 @@ def phase_d_signature_schema() -> dict[str, Any]:
             },
             "cwe": {
                 "type": "string",
-                "description": (
-                    "CWE identifier (e.g. CWE-918). Empty when not known."
-                ),
+                "description": ("CWE identifier (e.g. CWE-918). Empty when not known."),
             },
             "source_shape": {
                 "type": "string",
@@ -4284,16 +4295,14 @@ def phase_d_signature_schema() -> dict[str, Any]:
             "sink_callee": {
                 "type": "string",
                 "description": (
-                    "Specific function/method name at the sink. e.g. "
-                    "'fetch', 'urlopen', 'subprocess.run'."
+                    "Specific function/method name at the sink. e.g. 'fetch', 'urlopen', 'subprocess.run'."
                 ),
             },
             "missing_guards": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Validation steps absent from the seed code path "
-                    "that, if present, would close the vulnerability."
+                    "Validation steps absent from the seed code path that, if present, would close the vulnerability."
                 ),
             },
         },
@@ -4391,9 +4400,7 @@ def phase_d_variant_judge_schema() -> dict[str, Any]:
                         "rationale": {
                             "type": "string",
                             "description": (
-                                "1-sentence reason for the score. "
-                                "Reference structural primitives from "
-                                "the signature."
+                                "1-sentence reason for the score. Reference structural primitives from the signature."
                             ),
                         },
                     },
@@ -4437,16 +4444,12 @@ def build_phase_d_variant_judge_prompt(
         are safe Python identifiers, sanitise every interpolated value
         against sentinel-close-tag forgery so a hypothetical
         misclassification can't escape the wrapper."""
-        return str(s or "").replace(
-            "</UNTRUSTED_SOURCE_CODE>", "&lt;/UNTRUSTED_SOURCE_CODE&gt;"
-        )
+        return str(s or "").replace("</UNTRUSTED_SOURCE_CODE>", "&lt;/UNTRUSTED_SOURCE_CODE&gt;")
 
     for i, c in enumerate(candidates):
         fn_name = _safe(c.get("function_name", "?"))
         line_no = _safe(str(c.get("line_number", "?")))
-        sink_callees = ", ".join(
-            _safe(s) for s in (c.get("sink_callees_observed") or [])
-        ) or "(none)"
+        sink_callees = ", ".join(_safe(s) for s in (c.get("sink_callees_observed") or [])) or "(none)"
         wrapped = wrap_untrusted_source(
             str(c.get("source_snippet") or "")[:1200],
             label=f"Candidate {i + 1}: {fn_name} (line {line_no})",

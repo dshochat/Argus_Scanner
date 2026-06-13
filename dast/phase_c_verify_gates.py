@@ -185,6 +185,142 @@ def _vuln_summary_text(confirmed_findings: list[dict[str, Any]]) -> str:
     return "\n".join(parts) or "- (no structured finding metadata)"
 
 
+# Class-dispatched adversarial technique + oracle menus. Each entry tells
+# the model (a) which novel same-class techniques to try and (b) how to
+# make the harness SELF-CLASSIFY for that class — print REACH_ORACLE iff
+# the class-specific malicious effect is OBSERVABLY achieved against the
+# patched code, else BLOCK_MARKER. Generalizes the gate beyond SSRF so the
+# "re-tested with novel variants" guarantee holds for every class.
+_VARIANT_CLASS_GUIDANCE: dict[str, str] = {
+    "ssrf": (
+        "Class SSRF. The sandbox resolves EVERY hostname to 127.0.0.1 and runs a\n"
+        "capture server, so a request that LEAVES the function 'reaches' an internal\n"
+        "host. Harness: print REACH_ORACLE if the call returns normally (request went\n"
+        "through), BLOCK_MARKER if it raises. Techniques the original did NOT use:\n"
+        "decimal IP (2130706433), hex/octal IP, IPv6 ([::1], [::ffff:127.0.0.1]),\n"
+        "cloud metadata (169.254.169.254), userinfo confusion\n"
+        "(http://ok.example@169.254.169.254/), trailing-dot/case/added-port hosts,\n"
+        "alternate schemes if the patch allowlists schemes."
+    ),
+    "command_injection": (
+        "Class command/code injection. Print REACH_ORACLE ONLY if your injected\n"
+        "command actually EXECUTED — make the payload cause an observable side effect\n"
+        "and verify it (e.g. inject `; echo ARGUS_VARIANT_REACHED`, `&& id`, or write\n"
+        "a marker file then check it exists), else BLOCK_MARKER. Techniques the\n"
+        "original did NOT use: alternate separators (; && | newline $() backticks),\n"
+        "argument injection, quoting/escaping bypass, env-var/wildcard tricks."
+    ),
+    "path_traversal": (
+        "Class path traversal / LFI. Print REACH_ORACLE if the variant reads a file\n"
+        "OUTSIDE the allowed base — target a known file and check the returned content\n"
+        "(e.g. 'root:x:0:0:' from /etc/passwd) — else BLOCK_MARKER. Techniques the\n"
+        "original did NOT use: encoded dots (%2e%2e, ..%2f), double-encoding, absolute\n"
+        "paths, NUL byte, leading-slash/normalization tricks, symlink."
+    ),
+    "sqli": (
+        "Class SQL injection. In the harness, set up an in-memory SQLite DB, seed a\n"
+        "row, then call the entrypoint with the variant. Print REACH_ORACLE if the\n"
+        "injection changes the query's result set (rows it shouldn't return / auth\n"
+        "bypass / UNION leak / SQL error revealing injection), else BLOCK_MARKER.\n"
+        "Techniques: boolean/UNION/stacked queries, comment styles (-- # /**/),\n"
+        "quote-escaping, numeric vs string context, ORDER BY/LIMIT injection."
+    ),
+    "xss": (
+        "Class XSS. The returned/rendered output string IS the oracle: print\n"
+        "REACH_ORACLE if your input survives into output in an EXECUTABLE form (raw\n"
+        "<script>, unescaped attribute/JS context, javascript:/data: URL), else\n"
+        "BLOCK_MARKER (properly encoded/sanitized). Techniques: attribute-context\n"
+        "breakout, event handlers (onerror=), javascript: URLs, SVG/<img> vectors,\n"
+        "encoding/case variation, mutation XSS."
+    ),
+    "xxe": (
+        "Class XXE. Build an XML payload with an external entity pointing at a local\n"
+        "file (or an OOB marker); print REACH_ORACLE if the entity RESOLVED (the file\n"
+        "content / marker appears in output), else BLOCK_MARKER. Techniques: SYSTEM\n"
+        "entity to a local file, parameter entities, nested entities, external DTD,\n"
+        "alternate encodings."
+    ),
+    "ssti": (
+        "Class server-side template injection. Print REACH_ORACLE if your template\n"
+        "expression is EVALUATED (payload {{7*7}} / ${7*7} / #{7*7} yields 49 in\n"
+        "output, or a sandbox-escape marker runs), else BLOCK_MARKER. Techniques:\n"
+        "engine-specific syntaxes, global/attribute access ({{config}}, __class__\n"
+        "chains), filter/format bypasses, alternate delimiters."
+    ),
+    "deserialization": (
+        "Class unsafe deserialization. Craft a payload whose deserialization triggers\n"
+        "an observable side effect (marker file / printed sentinel); print\n"
+        "REACH_ORACLE if it fired, else BLOCK_MARKER. Techniques: alternate gadget\n"
+        "chains, other formats the code still accepts (pickle/yaml/json+__reduce__),\n"
+        "nested payloads."
+    ),
+    "generic": (
+        "Print REACH_ORACLE if a NOVEL same-class exploit (a DIFFERENT technique or\n"
+        "encoding than the original) still achieves the malicious effect against the\n"
+        "patched code, else BLOCK_MARKER. Make the harness self-classify on an\n"
+        "OBSERVABLE effect specific to this vulnerability class (a marker file, leaked\n"
+        "content, an evaluated expression, an unexpected result), not just 'no\n"
+        "exception'."
+    ),
+}
+
+_VARIANT_CWE_TO_CLASS: dict[str, str] = {
+    "918": "ssrf",
+    "77": "command_injection",
+    "78": "command_injection",
+    "22": "path_traversal",
+    "23": "path_traversal",
+    "35": "path_traversal",
+    "89": "sqli",
+    "79": "xss",
+    "611": "xxe",
+    "502": "deserialization",
+    "94": "ssti",
+    "1336": "ssti",
+}
+
+_VARIANT_KEYWORD_TO_CLASS: tuple[tuple[str, str], ...] = (
+    ("ssrf", "ssrf"),
+    ("server-side request", "ssrf"),
+    ("command inject", "command_injection"),
+    ("os command", "command_injection"),
+    ("code inject", "command_injection"),
+    ("rce", "command_injection"),
+    ("path travers", "path_traversal"),
+    ("directory travers", "path_traversal"),
+    ("lfi", "path_traversal"),
+    ("arbitrary file read", "path_traversal"),
+    ("sql inject", "sqli"),
+    ("sqli", "sqli"),
+    ("xss", "xss"),
+    ("cross-site script", "xss"),
+    ("xxe", "xxe"),
+    ("xml external", "xxe"),
+    ("deserial", "deserialization"),
+    ("pickle", "deserialization"),
+    ("template inject", "ssti"),
+    ("ssti", "ssti"),
+)
+
+
+def detect_variant_class(findings: list[dict[str, Any]]) -> str:
+    """Best-effort vulnerability-class key from the confirmed findings —
+    CWE first (most reliable), then a type/description keyword scan. Drives
+    the class-specific adversarial technique menu. Falls back to 'generic'."""
+    for f in findings:
+        cwe = str(f.get("cwe") or "")
+        for num, cls in _VARIANT_CWE_TO_CLASS.items():
+            if f"CWE-{num}" in cwe or cwe.strip() == num:
+                return cls
+    blob = " ".join(
+        f"{f.get('type') or ''} {f.get('finding_type') or ''} {f.get('description') or ''}" for f in findings
+    ).lower()
+    for kw, cls in _VARIANT_KEYWORD_TO_CLASS:
+        if kw in blob:
+            return cls
+    return "generic"
+
+
 def build_adversarial_prompt(
     *,
     file_name: str,
@@ -203,6 +339,8 @@ def build_adversarial_prompt(
     127.0.0.1, so "reached the network" == "reached the capture server".
     """
     seed_cmd_block = "\n".join(seed_commands) if seed_commands else "(no seed harness available)"
+    vuln_class = detect_variant_class(confirmed_findings)
+    class_guidance = _VARIANT_CLASS_GUIDANCE.get(vuln_class, _VARIANT_CLASS_GUIDANCE["generic"])
     return f"""You are Argus's remediation verifier, Stage 3 (adversarial).
 
 A patch was generated for confirmed vulnerabilities in `{file_name}`. Your
@@ -233,17 +371,16 @@ entrypoint is invoked — keep the same import + call shape):
 {seed_cmd_block}
 ```
 
-RUNTIME ENVIRONMENT (critical):
-- The sandbox resolves EVERY hostname to 127.0.0.1 and runs a capture
-  server there. So any request your variant actually sends will "reach"
-  an internal host. A variant therefore tests: does the patch still let
-  the request leave the function?
-- For an SSRF-class bug, use techniques the original payload did NOT:
-  decimal IP (e.g. 2130706433), hex/octal IP, IPv6 (`[::1]`, `[::ffff:127.0.0.1]`),
-  cloud metadata (169.254.169.254), userinfo confusion
-  (`http://allowed.example@169.254.169.254/`), trailing-dot / case /
-  added-port host forms, and alternate schemes if the patch allowlists
-  schemes. Pick the {n} STRONGEST distinct techniques for THIS patch.
+RUNTIME ENVIRONMENT: the sandbox has NO real network egress — every
+hostname resolves to a local capture server, the filesystem is writable
+under /tmp and /workspace, and there is no live external service. Design
+each variant's oracle around an effect observable INSIDE that sandbox.
+
+ATTACK-CLASS PLAYBOOK — this patch is class `{vuln_class}`:
+{class_guidance}
+Pick the {n} STRONGEST distinct techniques for THIS patch. Each harness
+must print EXACTLY ONE of `{REACH_ORACLE}` (the novel exploit still works
+against the patched code) or `{BLOCK_MARKER}` (the patch blocked it).
 
 HARNESS CONTRACT for each variant (so we can classify deterministically):
 - A list of shell commands that import the module exactly as the seed

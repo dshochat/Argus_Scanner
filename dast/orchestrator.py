@@ -2110,6 +2110,7 @@ async def run_dast(
             attempt = 0
             prior_feedback: str | None = None
             phase_c_result = None
+            prior_patch: str | None = None
             while True:
                 # SCAN-007 — don't start (or retry) remediation once the
                 # per-file budget is spent. Remediation + its gates are the
@@ -2148,6 +2149,20 @@ async def run_dast(
                     total_in += phase_c_result.get("tokens_in", 0)
                     total_out += phase_c_result.get("tokens_out", 0)
                     total_sb += phase_c_result.get("n_replays", 0)
+                # Retry stuck-state guard: a regeneration byte-identical to
+                # the PRIOR attempt means the feedback isn't moving the model
+                # — stop retrying so we don't re-burn the full gate + token
+                # cost on the same patch. (The byte-identical check inside
+                # _run_phase_c_fix_verify only compares against the ORIGINAL
+                # source, not the previous attempt, so this is a distinct
+                # guard. Patch generation runs at temp=0/seed=0, so a
+                # non-moving model would otherwise loop to the retry cap.)
+                new_patch = (phase_c_result or {}).get("patched_source") or ""
+                if attempt > 0 and new_patch and new_patch == prior_patch:
+                    if isinstance(phase_c_result, dict):
+                        phase_c_result["retry_stuck"] = True
+                    break
+                prior_patch = new_patch
                 ver = (phase_c_result or {}).get("verification") or {}
                 max_retries = int((ver.get("budget") or {}).get("retries", 0) or 0)
                 if not (phase_c_result and phase_c_result.get("needs_retry") and attempt < max_retries):
@@ -3930,11 +3945,16 @@ def _build_gate_failure_evidence(outcome: Any, details: dict[str, Any]) -> str:
     fired = [v for v in (details.get("variants") or []) if v.get("result") == "FIRED"]
     if fired:
         lines = "; ".join(f"{v.get('description')}: {v.get('payload')}" for v in fired[:5])
+        # Class-agnostic guidance: the variant descriptions already name the
+        # technique that got through; tell the patcher to defeat the whole
+        # class, not the specific payloads. (Do NOT bake in an SSRF-only
+        # hint here — this feedback path serves every vuln class.)
         parts.append(
             f"BYPASS STILL WORKS: {len(fired)} same-class variant(s) reached the "
-            f"internal target against the PATCHED code — [{lines}]. Neutralize "
-            "these techniques (resolve-to-IP / canonicalize before validating), "
-            "not just the originally-reported payload."
+            f"target against the PATCHED code — [{lines}]. Defeat the underlying "
+            "technique for the WHOLE vulnerability class (validate/encode against "
+            "a positive model before the dangerous operation), not just the "
+            "originally-reported payload or these specific variants."
         )
     return "\n".join(parts)
 
