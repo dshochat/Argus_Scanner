@@ -938,8 +938,7 @@ def _apply_intent_cap(result: ScanResult) -> None:
     # carry CONFIRMED entries for them.
     if not has_confirmed_runtime:
         has_confirmed_runtime = any(
-            isinstance(f, dict)
-            and str(f.get("status") or "").upper() == "CONFIRMED"
+            isinstance(f, dict) and str(f.get("status") or "").upper() == "CONFIRMED"
             for f in (result.dast_findings or [])
         )
 
@@ -1019,9 +1018,7 @@ def _apply_finding_floor(result: ScanResult) -> None:
 
     inactive_statuses = {"REJECTED", "BLOCKED", "UNREACHED", "SUPPRESSED"}
     pfv = result.per_finding_validation or []
-    status_by_idx = {
-        i: str((p or {}).get("status") or "") for i, p in enumerate(pfv)
-    }
+    status_by_idx = {i: str((p or {}).get("status") or "") for i, p in enumerate(pfv)}
 
     severity_ranks = {"low": 1, "medium": 2, "high": 3, "critical": 4}
     max_active_sev = 0
@@ -1052,10 +1049,7 @@ def _apply_finding_floor(result: ScanResult) -> None:
     if new_verdict != original:
         result.final_verdict = new_verdict
         result.risk_score, result.risk_level = verdict_to_risk(new_verdict)
-        result.scan_path.append(
-            f"finding_floor:{original}->{new_verdict}:"
-            f"{n_active}_active_max_sev={max_active_sev}"
-        )
+        result.scan_path.append(f"finding_floor:{original}->{new_verdict}:{n_active}_active_max_sev={max_active_sev}")
 
 
 # ─── Helper: cost guardrail ──────────────────────────────────────────────────
@@ -1082,13 +1076,8 @@ def _check_cost_cap(
         return False
     if result.total_cost_usd <= cap:
         return False
-    result.scan_path.append(
-        f"cost_cap_exceeded_after:{stage_just_completed}({result.total_cost_usd:.4f}>{cap:.2f})"
-    )
-    result.error = (
-        f"cost_cap_exceeded: ${result.total_cost_usd:.4f} > "
-        f"${cap:.2f} after {stage_just_completed} stage"
-    )
+    result.scan_path.append(f"cost_cap_exceeded_after:{stage_just_completed}({result.total_cost_usd:.4f}>{cap:.2f})")
+    result.error = f"cost_cap_exceeded: ${result.total_cost_usd:.4f} > ${cap:.2f} after {stage_just_completed} stage"
     result.status = 402  # Payment Required — fits the semantics
     return True
 
@@ -1192,9 +1181,7 @@ async def scan_file(
 
     # ── Stage 2: high-stakes detection (informs cascade routing) ──────
     high_stakes, triggered_cats = is_high_stakes(pp, cfg.high_stakes_categories)
-    result.scan_path.append(
-        f"high_stakes={high_stakes}{(':' + ','.join(triggered_cats)) if triggered_cats else ''}"
-    )
+    result.scan_path.append(f"high_stakes={high_stakes}{(':' + ','.join(triggered_cats)) if triggered_cats else ''}")
 
     # ── Stage 3: triage ────────────────────────────────────────────────
     if triage_runner is None:
@@ -1235,9 +1222,7 @@ async def scan_file(
     if cfg.enable_triage_safety_net and high_stakes and classification != "HIGH":
         original = classification
         classification = "HIGH"
-        triage_reason = (
-            f"{triage_reason} [safety_net: {original}→HIGH triggered by {','.join(triggered_cats)}]"
-        )
+        triage_reason = f"{triage_reason} [safety_net: {original}→HIGH triggered by {','.join(triggered_cats)}]"
         result.scan_path.append(f"safety_net_override:{original}->HIGH")
 
     result.triage_classification = classification
@@ -1266,7 +1251,9 @@ async def scan_file(
     chosen_model_label: str = ""
 
     if classification == "LOW":
-        chosen_runner = sonnet_runner  # falls back to Sonnet if no separate Flash runner; production wires Gemini Flash here
+        chosen_runner = (
+            sonnet_runner  # falls back to Sonnet if no separate Flash runner; production wires Gemini Flash here
+        )
         chosen_model_label = "low_path"
     else:  # HIGH
         if high_stakes and opus_runner is not None:
@@ -1283,10 +1270,7 @@ async def scan_file(
     # runner for its split sibling. Falls through silently to combined
     # when no split runner is wired (older callers / tests) — preserves
     # back-compat for every code path that doesn't opt in.
-    if (
-        cfg.l1_split_enabled
-        and classification in cfg.l1_split_on_triage
-    ):
+    if cfg.l1_split_enabled and classification in cfg.l1_split_on_triage:
         if chosen_runner is opus_runner and opus_runner_split is not None:
             chosen_runner = opus_runner_split
             chosen_model_label = chosen_model_label.replace("opus", "opus_split")
@@ -1303,8 +1287,7 @@ async def scan_file(
     # attack-class hunters. Falls through to split (or combined) when
     # no hunter runner is wired.
     if (
-        cfg.l1_hunter_enabled
-        and classification in cfg.l1_split_on_triage  # same gate set as split
+        cfg.l1_hunter_enabled and classification in cfg.l1_split_on_triage  # same gate set as split
     ):
         if chosen_runner is opus_runner_split and opus_runner_hunter is not None:
             chosen_runner = opus_runner_hunter
@@ -1336,9 +1319,7 @@ async def scan_file(
         result.behavioral_profile = (analysis_out or {}).get("behavioral_profile", {})
         result.attack_chains = (analysis_out or {}).get("attack_chains", [])
         result.ai_tool_analysis = (analysis_out or {}).get("ai_tool_analysis", {})
-        result.file_intent_analysis = (analysis_out or {}).get(
-            "file_intent_analysis", {}
-        )  # v1.6 Fix #8a
+        result.file_intent_analysis = (analysis_out or {}).get("file_intent_analysis", {})  # v1.6 Fix #8a
         result.final_verdict = (analysis_out or {}).get("verdict_label", "suspicious")
         result.risk_score, result.risk_level = verdict_to_risk(result.final_verdict)
 
@@ -1448,7 +1429,7 @@ async def scan_file(
     if cfg.enable_undercall_backstop and result.final_verdict == "clean":
         _MEDIUM_PLUS = {"critical", "high", "medium"}
         backstop_threshold = cfg.undercall_backstop_min_confidence
-        for v in (result.vulnerabilities or []):
+        for v in result.vulnerabilities or []:
             if isinstance(v, dict):
                 raw_sev = (v.get("severity") or "").lower().strip()
                 raw_conf = v.get("confidence", 0)
@@ -1462,10 +1443,7 @@ async def scan_file(
             if raw_sev in _MEDIUM_PLUS and conf >= backstop_threshold:
                 result.final_verdict = "suspicious"
                 result.risk_score, result.risk_level = verdict_to_risk("suspicious")
-                result.scan_path.append(
-                    f"undercall_backstop:promoted_clean->suspicious"
-                    f"_on_{raw_sev}_finding"
-                )
+                result.scan_path.append(f"undercall_backstop:promoted_clean->suspicious_on_{raw_sev}_finding")
                 break
 
     # ── Stage 7: DAST verification ─────────────────────────────────────
@@ -1481,7 +1459,7 @@ async def scan_file(
     _finding_gate = False
     if cfg.dast_trigger_on_finding_confidence is not None:
         threshold = float(cfg.dast_trigger_on_finding_confidence)
-        for v in (result.vulnerabilities or []):
+        for v in result.vulnerabilities or []:
             # vulnerabilities come in as either Vulnerability
             # dataclass instances OR raw dicts (test stubs +
             # serialised cache hits). Handle both.
@@ -1496,11 +1474,7 @@ async def scan_file(
             if conf >= threshold:
                 _finding_gate = True
                 break
-    if (
-        cfg.enable_dast
-        and (_verdict_gate or _finding_gate)
-        and dast_runner is not None
-    ):
+    if cfg.enable_dast and (_verdict_gate or _finding_gate) and dast_runner is not None:
         if _finding_gate and not _verdict_gate:
             result.scan_path.append("dast_trigger:finding_confidence")
         try:
@@ -1523,6 +1497,12 @@ async def scan_file(
                 enable_per_scan_dep_install=cfg.enable_per_scan_dep_install,
                 enable_coverage_dedupe=cfg.enable_coverage_dedupe,
                 host_path=host_path,
+                # SCAN-007 — hand DAST the REMAINING per-file budget (the
+                # ceiling minus what triage/L1/escalation already spent) so
+                # it self-bounds mid-flight. The post-DAST _check_cost_cap
+                # below is the backstop; this stops the overspend happening
+                # inside the one monolithic DAST await in the first place.
+                max_cost_usd=max(0.0, cfg.max_cost_per_file_usd - result.total_cost_usd),
             )
             result.dast_attempted = True
             result.dast_findings = (dast_out or {}).get("validated_findings", [])
@@ -1564,9 +1544,7 @@ async def scan_file(
             from dast.per_finding import derive_per_finding_validation
 
             journal_records = (dast_out or {}).get("journal_records") or []
-            findings_validated_meta = (
-                (dast_out or {}).get("findings_validated_meta") or {}
-            )
+            findings_validated_meta = (dast_out or {}).get("findings_validated_meta") or {}
             result.per_finding_validation = [
                 pf.to_dict()
                 for pf in derive_per_finding_validation(
@@ -1614,20 +1592,14 @@ async def scan_file(
                 # Per-finding validation is built in the same order as
                 # result.vulnerabilities (see derive_per_finding_validation
                 # signature), so positional indexing is safe.
-                status_by_idx = {
-                    i: (pf or {}).get("status")
-                    for i, pf in enumerate(result.per_finding_validation)
-                }
+                status_by_idx = {i: (pf or {}).get("status") for i, pf in enumerate(result.per_finding_validation)}
                 result.vulnerabilities = [
-                    v
-                    for i, v in enumerate(result.vulnerabilities)
-                    if status_by_idx.get(i) not in refuted_statuses
+                    v for i, v in enumerate(result.vulnerabilities) if status_by_idx.get(i) not in refuted_statuses
                 ]
                 suppressed_count = pre_suppress_count - len(result.vulnerabilities)
                 if suppressed_count > 0:
                     result.scan_path.append(
-                        f"dast_required_policy:strict:"
-                        f"suppressed_{suppressed_count}_refuted_findings"
+                        f"dast_required_policy:strict:suppressed_{suppressed_count}_refuted_findings"
                     )
 
             # DAST-105 v2 (v1.1): adjudicate L1-vs-DAST verdict
@@ -1670,8 +1642,7 @@ async def scan_file(
                     # to attack), which is the mcp-server-fetch class of
                     # bug we want to keep escalated.
                     result.scan_path.append(
-                        f"dast_required_policy:strict:l1_verdict_preserved:"
-                        f"declined_downgrade_to_{dast_verdict}"
+                        f"dast_required_policy:strict:l1_verdict_preserved:declined_downgrade_to_{dast_verdict}"
                     )
                 else:
                     # DAST wants to downgrade. v1.2: severity-driven rule.
@@ -1722,15 +1693,9 @@ async def scan_file(
                         # CONFIRMED and NOT_TESTED both count as "uncertain"
                         # (could still be exploitable). Only BLOCKED/UNREACHED
                         # count as actually refuted — driving downgrade.
-                        uncertain = [
-                            pf for pf in pf_list if pf.get("status") in {"CONFIRMED", "NOT_TESTED"}
-                        ]
-                        confirmed_count = sum(
-                            1 for pf in pf_list if pf.get("status") == "CONFIRMED"
-                        )
-                        refuted_count = sum(
-                            1 for pf in pf_list if pf.get("status") in {"BLOCKED", "UNREACHED"}
-                        )
+                        uncertain = [pf for pf in pf_list if pf.get("status") in {"CONFIRMED", "NOT_TESTED"}]
+                        confirmed_count = sum(1 for pf in pf_list if pf.get("status") == "CONFIRMED")
+                        refuted_count = sum(1 for pf in pf_list if pf.get("status") in {"BLOCKED", "UNREACHED"})
 
                         SEV_RANK = {
                             "info": 0,
@@ -1743,10 +1708,7 @@ async def scan_file(
                         # If any uncertain finding could be critical, we
                         # cannot safely downgrade below L1.
                         max_uncertain_sev = max(
-                            (
-                                SEV_RANK.get(str(pf.get("severity", "")).lower(), 1)
-                                for pf in uncertain
-                            ),
+                            (SEV_RANK.get(str(pf.get("severity", "")).lower(), 1) for pf in uncertain),
                             default=-1,  # -1 = no uncertain findings
                         )
 
@@ -1756,14 +1718,8 @@ async def scan_file(
                             "malicious",
                             "critical_malicious",
                         )
-                        l1_idx = (
-                            VERDICT_ORDER.index(l1_verdict) if l1_verdict in VERDICT_ORDER else 2
-                        )
-                        dast_idx = (
-                            VERDICT_ORDER.index(dast_verdict)
-                            if dast_verdict in VERDICT_ORDER
-                            else l1_idx
-                        )
+                        l1_idx = VERDICT_ORDER.index(l1_verdict) if l1_verdict in VERDICT_ORDER else 2
+                        dast_idx = VERDICT_ORDER.index(dast_verdict) if dast_verdict in VERDICT_ORDER else l1_idx
 
                         if max_uncertain_sev >= 3:
                             # Critical confirmed/untested remains — refuse downgrade.
@@ -1790,14 +1746,10 @@ async def scan_file(
                         if new_idx < l1_idx:
                             result.final_verdict = new_verdict
                             result.risk_score, result.risk_level = verdict_to_risk(new_verdict)
-                            result.scan_path.append(
-                                f"dast_severity_downgrade:{l1_verdict}->{new_verdict}:{reason}"
-                            )
+                            result.scan_path.append(f"dast_severity_downgrade:{l1_verdict}->{new_verdict}:{reason}")
                         else:
                             # Severity rule kept us at L1 (no downgrade).
-                            result.scan_path.append(
-                                f"dast_keep_l1:{l1_verdict}_over_{dast_verdict}:{reason}"
-                            )
+                            result.scan_path.append(f"dast_keep_l1:{l1_verdict}_over_{dast_verdict}:{reason}")
             result.scan_path.append("dast_verification")
             result.model_calls.append(
                 {
@@ -1838,11 +1790,7 @@ async def scan_file(
     # Discovered findings are appended to ``result.dast_findings`` with
     # ``discovered_by="dast_discovery_v0"`` and ``status="CONFIRMED"``
     # (every emitted discovery is sandbox-validated by construction).
-    if (
-        cfg.enable_discovery
-        and result.final_verdict in cfg.discovery_trigger_verdicts
-        and dast_runner is not None
-    ):
+    if cfg.enable_discovery and result.final_verdict in cfg.discovery_trigger_verdicts and dast_runner is not None:
         try:
             from dast.discovery import run_discovery
             from dast.runner import _resolve_sandbox_client_for_engine
@@ -1862,9 +1810,7 @@ async def scan_file(
                 # so downstream consumers see a uniform shape.
                 for f in discovered:
                     result.dast_findings.append(f.to_dict())
-                result.scan_path.append(
-                    f"discovery:{len(discovered)}_findings_from_{len(traces)}_payloads"
-                )
+                result.scan_path.append(f"discovery:{len(discovered)}_findings_from_{len(traces)}_payloads")
                 result.model_calls.append(
                     {
                         "stage": "dast_discovery",

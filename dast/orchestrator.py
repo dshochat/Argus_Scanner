@@ -46,6 +46,29 @@ from .validator import HypothesisValidator
 MAX_ITERATIONS: int = 3
 TOKEN_CAP_PER_FILE: int = 1_000_000
 
+# SCAN-007 — in-flight DAST cost cap. ``run_dast`` self-bounds spend so a
+# single file's validation + remediation can't blow past the per-file
+# budget the engine passes in (``max_cost_usd`` = the per-file ceiling
+# minus what triage/L1 already spent). Without this, DAST is one
+# monolithic await and the engine's post-stage cost check can only abort
+# the REST of the scan AFTER the overspend already happened.
+#
+# The rates below are deliberately the OPUS tier (5/25), not the Sonnet
+# 3/15 the runner reports DAST cost on. A safety cap must never
+# UNDER-count: using the higher tier guarantees the in-flight estimate is
+# an upper bound, so run_dast stops AT OR BEFORE the real $ ceiling
+# regardless of the scan/reason tier mix (Phase C gates run on Opus).
+# Reported cost is unchanged — this estimate is only the stop trigger.
+_COST_CAP_IN_PER_M: float = 5.0
+_COST_CAP_OUT_PER_M: float = 25.0
+
+
+def _dast_cost_estimate_usd(tokens_in: int, tokens_out: int) -> float:
+    """Conservative (upper-bound) USD estimate of DAST spend so far, used
+    ONLY for the in-flight safety cap — not for reported cost."""
+    return (tokens_in * _COST_CAP_IN_PER_M + tokens_out * _COST_CAP_OUT_PER_M) / 1_000_000
+
+
 # One inference call returns this dict shape (matches our streaming
 # helper output): { text, usage{prompt_tokens, completion_tokens, ...},
 # finish_reason, ... }
@@ -280,13 +303,11 @@ def _python_antipattern_substrings(file_name: str) -> list[tuple[str, str]]:
         ),
         (
             f'python3 "/workspace/{basename}"',
-            f"flat-file Python execution (double-quoted form); use "
-            f"`import $MODULE_NAME` instead",
+            f"flat-file Python execution (double-quoted form); use `import $MODULE_NAME` instead",
         ),
         (
             f"python3 '/workspace/{basename}'",
-            f"flat-file Python execution (single-quoted form); use "
-            f"`import $MODULE_NAME` instead",
+            f"flat-file Python execution (single-quoted form); use `import $MODULE_NAME` instead",
         ),
     ]
 
@@ -314,13 +335,11 @@ def _js_ts_antipattern_substrings(file_name: str) -> list[tuple[str, str]]:
                 ),
                 (
                     f"{runner} /workspace/{basename}",
-                    f"flat-file {runner} execution (unquoted form); "
-                    f"use $ENTRY_REL_PATH",
+                    f"flat-file {runner} execution (unquoted form); use $ENTRY_REL_PATH",
                 ),
                 (
                     f"{runner} '/workspace/{basename}'",
-                    f"flat-file {runner} execution (single-quoted form); "
-                    f"use $ENTRY_REL_PATH",
+                    f"flat-file {runner} execution (single-quoted form); use $ENTRY_REL_PATH",
                 ),
             ]
         )
@@ -384,17 +403,11 @@ def _detect_planner_antipatterns(
     # `import unpickler` but NOT `import jsonpickle.unpickler` (the
     # dotted form is correct).
     bare_import_re = (
-        re.compile(rf"\bimport\s+{re.escape(basename_stem)}\b(?!\s*\.)")
-        if is_python_pkg and basename_stem
-        else None
+        re.compile(rf"\bimport\s+{re.escape(basename_stem)}\b(?!\s*\.)") if is_python_pkg and basename_stem else None
     )
 
     # pip install of the local pre-staged package.
-    pip_install_re = (
-        re.compile(rf"pip\s+install\b.*\b{re.escape(pkg_root)}\b")
-        if is_python_pkg and pkg_root
-        else None
-    )
+    pip_install_re = re.compile(rf"pip\s+install\b.*\b{re.escape(pkg_root)}\b") if is_python_pkg and pkg_root else None
 
     # npm install of the local pre-staged package. Conservative: only
     # fire if the entry's project_root has a package.json (heuristic via
@@ -403,9 +416,7 @@ def _detect_planner_antipatterns(
     if is_js_ts_subdir and entry_rel_path:
         first_seg = entry_rel_path.split("/", 1)[0]
         if first_seg:
-            npm_install_re = re.compile(
-                rf"npm\s+install\b.*\b{re.escape(first_seg)}\b"
-            )
+            npm_install_re = re.compile(rf"npm\s+install\b.*\b{re.escape(first_seg)}\b")
 
     for cmd in commands:
         if not isinstance(cmd, str) or not cmd:
@@ -434,8 +445,7 @@ def _detect_planner_antipatterns(
             )
         if npm_install_re is not None and npm_install_re.search(cmd):
             findings.append(
-                f"`npm install` of a pre-staged local package; use "
-                f"the file at /workspace/$ENTRY_REL_PATH directly"
+                f"`npm install` of a pre-staged local package; use the file at /workspace/$ENTRY_REL_PATH directly"
             )
 
     # Dedupe while preserving order.
@@ -486,31 +496,36 @@ def _build_planner_correction_appendix(
         lines.append("")
 
     if is_python_pkg:
-        lines.extend([
-            "Required template for Python package member"
-            f" ($MODULE_NAME = {module_name!r}, $ENTRY_REL_PATH = "
-            f"{entry_rel_path!r}):",
-            "",
-            "  python3 -c 'import sys; sys.path.insert(0, \"/workspace\"); "
-            f'import {module_name} as m; <your exploit code that uses m.xxx>\'',
-            "",
-        ])
+        lines.extend(
+            [
+                "Required template for Python package member"
+                f" ($MODULE_NAME = {module_name!r}, $ENTRY_REL_PATH = "
+                f"{entry_rel_path!r}):",
+                "",
+                '  python3 -c \'import sys; sys.path.insert(0, "/workspace"); '
+                f"import {module_name} as m; <your exploit code that uses m.xxx>'",
+                "",
+            ]
+        )
     if entry_rel_path and not is_python_pkg:
         # JS/TS subdir target
         runner = "tsx" if file_name.endswith((".ts", ".tsx")) else "node"
-        lines.extend([
-            f"Required template for JS/TS subdir target ($ENTRY_REL_PATH = "
-            f"{entry_rel_path!r}):",
-            "",
-            f"  cd /workspace && {runner} \"$ENTRY_REL_PATH\" <args...>",
-            "",
-        ])
-    lines.extend([
-        "Return the COMPLETE plan list (all plans, not just the corrected",
-        "ones). Use the same `hypothesis_id` for each plan as before so",
-        "the orchestrator can correlate.",
-        "═══════════════════════════════════════════════════════════════════",
-    ])
+        lines.extend(
+            [
+                f"Required template for JS/TS subdir target ($ENTRY_REL_PATH = {entry_rel_path!r}):",
+                "",
+                f'  cd /workspace && {runner} "$ENTRY_REL_PATH" <args...>',
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "Return the COMPLETE plan list (all plans, not just the corrected",
+            "ones). Use the same `hypothesis_id` for each plan as before so",
+            "the orchestrator can correlate.",
+            "═══════════════════════════════════════════════════════════════════",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -588,9 +603,7 @@ def _has_refutation_of_prior_confirmed(
         if not (isinstance(ev_ids, list) and ev_ids):
             continue
         hyp = hyp_index.get(cv.get("hypothesis_id", "")) or {}
-        fref = hyp.get("finding_ref") or (
-            (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
-        )
+        fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
         if fref and fref in prev_confirmed:
             return True
     return False
@@ -617,6 +630,7 @@ async def run_dast(
     enable_remediation_verify: bool = False,
     enable_per_scan_dep_install: bool = False,
     enable_coverage_dedupe: bool = True,
+    max_cost_usd: float | None = None,
 ) -> DastResult:
     """Run the DAST loop on one file.
 
@@ -630,9 +644,7 @@ async def run_dast(
     # call at end-of-run. Must be the pre-DAST floor (not the verdict
     # the cascade bumps to during DAST) so the resolver compares Phase 3
     # against L1, not against the DAST-bumped state.
-    initial_l1_verdict_label = str(
-        (l1_output.get("verdict") or {}).get("verdict_label", "suspicious")
-    )
+    initial_l1_verdict_label = str((l1_output.get("verdict") or {}).get("verdict_label", "suspicious"))
 
     file_id = file_record["file_id"]
     source_text = file_record["source_text"]
@@ -699,9 +711,7 @@ async def run_dast(
     from dast.coverage_tracker import CoverageTracker  # noqa: PLC0415
 
     coverage_tracker = CoverageTracker(enabled=enable_coverage_dedupe)
-    coverage_tracker.populate_from_l1_findings(
-        l1_output.get("hypotheses") or []
-    )
+    coverage_tracker.populate_from_l1_findings(l1_output.get("hypotheses") or [])
 
     # Phase 2b: max DAST verdict reached so far (NOT counting the
     # initial L1 verdict). Iters can only downgrade below this with
@@ -838,9 +848,7 @@ async def run_dast(
             # If the probe established a floor higher than the current
             # last_verdict, lift last_verdict to the floor so the
             # downstream verdict logic sees the probe-grounded evidence.
-            current_rank = _VERDICT_RANK.get(
-                str(last_verdict.get("verdict_label", "suspicious")), -1
-            )
+            current_rank = _VERDICT_RANK.get(str(last_verdict.get("verdict_label", "suspicious")), -1)
             if max_dast_verdict_rank > current_rank and max_dast_verdict_label:
                 last_verdict["verdict_label"] = max_dast_verdict_label
                 last_verdict["log_summary"] = (
@@ -908,9 +916,7 @@ async def run_dast(
                     phase=JournalPhase.PHASE_B_HYPOTHESIS,
                     claim_id="BP_ERROR",
                     verdict="rejected",
-                    rationale=(
-                        f"behavioral probe stage failed: {type(exc).__name__}: {str(exc)[:240]}"
-                    ),
+                    rationale=(f"behavioral probe stage failed: {type(exc).__name__}: {str(exc)[:240]}"),
                     evidence_refs=[],
                 )
             )
@@ -990,15 +996,10 @@ async def run_dast(
                 # exploit evidence in this file. Use findings_validated
                 # (CONFIRMED-only, post-v15.17) so UNREACHED diagnostics
                 # don't trigger spurious re-prompts.
-                and any(
-                    fid.startswith("HRP_") and not fid.startswith("HRP_AL_")
-                    for fid in findings_validated
-                )
+                and any(fid.startswith("HRP_") and not fid.startswith("HRP_AL_") for fid in findings_validated)
             ):
                 _b_plus_ids = [
-                    fid
-                    for fid in findings_validated
-                    if fid.startswith("HRP_") and not fid.startswith("HRP_AL_")
+                    fid for fid in findings_validated if fid.startswith("HRP_") and not fid.startswith("HRP_AL_")
                 ]
                 _b_plus_meta_lines = []
                 for _fid in _b_plus_ids[:6]:
@@ -1073,9 +1074,7 @@ async def run_dast(
             # refutations of its guesses are not reliable enough to
             # override an L1 'malicious' verdict. See the 23-file
             # measurement (commit fd5be0e) for the regression evidence.
-            callables_explored = int(
-                (runtime_behavioral_profile_dict or {}).get("callables_explored", 0) or 0
-            )
+            callables_explored = int((runtime_behavioral_profile_dict or {}).get("callables_explored", 0) or 0)
             # v15.8 (2026-05-20): surface the model's code_intent_analysis
             # from each turn so the scan JSON carries the rationale for
             # any hypotheses_total=0 outcome. Gap 2: shopify-api +
@@ -1155,9 +1154,7 @@ async def run_dast(
                     iter=1,
                     phase=JournalPhase.PHASE_B_HYPOTHESIS,
                     claim_id="HRP_AL_LOOP",
-                    verdict=(
-                        "confirmed" if loop_result.hypotheses_confirmed > 0 else "inconclusive"
-                    ),
+                    verdict=("confirmed" if loop_result.hypotheses_confirmed > 0 else "inconclusive"),
                     rationale=(
                         f"adversarial loop: {loop_result.hypotheses_total} "
                         f"hypotheses, {loop_result.hypotheses_confirmed} "
@@ -1178,9 +1175,7 @@ async def run_dast(
                     phase=JournalPhase.PHASE_B_HYPOTHESIS,
                     claim_id="HRP_AL_ERROR",
                     verdict="rejected",
-                    rationale=(
-                        f"adversarial loop stage failed: {type(exc).__name__}: {str(exc)[:240]}"
-                    ),
+                    rationale=(f"adversarial loop stage failed: {type(exc).__name__}: {str(exc)[:240]}"),
                     evidence_refs=[],
                 )
             )
@@ -1256,9 +1251,7 @@ async def run_dast(
                 if target_rank > max_dast_verdict_rank:
                     max_dast_verdict_rank = target_rank
                     max_dast_verdict_label = target_label
-            current_rank = _VERDICT_RANK.get(
-                str(last_verdict.get("verdict_label", "suspicious")), -1
-            )
+            current_rank = _VERDICT_RANK.get(str(last_verdict.get("verdict_label", "suspicious")), -1)
             if max_dast_verdict_rank > current_rank and max_dast_verdict_label:
                 last_verdict["verdict_label"] = max_dast_verdict_label
                 high_crit = [f for f in chain_findings if f.get("severity") in {"high", "critical"}]
@@ -1274,9 +1267,7 @@ async def run_dast(
                     phase=JournalPhase.PHASE_B_HYPOTHESIS,
                     claim_id="HRP_C_ERROR",
                     verdict="rejected",
-                    rationale=(
-                        f"runtime probe chain stage failed: {type(exc).__name__}: {str(exc)[:240]}"
-                    ),
+                    rationale=(f"runtime probe chain stage failed: {type(exc).__name__}: {str(exc)[:240]}"),
                     evidence_refs=[],
                 )
             )
@@ -1303,16 +1294,12 @@ async def run_dast(
 
         kept_hypotheses: list[dict] = []
         for hyp in pending_hypotheses:
-            attack_class = (
-                str(hyp.get("finding_type") or hyp.get("type") or "")
-            )
+            attack_class = str(hyp.get("finding_type") or hyp.get("type") or "")
             func_name = _extract_function_name(hyp)
             if not func_name or not attack_class:
                 kept_hypotheses.append(hyp)
                 continue
-            covered = coverage_tracker.is_covered(
-                function=func_name, attack_class=attack_class
-            )
+            covered = coverage_tracker.is_covered(function=func_name, attack_class=attack_class)
             if covered is None or covered.source == "l1":
                 # Not covered, OR covered only by L1 itself (which is
                 # what Phase A is supposed to verify) — process normally.
@@ -1401,11 +1388,7 @@ async def run_dast(
                         rationale=(
                             "Phase A plan tool_use response failed schema "
                             "validation after retry: "
-                            + (
-                                plan_resp.get("_schema_retry_error")
-                                or plan_resp.get("schema_error")
-                                or ""
-                            )
+                            + (plan_resp.get("_schema_retry_error") or plan_resp.get("schema_error") or "")
                         )[:300],
                         evidence_refs=[],
                     )
@@ -1476,11 +1459,7 @@ async def run_dast(
                     dast_prompts.phase_a_plan_schema(),
                 )
                 retry_obj = _parse_json_or_empty(retry_resp.get("text", ""))
-                retry_plans = (
-                    (retry_obj.get("plans") or [])
-                    if isinstance(retry_obj, dict)
-                    else []
-                )
+                retry_plans = (retry_obj.get("plans") or []) if isinstance(retry_obj, dict) else []
                 if retry_plans:
                     # Validate the corrected plans too; if STILL bad,
                     # accept anyway (one-shot retry; further retries
@@ -1508,12 +1487,8 @@ async def run_dast(
                         )
                     plans = retry_plans
                     # Track usage for cost accounting.
-                    st.phase_a_plan_in += (
-                        (retry_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
-                    )
-                    st.phase_a_plan_out += (
-                        (retry_resp.get("usage") or {}).get("completion_tokens", 0) or 0
-                    )
+                    st.phase_a_plan_in += (retry_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
+                    st.phase_a_plan_out += (retry_resp.get("usage") or {}).get("completion_tokens", 0) or 0
                 else:
                     logging.getLogger("argus.dast.orchestrator").warning(
                         "Phase A planner antipattern retry returned empty "
@@ -1525,8 +1500,7 @@ async def run_dast(
                 # back to the original (tainted) plans. They'll come
                 # back NOT_TESTED, but the rest of the iteration runs.
                 logging.getLogger("argus.dast.orchestrator").warning(
-                    "Phase A planner antipattern retry failed: %s; "
-                    "keeping original plans",
+                    "Phase A planner antipattern retry failed: %s; keeping original plans",
                     exc,
                 )
 
@@ -1590,9 +1564,7 @@ async def run_dast(
             # source_text if absent (defensive — should never trigger).
             from preprocessing.imports import runtime_packages_for_plan
 
-            _file_bytes = file_record.get("original_bytes") or source_text.encode(
-                "utf-8", errors="replace"
-            )
+            _file_bytes = file_record.get("original_bytes") or source_text.encode("utf-8", errors="replace")
             runtime_pkgs = runtime_packages_for_plan(
                 file_bytes=_file_bytes,
                 file_name=file_name,
@@ -1613,9 +1585,8 @@ async def run_dast(
             # get installed. Cuts the ModuleNotFoundError on transitive
             # dep failure mode that v15.6's excepthook caught.
             from preprocessing.imports import _detect_distribution_name_for_install  # noqa: PLC0415
-            _own_dist = _detect_distribution_name_for_install(
-                file_record.get("project_root", "") or ""
-            ) or ""
+
+            _own_dist = _detect_distribution_name_for_install(file_record.get("project_root", "") or "") or ""
             plan = SandboxPlan(
                 plan_id=f"i{it}-{hid}",
                 file_id=file_id,
@@ -1714,19 +1685,13 @@ async def run_dast(
                         rationale=(
                             "Phase A verdict tool_use response failed schema "
                             "validation after retry: "
-                            + (
-                                verdict_resp.get("_schema_retry_error")
-                                or verdict_resp.get("schema_error")
-                                or ""
-                            )
+                            + (verdict_resp.get("_schema_retry_error") or verdict_resp.get("schema_error") or "")
                         )[:300],
                         evidence_refs=[],
                     )
                 )
         verdict_obj = _parse_json_or_empty(verdict_resp.get("text", ""))
-        claim_verdicts = (
-            (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
-        )
+        claim_verdicts = (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
         cur = (verdict_obj.get("current_verdict") or {}) if isinstance(verdict_obj, dict) else {}
 
         prev_confirmed = set(prior_summary.confirmed_findings)
@@ -1744,9 +1709,7 @@ async def run_dast(
             hyp = hyp_index.get(hid) or {}
             # L1 hypotheses use ``finding_ref``; Phase B hypotheses use
             # ``upstream_chain.confirmed_finding_ref``. Try both.
-            fref = hyp.get("finding_ref") or (
-                (hyp.get("upstream_chain") or {}).get("confirmed_finding_ref")
-            )
+            fref = hyp.get("finding_ref") or ((hyp.get("upstream_chain") or {}).get("confirmed_finding_ref"))
             if fref:
                 evidence_refs.append(fref)
             evidence_refs.extend(ev_ids if isinstance(ev_ids, list) else [])
@@ -1787,9 +1750,7 @@ async def run_dast(
                 max_dast_verdict_rank >= 0
                 and new_rank < max_dast_verdict_rank
                 and max_dast_verdict_label is not None
-                and not _has_refutation_of_prior_confirmed(
-                    claim_verdicts, hyp_index, prev_confirmed
-                )
+                and not _has_refutation_of_prior_confirmed(claim_verdicts, hyp_index, prev_confirmed)
             ):
                 clamp_msg = (
                     f"[iter_erosion_guard] iter {it} model emitted "
@@ -1842,9 +1803,7 @@ async def run_dast(
         st.phase_b_out = (explore_resp.get("usage") or {}).get("completion_tokens", 0) or 0
         st.finish_reasons["explore"] = explore_resp.get("finish_reason") or "?"
         explore_obj = _parse_json_or_empty(explore_resp.get("text", ""))
-        new_hyps = (
-            (explore_obj.get("new_hypotheses") or []) if isinstance(explore_obj, dict) else []
-        )
+        new_hyps = (explore_obj.get("new_hypotheses") or []) if isinstance(explore_obj, dict) else []
         st.hypotheses_proposed = len(new_hyps)
 
         # Validator gate
@@ -1893,12 +1852,7 @@ async def run_dast(
             # path's aggregate cost cap.
             + st.phase_b_runtime_probe_in
         )
-        iter_out = (
-            st.phase_a_plan_out
-            + st.phase_a_verdict_out
-            + st.phase_b_out
-            + st.phase_b_runtime_probe_out
-        )
+        iter_out = st.phase_a_plan_out + st.phase_a_verdict_out + st.phase_b_out + st.phase_b_runtime_probe_out
         total_in += iter_in
         total_out += iter_out
         st.elapsed_s = round(time.time() - it_started, 2)
@@ -1906,6 +1860,12 @@ async def run_dast(
         # Token-cap check
         if total_in + total_out > TOKEN_CAP_PER_FILE:
             stop_reason = "token_cap"
+            break
+
+        # SCAN-007 in-flight cost cap — stop the validation loop once the
+        # (conservative) DAST spend estimate reaches the per-file budget.
+        if max_cost_usd is not None and _dast_cost_estimate_usd(total_in, total_out) >= max_cost_usd:
+            stop_reason = "cost_cap"
             break
 
         # Stop-condition checks for next iter (OR semantics per spec —
@@ -1996,11 +1956,7 @@ async def run_dast(
                         seed_plan=seed_plan,
                         inference=phase_3_inference or inference,
                         sandbox=sandbox,
-                        language=(
-                            "python"
-                            if file_name.lower().endswith((".py", ".pth"))
-                            else "unsupported"
-                        ),
+                        language=("python" if file_name.lower().endswith((".py", ".pth")) else "unsupported"),
                         # DAST-302 v1.1: pass project_root + entry_rel_path
                         # so Phase D builds the cross-file code graph.
                         # Both empty for single-file scans → Phase D falls
@@ -2015,10 +1971,7 @@ async def run_dast(
                             phase=JournalPhase.PHASE_B_HYPOTHESIS,
                             claim_id=f"PhaseD-{seed_ref}",
                             verdict="rejected",
-                            rationale=(
-                                f"Phase D variant analysis failed: "
-                                f"{type(exc).__name__}: {str(exc)[:200]}"
-                            ),
+                            rationale=(f"Phase D variant analysis failed: {type(exc).__name__}: {str(exc)[:200]}"),
                             evidence_refs=[],
                         )
                     )
@@ -2158,6 +2111,21 @@ async def run_dast(
             prior_feedback: str | None = None
             phase_c_result = None
             while True:
+                # SCAN-007 — don't start (or retry) remediation once the
+                # per-file budget is spent. Remediation + its gates are the
+                # most expensive part of DAST, so this guard is the main
+                # thing keeping a critical-severity file's verify+retry
+                # loop from blowing past the cost ceiling.
+                if max_cost_usd is not None and _dast_cost_estimate_usd(total_in, total_out) >= max_cost_usd:
+                    if phase_c_result is None:
+                        phase_c_result = {
+                            "attempted": False,
+                            "skipped_reason": "cost_cap",
+                            "note": (
+                                f"remediation skipped — DAST reached the ${max_cost_usd:.2f} per-file cost budget"
+                            ),
+                        }
+                    break
                 phase_c_result = await _run_phase_c_fix_verify(
                     file_record=file_record,
                     findings_validated=phase_c_findings,
@@ -2182,11 +2150,7 @@ async def run_dast(
                     total_sb += phase_c_result.get("n_replays", 0)
                 ver = (phase_c_result or {}).get("verification") or {}
                 max_retries = int((ver.get("budget") or {}).get("retries", 0) or 0)
-                if not (
-                    phase_c_result
-                    and phase_c_result.get("needs_retry")
-                    and attempt < max_retries
-                ):
+                if not (phase_c_result and phase_c_result.get("needs_retry") and attempt < max_retries):
                     break
                 prior_feedback = phase_c_result.get("failure_evidence") or None
                 attempt += 1
@@ -2248,9 +2212,7 @@ async def run_dast(
                     phase=JournalPhase.PHASE_B_HYPOTHESIS,
                     claim_id="DAST-304-ENTRY",
                     verdict="rejected",
-                    rationale=(
-                        f"DAST-304 multi-file patch failed: {type(exc).__name__}: {str(exc)[:200]}"
-                    ),
+                    rationale=(f"DAST-304 multi-file patch failed: {type(exc).__name__}: {str(exc)[:200]}"),
                     evidence_refs=[],
                 )
             )
@@ -2269,6 +2231,7 @@ async def run_dast(
         diagnostics={
             "max_iterations": MAX_ITERATIONS,
             "token_cap": TOKEN_CAP_PER_FILE,
+            "cost_cap_usd": max_cost_usd,
             # v1.9.1: coverage-dedupe telemetry. Surfaces:
             #   * n_entries / entries_by_source — how many
             #     (function, attack_class) pairs the tracker held
@@ -2415,9 +2378,7 @@ async def _run_phase_b_runtime_probe(
     probe_prompt = dast_prompts.build_phase_b_runtime_probe_prompt(
         file_text=source_text,
         l1_output=l1_output,
-        journal_summary=journal_summary.to_dict()
-        if hasattr(journal_summary, "to_dict")
-        else journal_summary,
+        journal_summary=journal_summary.to_dict() if hasattr(journal_summary, "to_dict") else journal_summary,
     )
     probe_resp = await inference(
         probe_prompt,
@@ -2430,9 +2391,7 @@ async def _run_phase_b_runtime_probe(
     # Without this, probe tokens leak out of cost accounting and the
     # aggregate cap can be silently exceeded.
     stats.phase_b_runtime_probe_in = (probe_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
-    stats.phase_b_runtime_probe_out = (probe_resp.get("usage") or {}).get(
-        "completion_tokens", 0
-    ) or 0
+    stats.phase_b_runtime_probe_out = (probe_resp.get("usage") or {}).get("completion_tokens", 0) or 0
     probe_obj = _parse_json_or_empty(probe_resp.get("text", ""))
     if not isinstance(probe_obj, dict):
         return []
@@ -2479,12 +2438,8 @@ async def _run_phase_b_runtime_probe(
                     # v15.18: constructor args for instance_method targets.
                     # Schema defaults to "[]"/"{}" so legacy candidates
                     # (no field emitted) fall back to no-arg constructor.
-                    instance_init_args_json=normalize_args_json(
-                        str(i.get("instance_init_args_json") or "[]")
-                    ),
-                    instance_init_kwargs_json=_normalize_kwargs_json(
-                        str(i.get("instance_init_kwargs_json") or "{}")
-                    ),
+                    instance_init_args_json=normalize_args_json(str(i.get("instance_init_args_json") or "[]")),
+                    instance_init_kwargs_json=_normalize_kwargs_json(str(i.get("instance_init_kwargs_json") or "{}")),
                 )
             )
         candidates.append(
@@ -2677,12 +2632,7 @@ async def _run_phase_b_runtime_probe(
                     enabled=enable_per_scan_dep_install,
                     project_root=file_record.get("project_root", "") or "",
                 )
-                _own_dist = (
-                    _detect_distribution_name_for_install(
-                        file_record.get("project_root", "") or ""
-                    )
-                    or ""
-                )
+                _own_dist = _detect_distribution_name_for_install(file_record.get("project_root", "") or "") or ""
                 plan = SandboxPlan(
                     plan_id=f"i{iter_num}-{hid}",
                     file_id=file_id,
@@ -2704,9 +2654,7 @@ async def _run_phase_b_runtime_probe(
                         "attack_class": cand.attack_class,
                     },
                 )
-                pending_probes.append(
-                    (c_idx, i_idx, m_idx, mutation_strategy, cand, probe_input, hid, plan)
-                )
+                pending_probes.append((c_idx, i_idx, m_idx, mutation_strategy, cand, probe_input, hid, plan))
 
     n_probes_run = len(pending_probes)
 
@@ -2827,14 +2775,9 @@ async def _run_phase_b_runtime_probe(
             # delivered (REFUTED rows = probes ran cleanly; UNREACHED
             # rows = imports still failing).
             _probe_status = "UNREACHED" if _is_infra_failure else "REFUTED"
-            _unreached_reason = (
-                "sandbox_import_failure"
-                if _is_infra_failure
-                else "clean_run_no_exploit_evidence"
-            )
+            _unreached_reason = "sandbox_import_failure" if _is_infra_failure else "clean_run_no_exploit_evidence"
             _explanation = (
-                f"Sandbox couldn't load the function-under-test "
-                f"({_exc_type}); the hypothesis was never tested."
+                f"Sandbox couldn't load the function-under-test ({_exc_type}); the hypothesis was never tested."
                 if _is_infra_failure
                 else (
                     f"Sandbox executed the function with attack input; "
@@ -2854,9 +2797,7 @@ async def _run_phase_b_runtime_probe(
                     "code_snippet": cand.function_name,
                     "explanation": _explanation,
                     "data_flow_trace": "",
-                    "proof_of_concept": (
-                        f"{cand.function_name}(*{probe_input.args_json})"
-                    ),
+                    "proof_of_concept": (f"{cand.function_name}(*{probe_input.args_json})"),
                     "confidence": 0.0,
                     "runtime_evidence": _rationale_text,
                     "mutation_strategy": mutation_strategy,
@@ -2907,11 +2848,13 @@ async def _run_phase_b_runtime_probe(
             _file_has_network_io,
             _NETWORK_IO_REQUIRED_ATTACK_CLASSES,
         )
+
         # Phase 2 (SCAN-017) — downstream-cap detector.
         from dast.downstream_cap import (  # noqa: PLC0415
             find_capping_for_function,
             find_downstream_caps,
         )
+
         # Phase 3 (SCAN-018) — sandbox-syscall sink observation.
         from dast.sink_observation import (  # noqa: PLC0415
             extract_syscall_observations_from_events,
@@ -2920,15 +2863,10 @@ async def _run_phase_b_runtime_probe(
 
         _file_bp = file_record.get("behavioral_profile") or {}
         _suppress_reason = ""
-        _purpose_match, _purpose_reason = _function_name_declares_purpose(
-            cand.function_name, finding.attack_class
-        )
+        _purpose_match, _purpose_reason = _function_name_declares_purpose(cand.function_name, finding.attack_class)
         if _purpose_match:
             _suppress_reason = f"purpose_aligned_return: {_purpose_reason}"
-        elif (
-            finding.attack_class in _NETWORK_IO_REQUIRED_ATTACK_CLASSES
-            and not _file_has_network_io(_file_bp)
-        ):
+        elif finding.attack_class in _NETWORK_IO_REQUIRED_ATTACK_CLASSES and not _file_has_network_io(_file_bp):
             _suppress_reason = (
                 f"no_network_io: attack_class={finding.attack_class} requires "
                 f"actual network dispatch, but file's behavioral_profile shows "
@@ -2978,18 +2916,14 @@ async def _run_phase_b_runtime_probe(
                 # actually executing the exploit. Fail-open on missing
                 # observations so kernel-feature regressions don't cause
                 # silent suppression of real findings.
-                _per_probe_obs = extract_syscall_observations_from_events(
-                    list(getattr(trace, "events", []) or [])
-                )
+                _per_probe_obs = extract_syscall_observations_from_events(list(getattr(trace, "events", []) or []))
                 _missing_sink = find_missing_expected_sink(
                     attack_class=finding.attack_class,
                     syscall_observations=_per_probe_obs,
                     args_json=probe_input.args_json,
                 )
                 if _missing_sink is not None:
-                    _suppress_reason = (
-                        f"expected_sink_not_observed: {_missing_sink.rationale}"
-                    )
+                    _suppress_reason = f"expected_sink_not_observed: {_missing_sink.rationale}"
 
         if _suppress_reason:
             evidence_ref = trace.events[0].event_id if trace.events else ""
@@ -3017,18 +2951,11 @@ async def _run_phase_b_runtime_probe(
                     "cwe": finding.cwe,
                     "line": None,
                     "code_snippet": cand.function_name,
-                    "explanation": (
-                        f"v15.25 SUPPRESSED: {_suppress_reason}"
-                    ),
+                    "explanation": (f"v15.25 SUPPRESSED: {_suppress_reason}"),
                     "data_flow_trace": "",
-                    "proof_of_concept": (
-                        f"{cand.function_name}(*{finding.test_input_args})"
-                    ),
+                    "proof_of_concept": (f"{cand.function_name}(*{finding.test_input_args})"),
                     "confidence": 0.0,
-                    "runtime_evidence": (
-                        f"[SUPPRESSED v15.25 — {_suppress_reason}] "
-                        f"{finding.runtime_evidence}"
-                    ),
+                    "runtime_evidence": (f"[SUPPRESSED v15.25 — {_suppress_reason}] {finding.runtime_evidence}"),
                     "mutation_strategy": mutation_strategy,
                     "status": "SUPPRESSED",
                     "unreached_reason": _suppress_reason.split(":")[0].strip(),
@@ -3064,9 +2991,7 @@ async def _run_phase_b_runtime_probe(
                 "code_snippet": cand.function_name,
                 "explanation": finding.description,
                 "data_flow_trace": (
-                    f"runtime probe via Phase B+ "
-                    f"(mutation={mutation_strategy}): "
-                    f"{finding.runtime_evidence}"
+                    f"runtime probe via Phase B+ (mutation={mutation_strategy}): {finding.runtime_evidence}"
                 ),
                 "proof_of_concept": (f"{cand.function_name}(*{finding.test_input_args})"),
                 "confidence": 1.0,
@@ -3228,8 +3153,7 @@ async def _run_phase_b_iterative_refinement(
                     claim_id=f"HRP_{c_idx}_REFINE_ERROR",
                     verdict="rejected",
                     rationale=(
-                        f"refinement inference failed for {cand.function_name}: "
-                        f"{type(exc).__name__}: {str(exc)[:200]}"
+                        f"refinement inference failed for {cand.function_name}: {type(exc).__name__}: {str(exc)[:200]}"
                     ),
                     evidence_refs=[],
                 )
@@ -3308,12 +3232,7 @@ async def _run_phase_b_iterative_refinement(
                 enabled=enable_per_scan_dep_install,
                 project_root=file_record.get("project_root", "") or "",
             )
-            _ref_own_dist = (
-                _detect_distribution_name_for_install(
-                    file_record.get("project_root", "") or ""
-                )
-                or ""
-            )
+            _ref_own_dist = _detect_distribution_name_for_install(file_record.get("project_root", "") or "") or ""
             plan = SandboxPlan(
                 plan_id=f"i{iter_num}-{hid}",
                 file_id=file_id,
@@ -3373,8 +3292,7 @@ async def _run_phase_b_iterative_refinement(
                     claim_id=hid,
                     verdict="rejected",
                     rationale=(
-                        f"refinement sandbox submit failed: "
-                        f"{type(submit_exc).__name__}: {str(submit_exc)[:200]}"
+                        f"refinement sandbox submit failed: {type(submit_exc).__name__}: {str(submit_exc)[:200]}"
                     ),
                     evidence_refs=[],
                 )
@@ -3444,10 +3362,7 @@ async def _run_phase_b_iterative_refinement(
                 "line": None,
                 "code_snippet": cand.function_name,
                 "explanation": finding.description,
-                "data_flow_trace": (
-                    f"runtime probe via Phase B+ "
-                    f"(refinement_idx={r_idx}): {finding.runtime_evidence}"
-                ),
+                "data_flow_trace": (f"runtime probe via Phase B+ (refinement_idx={r_idx}): {finding.runtime_evidence}"),
                 "proof_of_concept": (f"{cand.function_name}(*{finding.test_input_args})"),
                 "confidence": 1.0,
                 "runtime_evidence": finding.runtime_evidence,
@@ -3532,9 +3447,7 @@ async def _run_phase_b_runtime_probe_chains(
     chain_prompt = build_phase_b_chain_prompt(
         file_text=source_text,
         l1_output=l1_output,
-        journal_summary=journal_summary.to_dict()
-        if hasattr(journal_summary, "to_dict")
-        else journal_summary,
+        journal_summary=journal_summary.to_dict() if hasattr(journal_summary, "to_dict") else journal_summary,
     )
     try:
         chain_resp = await inference(
@@ -3657,12 +3570,7 @@ async def _run_phase_b_runtime_probe_chains(
             enabled=enable_per_scan_dep_install,
             project_root=file_record.get("project_root", "") or "",
         )
-        _ch_own_dist = (
-            _detect_distribution_name_for_install(
-                file_record.get("project_root", "") or ""
-            )
-            or ""
-        )
+        _ch_own_dist = _detect_distribution_name_for_install(file_record.get("project_root", "") or "") or ""
         plan = SandboxPlan(
             plan_id=f"i{iter_num}-{hid}",
             file_id=file_id,
@@ -3707,9 +3615,7 @@ async def _run_phase_b_runtime_probe_chains(
 
     # ── Step 3: chain trace interpretation ───────────────────────────────
     chain_findings: list[dict[str, Any]] = []
-    for (chain_idx, chain, hid, _plan), (trace, submit_exc) in zip(
-        pending_chain_plans, chain_results, strict=True
-    ):
+    for (chain_idx, chain, hid, _plan), (trace, submit_exc) in zip(pending_chain_plans, chain_results, strict=True):
         if submit_exc is not None:
             journal.append(
                 JournalRecord(
@@ -3717,10 +3623,7 @@ async def _run_phase_b_runtime_probe_chains(
                     phase=JournalPhase.PHASE_B_HYPOTHESIS,
                     claim_id=hid,
                     verdict="rejected",
-                    rationale=(
-                        f"chain sandbox submit failed: "
-                        f"{type(submit_exc).__name__}: {str(submit_exc)[:200]}"
-                    ),
+                    rationale=(f"chain sandbox submit failed: {type(submit_exc).__name__}: {str(submit_exc)[:200]}"),
                     evidence_refs=[],
                 )
             )
@@ -3740,11 +3643,7 @@ async def _run_phase_b_runtime_probe_chains(
         finding = interpret_probe_chain_trace(parsed_trace, chain, chain_idx=chain_idx)
         if finding is None:
             chain_summary = " -> ".join(s.function_name for s in chain.steps)
-            steps_summary_str = (
-                " | ".join(parsed_trace.steps_summary)
-                if parsed_trace.steps_summary
-                else "(no steps)"
-            )
+            steps_summary_str = " | ".join(parsed_trace.steps_summary) if parsed_trace.steps_summary else "(no steps)"
             journal.append(
                 JournalRecord(
                     iter=iter_num,
@@ -3789,9 +3688,7 @@ async def _run_phase_b_runtime_probe_chains(
                 "line": None,
                 "code_snippet": chain.steps[-1].function_name,
                 "explanation": finding.description,
-                "data_flow_trace": (
-                    f"runtime probe via Phase B+ chain ({chain_str}): {finding.runtime_evidence}"
-                ),
+                "data_flow_trace": (f"runtime probe via Phase B+ chain ({chain_str}): {finding.runtime_evidence}"),
                 "proof_of_concept": (f"{chain_str} starting with args={finding.chain_inputs_json}"),
                 # Phase 2 v1.0 confidence calibration. Surfaces oracle-specific
                 # FP risk into the finding so the adjudicator / report writer
@@ -3893,9 +3790,8 @@ async def _run_phase_3_behavioral_probe(
     # the corresponding fix at the Phase A plan-construction site
     # (line ~1465) for full rationale.
     from preprocessing.imports import _detect_distribution_name_for_install  # noqa: PLC0415
-    _own_dist = _detect_distribution_name_for_install(
-        file_record.get("project_root", "") or ""
-    ) or ""
+
+    _own_dist = _detect_distribution_name_for_install(file_record.get("project_root", "") or "") or ""
 
     plan = SandboxPlan(
         plan_id=f"i{iter_num}-{hid}",
@@ -3921,10 +3817,7 @@ async def _run_phase_3_behavioral_probe(
                 phase=JournalPhase.PHASE_B_HYPOTHESIS,
                 claim_id=hid,
                 verdict="rejected",
-                rationale=(
-                    f"behavioral probe sandbox submit failed: "
-                    f"{type(exc).__name__}: {str(exc)[:200]}"
-                ),
+                rationale=(f"behavioral probe sandbox submit failed: {type(exc).__name__}: {str(exc)[:200]}"),
                 evidence_refs=[],
             )
         )
@@ -3977,10 +3870,7 @@ async def _run_phase_3_behavioral_probe(
                 phase=JournalPhase.PHASE_B_HYPOTHESIS,
                 claim_id=hid,
                 verdict="inconclusive",
-                rationale=(
-                    f"syscall_observations merge failed: "
-                    f"{type(_merge_err).__name__}: {str(_merge_err)[:200]}"
-                ),
+                rationale=(f"syscall_observations merge failed: {type(_merge_err).__name__}: {str(_merge_err)[:200]}"),
                 evidence_refs=[],
             )
         )
@@ -4039,9 +3929,7 @@ def _build_gate_failure_evidence(outcome: Any, details: dict[str, Any]) -> str:
         )
     fired = [v for v in (details.get("variants") or []) if v.get("result") == "FIRED"]
     if fired:
-        lines = "; ".join(
-            f"{v.get('description')}: {v.get('payload')}" for v in fired[:5]
-        )
+        lines = "; ".join(f"{v.get('description')}: {v.get('payload')}" for v in fired[:5])
         parts.append(
             f"BYPASS STILL WORKS: {len(fired)} same-class variant(s) reached the "
             f"internal target against the PATCHED code — [{lines}]. Neutralize "
@@ -4104,11 +3992,7 @@ async def _run_phase_c_verify_gates(
             break
     if not seed_plan_dict:
         for p in iter1_plans or []:
-            if (
-                isinstance(p, dict)
-                and p.get("plan_status") == "executable"
-                and p.get("commands")
-            ):
+            if isinstance(p, dict) and p.get("plan_status") == "executable" and p.get("commands"):
                 seed_plan_dict = p
                 break
     seed_commands = [c for c in (seed_plan_dict.get("commands") or []) if isinstance(c, str)]
@@ -4120,8 +4004,7 @@ async def _run_phase_c_verify_gates(
     # SSRF-class findings get the deterministic DNS-rebinding (TOCTOU)
     # probe in addition to the LLM encoding variants.
     ssrf_class = any(
-        "918" in str(h.get("cwe") or "")
-        or "ssrf" in str(h.get("type") or h.get("cwe") or "").lower()
+        "918" in str(h.get("cwe") or "") or "ssrf" in str(h.get("type") or h.get("cwe") or "").lower()
         for h in confirmed
     )
 
@@ -4208,11 +4091,7 @@ async def _run_phase_c_verify_gates(
             "tokens_in": gate_plans.tokens_in,
             "tokens_out": gate_plans.tokens_out,
             "_needs_retry": outcome.needs_retry,
-            "_failure_evidence": (
-                _build_gate_failure_evidence(outcome, details)
-                if outcome.needs_retry
-                else ""
-            ),
+            "_failure_evidence": (_build_gate_failure_evidence(outcome, details) if outcome.needs_retry else ""),
         }
         return verification
     except Exception as exc:  # noqa: BLE001
@@ -4359,8 +4238,7 @@ async def _run_phase_c_fix_verify(
                     "finding_id": h.get("id") or h.get("finding_ref"),
                     "post_patch_status": "UNVERIFIABLE",
                     "rationale": (
-                        "Binary ML artifact — Argus declined to auto-patch. "
-                        "See fix_summary for remediation guidance."
+                        "Binary ML artifact — Argus declined to auto-patch. See fix_summary for remediation guidance."
                     ),
                 }
                 for h in confirmed
@@ -4565,11 +4443,7 @@ async def _run_phase_c_fix_verify(
         # NEUTRALIZED even if the Stage 2 zero-day still works against
         # the patched source.
         all_replay_plans: list[dict] = list(iter1_plans or [])
-        seen_hids = {
-            p.get("hypothesis_id")
-            for p in all_replay_plans
-            if isinstance(p, dict) and p.get("hypothesis_id")
-        }
+        seen_hids = {p.get("hypothesis_id") for p in all_replay_plans if isinstance(p, dict) and p.get("hypothesis_id")}
         for dp in dast_plans or []:
             if not isinstance(dp, dict):
                 continue
@@ -4690,14 +4564,8 @@ async def _run_phase_c_fix_verify(
     verdict_obj = _parse_json_or_empty(verdict_resp.get("text", ""))
     cur = (verdict_obj.get("current_verdict") or {}) if isinstance(verdict_obj, dict) else {}
     post_patch_verdict = cur.get("verdict_label", "unknown")
-    new_claim_verdicts = (
-        (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
-    )
-    new_v_by_hid = {
-        cv.get("hypothesis_id"): cv.get("verdict")
-        for cv in new_claim_verdicts
-        if isinstance(cv, dict)
-    }
+    new_claim_verdicts = (verdict_obj.get("claim_verdicts") or []) if isinstance(verdict_obj, dict) else []
+    new_v_by_hid = {cv.get("hypothesis_id"): cv.get("verdict") for cv in new_claim_verdicts if isinstance(cv, dict)}
 
     verdict_in = (verdict_resp.get("usage") or {}).get("prompt_tokens", 0) or 0
     verdict_out = (verdict_resp.get("usage") or {}).get("completion_tokens", 0) or 0
@@ -4736,9 +4604,7 @@ async def _run_phase_c_fix_verify(
         )
 
     n_neutralized = sum(1 for pf in per_finding if pf["post_patch_status"] == "NEUTRALIZED")
-    n_still_exploitable = sum(
-        1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE"
-    )
+    n_still_exploitable = sum(1 for pf in per_finding if pf["post_patch_status"] == "STILL_EXPLOITABLE")
 
     # ── Step 5 (v15) — verified-remediation gates (Stage 2 + Stage 3) ──
     # The original-PoC replay above only proves the REPORTED exploit no

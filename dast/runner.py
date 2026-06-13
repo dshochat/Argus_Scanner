@@ -258,6 +258,7 @@ def make_dast_runner(
         enable_per_scan_dep_install: bool = False,
         enable_coverage_dedupe: bool = True,
         host_path: str | None = None,
+        max_cost_usd: float | None = None,
     ) -> dict:
         text = content.decode("utf-8", errors="replace")
         file_id = (getattr(pp, "file_hash", None) if pp is not None else None) or filename
@@ -458,8 +459,7 @@ def make_dast_runner(
                     # so operators can diagnose unexpected resolver
                     # failures (permissions, race with rm -rf, etc).
                     logging.getLogger("argus.dast.runner").warning(
-                        "Phase D project_root resolution failed for "
-                        "%s: %s — falling back to same-file",
+                        "Phase D project_root resolution failed for %s: %s — falling back to same-file",
                         host_path,
                         exc,
                     )
@@ -484,11 +484,7 @@ def make_dast_runner(
         # precedence on overlap (they may have applied special
         # handling). Skip the entry file itself — already loaded via
         # file_content_map.
-        if (
-            enable_phase_d
-            and sibling_lang == "python"
-            and file_record["project_root"]
-        ):
+        if enable_phase_d and sibling_lang == "python" and file_record["project_root"]:
             from pathlib import Path as _Path_local  # noqa: PLC0415
 
             _stage_project_tree_for_phase_d(
@@ -527,6 +523,7 @@ def make_dast_runner(
             enable_remediation_verify=enable_remediation_verify,
             enable_per_scan_dep_install=enable_per_scan_dep_install,
             enable_coverage_dedupe=enable_coverage_dedupe,
+            max_cost_usd=max_cost_usd,
         )
         elapsed_ms = int((time.time() - t0) * 1000)
         return _dast_result_to_engine_dict(result, elapsed_ms)
@@ -623,8 +620,7 @@ def _stage_project_tree_for_phase_d(
         from dast.code_graph import enumerate_project_files  # noqa: PLC0415
     except ImportError as exc:
         runner_log.warning(
-            "Phase D project-tree staging: code_graph import failed: "
-            "%s — falling back to same-file variants only",
+            "Phase D project-tree staging: code_graph import failed: %s — falling back to same-file variants only",
             exc,
         )
         return
@@ -633,8 +629,7 @@ def _stage_project_tree_for_phase_d(
         project_files = enumerate_project_files(project_root)
     except Exception as exc:  # noqa: BLE001
         runner_log.warning(
-            "Phase D project-tree staging: enumeration failed under "
-            "%s: %s — falling back to same-file variants only",
+            "Phase D project-tree staging: enumeration failed under %s: %s — falling back to same-file variants only",
             project_root,
             exc,
         )
@@ -684,8 +679,7 @@ def _stage_project_tree_for_phase_d(
             data = abs_path.read_bytes()
         except OSError as exc:
             runner_log.warning(
-                "Phase D project-tree staging: failed to read %s: %s "
-                "— skipping this file, continuing with the rest",
+                "Phase D project-tree staging: failed to read %s: %s — skipping this file, continuing with the rest",
                 abs_path,
                 exc,
             )
@@ -775,8 +769,7 @@ def _make_gvisor_dast_runner_from_env(
     image_ml_tools = os.environ.get("ARGUS_DAST_GVISOR_IMAGE_ML_TOOLS") or image_lean
 
     log.info(
-        "DAST runner: gVisor substrate (runtime=%s, network=%s, images: "
-        "lean=%s rich_python=%s ml_tools=%s)",
+        "DAST runner: gVisor substrate (runtime=%s, network=%s, images: lean=%s rich_python=%s ml_tools=%s)",
         runtime,
         network,
         image_lean,
@@ -854,9 +847,7 @@ def make_dast_runner_from_env(
     """
     runtime_mode = os.environ.get("ARGUS_DAST_RUNTIME", "fly").strip().lower()
     if runtime_mode in _GVISOR_RUNTIME_ALIASES:
-        return _make_gvisor_dast_runner_from_env(
-            api_key, scan_model=scan_model, reasoning_model=reasoning_model
-        )
+        return _make_gvisor_dast_runner_from_env(api_key, scan_model=scan_model, reasoning_model=reasoning_model)
 
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     fly_token = os.environ.get("FLY_API_TOKEN", "")

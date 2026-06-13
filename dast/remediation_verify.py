@@ -44,10 +44,10 @@ class VerifyBudget:
     pretending to full assurance.
     """
 
-    functional: int   # # of benign functional-preservation tests
-    variants: int     # # of novel adversarial exploit variants
-    retries: int      # # of patch regenerations on gate failure
-    max_usd: float    # hard cap on verification spend for this finding
+    functional: int  # # of benign functional-preservation tests
+    variants: int  # # of novel adversarial exploit variants
+    retries: int  # # of patch regenerations on gate failure
+    max_usd: float  # hard cap on verification spend for this finding
 
 
 # Balanced posture (operator default; tunable per-scan). Rationale:
@@ -64,9 +64,7 @@ _BALANCED: dict[str, VerifyBudget] = {
 _DEFAULT_SEVERITY = "medium"
 
 
-def verify_budget_for(
-    severity: str | None, table: dict[str, VerifyBudget] | None = None
-) -> VerifyBudget:
+def verify_budget_for(severity: str | None, table: dict[str, VerifyBudget] | None = None) -> VerifyBudget:
     """Resolve the verification budget for a finding severity."""
     t = table or _BALANCED
     key = (severity or _DEFAULT_SEVERITY).strip().lower()
@@ -157,6 +155,7 @@ async def verify_patch(
     run_functional: Callable[[], Awaitable[bool | None]],
     run_adversarial: Callable[[int], Awaitable[tuple[int, int]]],
     budget: VerifyBudget | None = None,
+    spent_usd: Callable[[], float] | None = None,
 ) -> VerifyOutcome:
     """Run the verification gates for one patched finding, budget-aware
     and with greedy early-exit. Order is deliberate:
@@ -173,12 +172,18 @@ async def verify_patch(
     """
     b = budget or verify_budget_for(severity)
     notes: list[str] = []
+    budget_capped = False
 
     if not poc_refuted:
         notes.append("original exploit still fires against the patch")
         return VerifyOutcome(
-            confidence=CONFIDENCE_FAILED, poc_refuted=False, functional_ok=None,
-            variants_total=0, variants_fired=0, budget_capped=False, notes=notes,
+            confidence=CONFIDENCE_FAILED,
+            poc_refuted=False,
+            functional_ok=None,
+            variants_total=0,
+            variants_fired=0,
+            budget_capped=False,
+            notes=notes,
         )
 
     # ── functional-preservation gate (always; cheapest, runs first) ────
@@ -189,27 +194,47 @@ async def verify_patch(
         if functional_ok is False:
             # Patch broke the app — don't spend on adversarial; retry.
             return VerifyOutcome(
-                confidence=CONFIDENCE_FAILED, poc_refuted=True, functional_ok=False,
-                variants_total=0, variants_fired=0, budget_capped=False, notes=notes,
+                confidence=CONFIDENCE_FAILED,
+                poc_refuted=True,
+                functional_ok=False,
+                variants_total=0,
+                variants_fired=0,
+                budget_capped=False,
+                notes=notes,
             )
 
     # ── adversarial variant gate (severity-tiered) ─────────────────────
+    # SCAN-007: the adversarial gate is the expensive one (N sandbox
+    # replays). If this finding's verification spend has already reached
+    # its per-finding ``max_usd``, skip it and report MEDIUM (capped/
+    # partial) rather than overspending — ``budget_capped`` flows into
+    # compute_confidence to downgrade HIGH→MEDIUM honestly.
     variants_total = 0
     variants_fired = 0
     if b.variants > 0:
-        variants_total, variants_fired = await run_adversarial(b.variants)
-        notes.append(
-            f"adversarial gate: {variants_fired}/{variants_total} variants still exploited"
-        )
+        if spent_usd is not None and spent_usd() >= b.max_usd:
+            budget_capped = True
+            notes.append(
+                f"adversarial gate skipped — verification spend "
+                f"${spent_usd():.2f} reached the ${b.max_usd:.2f} per-finding cap"
+            )
+        else:
+            variants_total, variants_fired = await run_adversarial(b.variants)
+            notes.append(f"adversarial gate: {variants_fired}/{variants_total} variants still exploited")
 
     confidence = compute_confidence(
         poc_refuted=True,
         functional_ok=functional_ok,
         variants_total=variants_total,
         variants_fired=variants_fired,
+        budget_capped=budget_capped,
     )
     return VerifyOutcome(
-        confidence=confidence, poc_refuted=True, functional_ok=functional_ok,
-        variants_total=variants_total, variants_fired=variants_fired,
-        budget_capped=False, notes=notes,
+        confidence=confidence,
+        poc_refuted=True,
+        functional_ok=functional_ok,
+        variants_total=variants_total,
+        variants_fired=variants_fired,
+        budget_capped=budget_capped,
+        notes=notes,
     )

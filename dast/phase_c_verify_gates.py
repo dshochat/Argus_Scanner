@@ -69,6 +69,15 @@ FUNC_SETUP_ERROR = "ARGUS_FUNC_SETUP_ERROR"
 # the flipped 127.0.0.1 and reaches the capture server (fired).
 REBIND_PUBLIC_IP = "93.184.216.34"
 
+# SCAN-007 — per-finding verification cost estimate (conservative, Opus
+# tier) for the ``max_usd`` budget cap. Generation (variant/functional
+# prompts) dominates; sandbox replays add a small per-call constant
+# (~0 on the self-hosted gVisor runtime, ~$0.05 on Fly). Upper-bound so
+# we cap at or before the per-finding budget rather than overshooting.
+_VERIFY_GEN_IN_PER_M = 5.0
+_VERIFY_GEN_OUT_PER_M = 25.0
+_VERIFY_SANDBOX_CALL_USD = 0.05
+
 # A submit-against-patched callback: the orchestrator injects the patched
 # bytes into the sandbox content map, then hands us this to replay a plan
 # against them and return the trace (or raise).
@@ -466,9 +475,7 @@ async def prepare_gate_plans(
                 build_rebinding_variant(module_name, entry_func, _uuid.uuid4().hex[:8]),
             )
         else:
-            plans.notes.append(
-                "rebinding probe skipped: could not derive module/entrypoint"
-            )
+            plans.notes.append("rebinding probe skipped: could not derive module/entrypoint")
 
     return plans
 
@@ -533,8 +540,7 @@ def build_rebinding_variant(module_name: str, entry_func: str, marker: str) -> G
     encodings can't surface). Always worth running for an SSRF patch."""
     return GateVariant(
         description=(
-            "DNS rebinding (TOCTOU) — resolver returns a public IP to the "
-            "validation check, then 127.0.0.1 to the fetch"
+            "DNS rebinding (TOCTOU) — resolver returns a public IP to the validation check, then 127.0.0.1 to the fetch"
         ),
         payload=f"http://argus-rebind-{marker}.test/  [resolver flips public→127.0.0.1]",
         commands=_rebinding_harness(module_name, entry_func, marker),
@@ -670,9 +676,7 @@ async def execute_gates(
                 details["errors"].append(f"variant replay failed: {type(exc).__name__}")
                 # A replay that didn't run is not evidence the variant was
                 # blocked — record it but don't count it as tested.
-                details["variants"].append(
-                    {"description": v.description, "payload": v.payload, "result": "error"}
-                )
+                details["variants"].append({"description": v.description, "payload": v.payload, "result": "error"})
                 continue
             tested += 1
             did_fire = oracle_in_trace(trace, REACH_ORACLE)
@@ -688,11 +692,19 @@ async def execute_gates(
             )
         return tested, fired
 
+    def _spent_usd() -> float:
+        # Verification spend so far for THIS finding: generation tokens
+        # (already incurred in prepare_gate_plans) + sandbox replays run.
+        gen = (plans.tokens_in * _VERIFY_GEN_IN_PER_M + plans.tokens_out * _VERIFY_GEN_OUT_PER_M) / 1_000_000
+        n_calls = int(details["n_sandbox_calls"])
+        return float(gen + n_calls * _VERIFY_SANDBOX_CALL_USD)
+
     outcome = await verify_patch(
         poc_refuted=poc_refuted,
         severity=severity,
         run_functional=run_functional,
         run_adversarial=run_adversarial,
         budget=budget,
+        spent_usd=_spent_usd,
     )
     return outcome, details
