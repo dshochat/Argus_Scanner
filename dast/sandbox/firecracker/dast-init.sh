@@ -33,6 +33,22 @@ CAPTURE_PID_FILE=/tmp/capture-server.pid
 
 echo "[dast-init] starting" >&2
 
+# Egress probe. A no-egress sandbox (the gVisor self-hosted runtime runs
+# with --network=none) can't reach PyPI/npm, so a per-scan dep install
+# would just hang until its timeout cap (60-180s) and then fail — which
+# previously surfaced as a multi-minute sandbox timeout / NOT_TESTED for
+# any file needing an uninstalled package (e.g. a TS file importing axios).
+# Detect "no egress" fast and SKIP the installs, relying on the image's
+# pre-installed packages. A real network (Fly Firecracker / a bridged
+# runtime) passes the probe and installs as before. 3s cap; /dev/tcp is a
+# bash builtin so no extra tooling is needed.
+_HAS_EGRESS=0
+if timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/53' 2>/dev/null; then
+    _HAS_EGRESS=1
+else
+    echo "[dast-init] no egress detected — skipping per-scan dep install (relying on image-preinstalled packages)" >&2
+fi
+
 # 0. P2a (v1.8) — per-scan dep install hook.
 #    Two groups of packages, both already validated shell-safe by
 #    preprocessing.imports._is_safe_pkg_name on the orchestrator side.
@@ -54,7 +70,7 @@ echo "[dast-init] starting" >&2
 #    orchestrator only populates when image_hint is rich_python/
 #    ml_tools AND the target file imports beyond the tier's
 #    preinstalled set) → skip entirely.
-if [ -n "${RUNTIME_PACKAGES:-}" ]; then
+if [ "$_HAS_EGRESS" = 1 ] && [ -n "${RUNTIME_PACKAGES:-}" ]; then
     echo "[dast-init] per-scan dep install (no-deps): RUNTIME_PACKAGES=${RUNTIME_PACKAGES}" >&2
     if timeout 60 pip install --no-deps --quiet --disable-pip-version-check \
         --no-color $RUNTIME_PACKAGES 2>&1 | tail -20 >&2; then
@@ -66,7 +82,7 @@ if [ -n "${RUNTIME_PACKAGES:-}" ]; then
         echo "[dast-init] per-scan dep install (no-deps): FAILED (rc=$?), continuing" >&2
     fi
 fi
-if [ -n "${RUNTIME_PACKAGES_ALLOWLISTED:-}" ]; then
+if [ "$_HAS_EGRESS" = 1 ] && [ -n "${RUNTIME_PACKAGES_ALLOWLISTED:-}" ]; then
     echo "[dast-init] per-scan dep install (allowlisted): RUNTIME_PACKAGES_ALLOWLISTED=${RUNTIME_PACKAGES_ALLOWLISTED}" >&2
     if timeout 60 pip install --quiet --disable-pip-version-check \
         --no-color $RUNTIME_PACKAGES_ALLOWLISTED 2>&1 | tail -20 >&2; then
@@ -108,7 +124,7 @@ fi
 #    tree that consistently took 100-150s on a cold machine.
 #    Paired with sandbox client ``long_poll_extra_s=240`` so the
 #    orchestrator waits long enough for the install to finish.
-if [ -n "${RUNTIME_NPM_PACKAGES:-}" ]; then
+if [ "$_HAS_EGRESS" = 1 ] && [ -n "${RUNTIME_NPM_PACKAGES:-}" ]; then
     echo "[dast-init] per-scan npm install: RUNTIME_NPM_PACKAGES=${RUNTIME_NPM_PACKAGES}" >&2
     mkdir -p /workspace
     # The Dockerfile (Dockerfile.lean line 153) sets up /workspace/
