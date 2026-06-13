@@ -4358,19 +4358,21 @@ async def _run_phase_c_fix_verify(
     orig_len = len(original_text)
     new_len = len(patched_source)
     # Bounds: <20% of original (truncation/stub) or > max(3×, original +
-    # 8 KB) (likely a hallucinated wrong file) is rejected. The absolute
+    # 24 KB) (likely a hallucinated wrong file) is rejected. The absolute
     # headroom is load-bearing for SHORT seed functions: a correct,
     # class-complete fix to a tiny file is large in ABSOLUTE terms — e.g.
-    # a proper SSRF mitigation (resolve host→IP via socket.getaddrinfo +
-    # ipaddress private/loopback/link-local/reserved checks + a helper +
-    # docstrings) runs ~4–6 KB regardless of how small the original was.
-    # The 2 KB headroom we used pre-2026-06 rejected exactly those real
-    # fixes. Size alone can't distinguish a thorough fix from bloat —
-    # correctness is enforced downstream by the syntax check + sandbox
-    # replay + the verification gates — so this stays permissive and only
-    # catches egregious truncation / whole-file hallucination. 3× ratio
-    # still governs large originals (permits a proportional rewrite).
-    upper_bound = max(orig_len * 3.0, orig_len + 8192)
+    # a proper SSRF mitigation (resolve host→IP, private/loopback/reserved
+    # checks, a pinned-connection helper/adapter, redirect re-validation +
+    # docstrings) runs ~6–10 KB regardless of how small the original was
+    # (observed: a 425-char TS file → a 9 KB hardened fix that the 8 KB
+    # headroom wrongly rejected as patch_size_suspicious, killing the
+    # replay before it ran). Size alone can't distinguish a thorough fix
+    # from bloat — correctness is enforced downstream by the syntax check +
+    # sandbox replay + verification gates — and patch generation is already
+    # capped at max_tokens=8192 (~24-32 KB), so this stays permissive and
+    # only catches egregious truncation / whole-file hallucination. 3×
+    # ratio still governs large originals (permits a proportional rewrite).
+    upper_bound = max(orig_len * 3.0, orig_len + 24576)
     if orig_len > 100 and (new_len < orig_len * 0.20 or new_len > upper_bound):
         return {
             "attempted": True,

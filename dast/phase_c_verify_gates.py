@@ -341,6 +341,40 @@ def build_adversarial_prompt(
     seed_cmd_block = "\n".join(seed_commands) if seed_commands else "(no seed harness available)"
     vuln_class = detect_variant_class(confirmed_findings)
     class_guidance = _VARIANT_CLASS_GUIDANCE.get(vuln_class, _VARIANT_CLASS_GUIDANCE["generic"])
+    # Language-aware harness contract. A Python-only "python -c" contract
+    # made the model return NO usable variants for JS/TS files (it can't
+    # import a TS module from python) — so TS/JS patches got 0 adversarial
+    # variants and stalled at MEDIUM. Mirror the seed harness's runtime.
+    _fn = (file_name or "").lower()
+    if _fn.endswith((".ts", ".tsx")):
+        harness_contract = (
+            "- Each harness runs the PATCHED module the SAME way the seed harness does\n"
+            "  (TypeScript via `tsx`) and calls the SAME entrypoint with your variant value.\n"
+            "  MIRROR THE SEED HARNESS RUNTIME EXACTLY — do NOT rewrite it in Python.\n"
+            f"- Wrap the call so it prints `{REACH_ORACLE}` if it returns normally (the exploit\n"
+            f"  got through) or `{BLOCK_MARKER}` if it throws (validation rejected it) — e.g.\n"
+            "  try/catch around the call with console.log of the marker.\n"
+            "- Keep each harness to a single shell command invoking `tsx` (mirror the seed)."
+        )
+    elif _fn.endswith((".js", ".mjs", ".cjs", ".jsx")):
+        harness_contract = (
+            "- Each harness runs the PATCHED module the SAME way the seed harness does\n"
+            "  (Node) and calls the SAME entrypoint with your variant value. MIRROR THE\n"
+            "  SEED HARNESS RUNTIME EXACTLY — do NOT rewrite it in Python.\n"
+            f"- Wrap the call so it prints `{REACH_ORACLE}` if it returns normally or\n"
+            f"  `{BLOCK_MARKER}` if it throws (try/catch + console.log the marker).\n"
+            '- Keep each harness to a single `node -e "..."` (or mirror the seed\'s node call).'
+        )
+    else:
+        harness_contract = (
+            '- A single `python3 -c "..."` that imports the module exactly as the seed\n'
+            "  harness does and calls the SAME entrypoint with your variant value.\n"
+            f"- Wrap the call so it prints `{REACH_ORACLE}` if it returns normally (got\n"
+            f"  through) or `{BLOCK_MARKER}` if it raises (rejected). Example shape:\n"
+            f'    python3 -c "import sys; <import as in seed>;\\n'
+            f"    try:\\n  <entrypoint>('<VARIANT>'); print('{REACH_ORACLE}')\\n"
+            f"    except Exception as e:\\n  print('{BLOCK_MARKER}', type(e).__name__)\""
+        )
     return f"""You are Argus's remediation verifier, Stage 3 (adversarial).
 
 A patch was generated for confirmed vulnerabilities in `{file_name}`. Your
@@ -383,15 +417,7 @@ must print EXACTLY ONE of `{REACH_ORACLE}` (the novel exploit still works
 against the patched code) or `{BLOCK_MARKER}` (the patch blocked it).
 
 HARNESS CONTRACT for each variant (so we can classify deterministically):
-- A list of shell commands that import the module exactly as the seed
-  harness does and call the SAME entrypoint with your variant URL.
-- Wrap the call so it prints `{REACH_ORACLE}` if the call returns
-  normally (request went through), and `{BLOCK_MARKER}` if it raises
-  (validation rejected it). Example shape (adapt imports to the seed):
-    python -c "import sys; \\
-    <import module as in seed>; \\
-    try:\\n  <entrypoint>('<VARIANT_URL>'); print('{REACH_ORACLE}')\\n except Exception as e:\\n  print('{BLOCK_MARKER}', type(e).__name__)"
-- Keep each harness to a single `python -c` (or `python3 -c`) command.
+{harness_contract}
 
 Return STRICT JSON:
 {{"variants": [{{"description": "<technique, one line>", "payload": "<the variant URL/value>", "commands": ["<harness cmd>"]}}]}}

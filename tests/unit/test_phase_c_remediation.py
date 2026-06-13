@@ -264,13 +264,13 @@ async def test_phase_c_rejects_suspiciously_small_patch() -> None:
 @pytest.mark.asyncio
 async def test_phase_c_rejects_suspiciously_large_patch() -> None:
     """v14 Fix #3: whole-file hallucination / junk-padding still gets
-    rejected. The absolute headroom is generous (+8 KB) so a thorough
+    rejected. The absolute headroom is generous (+24 KB) so a thorough
     real fix to a small file passes (see the SSRF test below) — but an
-    egregious blow-up beyond ``max(3×, +8 KB)`` is still caught before
+    egregious blow-up beyond ``max(3×, +24 KB)`` is still caught before
     we waste a sandbox replay on it."""
     # ~400-char original (>100 so the size guard is active).
     original = "def fetch(url):\n    return urlopen(url)\n" * 10
-    bloat = "# bloat\n" * 1600  # ~12.8 KB — well past the +8 KB headroom
+    bloat = "# bloat\n" * 3600  # ~28.8 KB — well past the +24 KB headroom
     file_record = {
         "file_id": "abc",
         "file_name": "x.py",
@@ -297,7 +297,7 @@ async def test_phase_c_accepts_short_function_with_legitimate_growth() -> None:
     SSRF mitigation (scheme allowlist + IP-private-block + DNS check)
     grew to ~2442 chars (~5.9×). The pure 3× ratio bound rejected the
     fix even though it was objectively correct. Compound bound
-    ``max(3×, +8 KB)`` permits legitimate growth on short attack-
+    ``max(3×, +24 KB)`` permits legitimate growth on short attack-
     attractive functions while still rejecting whole-file hallucinations
     on larger originals (covered by the suspiciously_large test above).
     """
@@ -385,7 +385,7 @@ async def test_phase_c_accepts_thorough_fix_to_tiny_file() -> None:
     The old ``+2 KB`` absolute headroom rejected this *airtight* patch as
     ``patch_size_suspicious`` — the patch never replayed, so the headline
     remediation reported UNVERIFIABLE. A thorough fix to a tiny file is
-    large in absolute terms by nature; the ``+8 KB`` headroom admits it
+    large in absolute terms by nature; the ``+24 KB`` headroom admits it
     while syntax/replay/gates remain the real correctness check.
     """
     original = (
@@ -398,7 +398,7 @@ async def test_phase_c_accepts_thorough_fix_to_tiny_file() -> None:
         "    return requests.get(url).content\n"
     )
     # ~4.9 KB stand-in for the real Phase C airtight patch: lands in the
-    # band the OLD +2 KB bound wrongly rejected and the +8 KB bound accepts.
+    # band the OLD +2 KB bound wrongly rejected and the +24 KB bound accepts.
     body = (
         "import ipaddress\n"
         "import socket\n"
@@ -416,7 +416,7 @@ async def test_phase_c_accepts_thorough_fix_to_tiny_file() -> None:
         "                or addr.is_multicast or addr.is_unspecified):\n"
         "            raise ValueError(f'blocked internal address: {addr}')\n"
     )
-    # Pad with real-looking guard logic to ~4.9 KB (still < orig + 8 KB).
+    # Pad with real-looking guard logic to ~4.9 KB (still < orig + 24 KB).
     body += "    # defense-in-depth: re-validate on each call path\n" * 70
     body += (
         "\n\ndef load_remote_media(url):\n"
@@ -428,10 +428,10 @@ async def test_phase_c_accepts_thorough_fix_to_tiny_file() -> None:
     )
     patched = body
     # The case must land in the headroom band the regression is about:
-    # past 3× AND past the old +2 KB, but within the new +8 KB.
+    # past 3× AND past the old +2 KB, but within the current +24 KB.
     assert len(patched) > len(original) * 3.0
     assert len(patched) > len(original) + 2048  # old bound would reject
-    assert len(patched) < len(original) + 8192  # new bound admits
+    assert len(patched) < len(original) + 24576  # current bound admits
     file_record = {
         "file_id": "abc",
         "file_name": "_demo_media_loader.py",
@@ -448,7 +448,7 @@ async def test_phase_c_accepts_thorough_fix_to_tiny_file() -> None:
         journal=_StubJournal(),
     )
     assert result.get("skipped_reason") != "patch_size_suspicious", (
-        f"the +8 KB headroom must admit a thorough fix to a tiny file; got {result.get('skipped_reason')!r}"
+        f"the +24 KB headroom must admit a thorough fix to a tiny file; got {result.get('skipped_reason')!r}"
     )
 
 
