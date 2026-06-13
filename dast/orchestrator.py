@@ -4397,15 +4397,18 @@ async def _run_phase_c_fix_verify(
             _ast_local.parse(patched_source, filename=file_name)
         except SyntaxError as exc:
             syntax_err = f"SyntaxError at line {exc.lineno}: {(exc.msg or '')[:120]}"
-    elif lower_name.endswith((".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")):
-        # JS/TS: shell out to node --check. Bounded by 5s.
+    elif lower_name.endswith((".js", ".mjs", ".cjs")):
+        # Real JS only — shell out to `node --check` (bounded 5s).
+        # IMPORTANT: .ts/.tsx/.jsx are deliberately EXCLUDED here. node
+        # --check parses them as plain JS and false-fails on TS type
+        # annotations / JSX syntax — the bug that made every TS patch skip
+        # its replay as `patch_syntax_invalid` (so TS remediation never
+        # earned a confidence). tsx type-strips + runs TS at the sandbox
+        # replay, so a genuinely broken TS patch surfaces there instead.
         import subprocess as _subprocess_local  # noqa: PLC0415
         import tempfile as _tempfile_local  # noqa: PLC0415
 
         suffix = ".cjs" if lower_name.endswith((".js", ".cjs")) else ".mjs"
-        # tsx for .ts handles type-stripping; node --check parses TS as
-        # JS which would false-positive on type annotations. So only
-        # check JS-shaped files; TS we trust the model.
         if suffix in (".cjs", ".mjs"):
             try:
                 with _tempfile_local.NamedTemporaryFile(

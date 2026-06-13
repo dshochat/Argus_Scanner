@@ -519,6 +519,40 @@ async def test_phase_c_accepts_python_patch_with_valid_syntax() -> None:
     assert result.get("skipped_reason") == "all_replays_failed"
 
 
+@pytest.mark.asyncio
+async def test_phase_c_ts_patch_not_rejected_by_node_check() -> None:
+    """REGRESSION: a .ts patch with TYPE ANNOTATIONS must NOT be rejected
+    as patch_syntax_invalid. node --check parses TS as plain JS and
+    false-fails on `: string` etc. — which silently skipped the replay
+    for EVERY TS patch (remediation never earned a confidence). TS/TSX
+    must bypass node --check and defer to the tsx sandbox replay."""
+    original = "export function fetchResource(url: string): string {\n  return get(url);\n}\n" * 3
+    ts_patch = (
+        "function isPrivate(addr: string): boolean {\n"
+        "  return addr.startsWith('127.') || addr === '::1';\n"
+        "}\n"
+        "export async function fetchResource(url: string): Promise<string> {\n"
+        "  const u = new URL(url);\n"
+        "  if (isPrivate(u.hostname)) throw new Error('blocked');\n"
+        "  return String(await get(url));\n"
+        "}\n"
+    )
+    file_record = {"file_id": "abc", "file_name": "fetch.ts", "source_text": original}
+    inf = _make_inference_stub(patched_source=ts_patch)
+    result = await _run_phase_c_fix_verify(
+        file_record=file_record,
+        findings_validated=["H001"],
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
+        iter1_plans=[],
+        inference=inf,
+        sandbox=_StubSandbox(),
+        journal=_StubJournal(),
+    )
+    # The TS type annotations must NOT trip the (JS-only) node --check.
+    assert result.get("skipped_reason") != "patch_syntax_invalid"
+    assert "syntax_error" not in result or not result.get("syntax_error")
+
+
 # ── Fix #1: DAST findings included in hyp_by_ref ─────────────────────
 
 
