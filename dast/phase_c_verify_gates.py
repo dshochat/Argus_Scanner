@@ -445,6 +445,115 @@ def adversarial_schema() -> dict[str, Any]:
     }
 
 
+def _functional_runtime_and_contract(file_name: str | None) -> tuple[str, str]:
+    """Language-aware Stage-2 (functional preservation) harness blocks.
+
+    The functional probe must defeat the sandbox's DNS hijack so the
+    patch's validation sees a PUBLIC IP, then call the entrypoint with a
+    legitimate URL and classify the outcome. The DNS-stub mechanism +
+    runtime are language-specific: a Python ``python -c`` that
+    monkeypatches ``socket.getaddrinfo`` is unusable for a TS/JS module
+    (it can't import it), which made TS/JS functional probes return ZERO
+    commands → ``functional_ok=None`` → confidence capped at MEDIUM even
+    when every adversarial variant was blocked. Mirror the seed harness's
+    runtime instead. Returns ``(runtime_env, harness_contract)`` ready to
+    interpolate into the prompt.
+    """
+    fn = (file_name or "").lower()
+    is_ts = fn.endswith((".ts", ".tsx"))
+    is_js = fn.endswith((".js", ".mjs", ".cjs", ".jsx"))
+    if is_ts or is_js:
+        runtime_word = "TypeScript via `tsx`" if is_ts else "Node"
+        run_cmd = 'tsx -e "..."' if is_ts else 'node -e "..."'
+        runtime_env = (
+            "RUNTIME ENVIRONMENT (critical):\n"
+            "- The sandbox hijacks ALL DNS to 127.0.0.1 AND has NO outbound\n"
+            "  network, so a real fetch cannot succeed. You MUST make the\n"
+            "  patch's VALIDATION see a PUBLIC address:\n"
+            "    * Stub Node's `dns` module BEFORE the patched module resolves\n"
+            "      anything, so the benign host resolves to a PUBLIC IP (e.g.\n"
+            "      93.184.216.34). Override EVERY resolver the patch might use —\n"
+            "      dns.lookup, dns.resolve, dns.resolve4 AND their promise forms\n"
+            "      (dns.promises.lookup / dns.promises.resolve / dns.promises.\n"
+            "      resolve4). Callback forms must call `(null, '93.184.216.34',\n"
+            "      4)` (or `(null, [{address:'93.184.216.34',family:4}])`);\n"
+            "      promise forms must resolve the same. Mutate the SAME module\n"
+            "      object the patch imports (e.g. for `import * as dns`,\n"
+            "      reassign `dns.lookup = ...`, etc.).\n"
+            "- The goal is to prove the patch does NOT over-block a legitimate\n"
+            "  host — i.e. the URL gets PAST validation. Whether the subsequent\n"
+            "  socket connect succeeds is irrelevant (no egress; a rebind-safe\n"
+            "  patch connects to the pinned IP, which is unreachable).\n"
+            "- Then call the SAME entrypoint as the seed harness with a\n"
+            "  LEGITIMATE public URL (e.g. https://example.com/image.png)."
+        )
+        harness_contract = (
+            "HARNESS CONTRACT (deterministic classification — TWO distinct phases):\n"
+            f"- Phase A (setup): install the dns stubs + import the patched\n"
+            f"  module the SAME way the seed harness does ({runtime_word}),\n"
+            f"  inside a try/catch. If THIS fails (import/compile error), print\n"
+            f"  `{FUNC_SETUP_ERROR}` and exit — a harness problem, not patch\n"
+            f"  evidence. MIRROR THE SEED HARNESS RUNTIME — do NOT rewrite it in\n"
+            f"  Python.\n"
+            "- Phase B (the actual test): call the SAME entrypoint with the\n"
+            "  legitimate URL in a SEPARATE try/catch and classify by WHAT\n"
+            "  failed:\n"
+            f"    * Returns normally → print `{FUNC_OK}` (request preserved).\n"
+            f"    * Throws a NETWORK/CONNECTION error (err.code one of\n"
+            f"      ECONNREFUSED, ENETUNREACH, ETIMEDOUT, EHOSTUNREACH,\n"
+            f"      EAI_AGAIN, ECONNRESET; or 'socket hang up'; or axios\n"
+            f"      ERR_NETWORK/ECONNABORTED) → print `{FUNC_OK}`. The host was\n"
+            f"      ACCEPTED; only the sandbox's missing egress stopped the\n"
+            f"      connect — that is NOT an over-block.\n"
+            f"    * Throws a VALIDATION rejection (an Error whose message says\n"
+            f"      the host/scheme/address was blocked / disallowed / not\n"
+            f"      allowed / private / loopback) → print `{FUNC_BROKEN}`. THIS\n"
+            f"      is the over-block we care about.\n"
+            "  Check the network-error markers BEFORE treating a throw as a\n"
+            "  validation rejection. Wrap the call in an async IIFE if the\n"
+            "  entrypoint returns a Promise.\n"
+            f"- Keep it to a single `{run_cmd}` command (mirror the seed runtime)."
+        )
+        return runtime_env, harness_contract
+    # Python (default) — unchanged behavior.
+    runtime_env = (
+        "RUNTIME ENVIRONMENT (critical):\n"
+        "- The sandbox hijacks ALL DNS to 127.0.0.1 AND has NO outbound network.\n"
+        "  So you cannot rely on a real fetch succeeding. You MUST make the patch's\n"
+        "  VALIDATION see a public address:\n"
+        "    * Monkeypatch `socket.getaddrinfo` so the benign host resolves to a\n"
+        "      PUBLIC IP (e.g. 93.184.216.34) — this lets the patch's resolve-and-\n"
+        "      check logic ACCEPT the host. Install it BEFORE calling the entrypoint.\n"
+        "- The goal is to prove the patch does NOT over-block a legitimate host —\n"
+        "  i.e. the URL gets PAST validation. Whether the subsequent socket connect\n"
+        "  succeeds is irrelevant here (the sandbox has no egress, and a rebind-safe\n"
+        "  patch deliberately connects to the pinned IP, which will be unreachable).\n"
+        "- Then call the SAME entrypoint as the seed harness with a LEGITIMATE\n"
+        "  public URL (e.g. https://example.com/image.png)."
+    )
+    harness_contract = (
+        "HARNESS CONTRACT (deterministic classification — TWO distinct phases):\n"
+        "- Phase A (setup): install the getaddrinfo monkeypatch + import the module\n"
+        "  inside their OWN try/except. If THIS fails (import error, etc.), print\n"
+        f"  `{FUNC_SETUP_ERROR}` and exit — a harness problem, not patch evidence.\n"
+        "- Phase B (the actual test): call the entrypoint with the legitimate URL\n"
+        "  in a SEPARATE try/except, and classify by WHAT failed:\n"
+        f"    * Returns normally → print `{FUNC_OK}` (request preserved).\n"
+        "    * Raises a NETWORK/CONNECTION error (ConnectionError, OSError, socket\n"
+        "      error, requests.exceptions.ConnectionError/Timeout, urllib3\n"
+        f"      NewConnectionError, MaxRetryError) → print `{FUNC_OK}`. The host was\n"
+        "      ACCEPTED and only the sandbox's missing egress stopped the connect —\n"
+        "      that is NOT an over-block.\n"
+        "    * Raises a VALIDATION rejection (ValueError or any error whose message\n"
+        "      says the host/scheme/address was blocked/disallowed/not allowed) →\n"
+        f"      print `{FUNC_BROKEN}`. THIS is the over-block we care about.\n"
+        "  Catch the network-error classes BEFORE the broad except so they map to\n"
+        "  OK, not BROKEN.\n"
+        "- Keep it to a single `python -c` command."
+    )
+    return runtime_env, harness_contract
+
+
 def build_functional_prompt(
     *,
     file_name: str,
@@ -461,6 +570,7 @@ def build_functional_prompt(
     public host and proceeds.
     """
     seed_cmd_block = "\n".join(seed_commands) if seed_commands else "(no seed harness available)"
+    runtime_env, harness_contract = _functional_runtime_and_contract(file_name)
     return f"""You are Argus's remediation verifier, Stage 2 (functional preservation).
 
 A patch was generated for `{file_name}`. A patch that "fixes" a bug by
@@ -483,38 +593,9 @@ ORIGINAL sandbox harness (TEMPLATE for imports / entrypoint call shape):
 {seed_cmd_block}
 ```
 
-RUNTIME ENVIRONMENT (critical):
-- The sandbox hijacks ALL DNS to 127.0.0.1 AND has NO outbound network.
-  So you cannot rely on a real fetch succeeding. You MUST make the patch's
-  VALIDATION see a public address:
-    * Monkeypatch `socket.getaddrinfo` so the benign host resolves to a
-      PUBLIC IP (e.g. 93.184.216.34) — this lets the patch's resolve-and-
-      check logic ACCEPT the host. Install it BEFORE calling the entrypoint.
-- The goal is to prove the patch does NOT over-block a legitimate host —
-  i.e. the URL gets PAST validation. Whether the subsequent socket connect
-  succeeds is irrelevant here (the sandbox has no egress, and a rebind-safe
-  patch deliberately connects to the pinned IP, which will be unreachable).
-- Then call the SAME entrypoint as the seed harness with a LEGITIMATE
-  public URL (e.g. https://example.com/image.png).
+{runtime_env}
 
-HARNESS CONTRACT (deterministic classification — TWO distinct phases):
-- Phase A (setup): install the getaddrinfo monkeypatch + import the module
-  inside their OWN try/except. If THIS fails (import error, etc.), print
-  `{FUNC_SETUP_ERROR}` and exit — a harness problem, not patch evidence.
-- Phase B (the actual test): call the entrypoint with the legitimate URL
-  in a SEPARATE try/except, and classify by WHAT failed:
-    * Returns normally → print `{FUNC_OK}` (request preserved).
-    * Raises a NETWORK/CONNECTION error (ConnectionError, OSError, socket
-      error, requests.exceptions.ConnectionError/Timeout, urllib3
-      NewConnectionError, MaxRetryError) → print `{FUNC_OK}`. The host was
-      ACCEPTED and only the sandbox's missing egress stopped the connect —
-      that is NOT an over-block.
-    * Raises a VALIDATION rejection (ValueError or any error whose message
-      says the host/scheme/address was blocked/disallowed/not allowed) →
-      print `{FUNC_BROKEN}`. THIS is the over-block we care about.
-  Catch the network-error classes BEFORE the broad except so they map to
-  OK, not BROKEN.
-- Keep it to a single `python -c` command.
+{harness_contract}
 
 Return STRICT JSON:
 {{"description": "<one line>", "benign_url": "<the legit URL>", "commands": ["<harness cmd>"]}}

@@ -20,6 +20,7 @@ from dast.phase_c_verify_gates import (
     GateVariant,
     _json_loads_safe,
     build_adversarial_prompt,
+    build_functional_prompt,
     build_rebinding_variant,
     derive_entrypoint,
     detect_variant_class,
@@ -411,3 +412,62 @@ def test_adversarial_prompt_dispatches_per_class() -> None:
 
     generic = _p([{"type": "mystery"}])
     assert "class `generic`" in generic
+
+
+def test_adversarial_prompt_harness_is_language_aware() -> None:
+    """The Stage-3 adversarial harness contract must match the file's
+    runtime: a python-only contract made TS/JS patches generate ZERO
+    variants (model can't import a TS module from python) → they stalled
+    at MEDIUM. tsx for .ts/.tsx, node for .js, python3 otherwise."""
+
+    def _p(file_name: str) -> str:
+        return build_adversarial_prompt(
+            file_name=file_name,
+            confirmed_findings=[{"cwe": "CWE-918"}],
+            original_source="orig",
+            patched_source="patched",
+            seed_commands=["<seed>"],
+            seed_payload="seed",
+            n=3,
+        )
+
+    ts = _p("vuln.ts")
+    assert "tsx" in ts and "python3 -c" not in ts
+    js = _p("app.js")
+    assert "node" in js.lower() and "python3 -c" not in js
+    py = _p("loader.py")
+    assert "python3 -c" in py
+
+
+def test_functional_prompt_harness_is_language_aware() -> None:
+    """v16: the Stage-2 functional gate had the SAME python-only flaw as
+    the adversarial gate — a `python -c` that monkeypatches
+    socket.getaddrinfo is unusable for a TS/JS module, so TS/JS functional
+    probes returned no commands → functional_ok=None → confidence capped
+    at MEDIUM even with every variant blocked. The contract must mirror
+    the seed runtime: a Node `dns` stub for TS/JS, getaddrinfo for python."""
+
+    def _p(file_name: str) -> str:
+        return build_functional_prompt(
+            file_name=file_name,
+            confirmed_findings=[{"cwe": "CWE-918"}],
+            original_source="orig",
+            patched_source="patched",
+            seed_commands=["<seed>"],
+        )
+
+    ts = _p("vuln_ssrf.ts")
+    assert "tsx -e" in ts
+    assert "Stub Node" in ts and "dns.lookup" in ts
+    assert "getaddrinfo" not in ts  # NOT the python mock
+    assert "python -c" not in ts
+
+    js = _p("app.js")
+    assert "node -e" in js
+    assert "Stub Node" in js
+    assert "getaddrinfo" not in js
+
+    py = _p("loader.py")
+    assert "python -c" in py
+    assert "getaddrinfo" in py  # python mock intact
+    assert "Stub Node" not in py
