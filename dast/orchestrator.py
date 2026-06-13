@@ -4611,6 +4611,11 @@ async def _run_phase_c_fix_verify(
                 "show no oracle hits."
             ),
         },
+        # Replay calibration: absence of the original exploit effect means
+        # the patch NEUTRALIZED it (refuted), not 'inconclusive' — so a
+        # good patch reaches NEUTRALIZED and the functional/adversarial
+        # gates run, instead of stalling at UNVERIFIABLE.
+        replay_mode=True,
     )
     verdict_resp = await inference(
         verdict_prompt,

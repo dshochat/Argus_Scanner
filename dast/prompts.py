@@ -1817,12 +1817,54 @@ def build_phase_a_plan_prompt(
     return _PHASE_A_PLAN_BODY + payload
 
 
+# Post-patch REPLAY calibration. Prepended to the verdict body when
+# re-judging the ORIGINAL exploit against PATCHED code (Phase C). The base
+# Phase A body is tuned for INITIAL validation, where "no runtime
+# side-effect event" defaults to *inconclusive* (can't-test). In a replay
+# that default is WRONG: the patch working IS the exploit's effect
+# disappearing, so absence must read as *refuted* (NEUTRALIZED), not
+# inconclusive — otherwise a good patch never earns a confidence label
+# (it stalls at UNVERIFIABLE and the functional/adversarial gates never
+# run). This block overrides that default; the functional gate is the
+# safety net against a patch that "neutralizes" by breaking the app.
+_PHASE_C_REPLAY_CALIBRATION = """\
+=== POST-PATCH REPLAY MODE — READ FIRST; OVERRIDES THE DEFAULTS BELOW ===
+
+These traces are NOT initial validation. Each finding here was ALREADY
+CONFIRMED as a real, runtime-fired exploit against the ORIGINAL file. We
+then generated a PATCH and re-ran the SAME exploit plans against the
+PATCHED file. Your ONE job per finding: did the patch NEUTRALIZE it?
+
+Replay verdict calibration (this OVERRIDES initial-validation defaults):
+  * "refuted" = NEUTRALIZED (patch worked). The exploit's
+    previously-confirmed effect is ABSENT in the patched trace — the
+    success marker is gone, the request is rejected by the new
+    validation, or it raises at the patch's guard. ABSENCE OF THE
+    ORIGINAL MALICIOUS EFFECT IS THE EXPECTED, CORRECT PROOF OF A WORKING
+    PATCH: return "refuted". Do NOT demand a fresh runtime side-effect
+    event to call a replay refuted — the decisive signal is the original
+    effect's ABSENCE, and you may cite the relevant process_exit /
+    output event that shows the effect is gone.
+  * "confirmed" = STILL EXPLOITABLE — the SAME malicious effect still
+    fires against the patched code (same marker / side-effect present).
+  * "inconclusive" = ONLY when the replay trace is unusable as evidence
+    due to a SANDBOX/HARNESS INFRASTRUCTURE failure (harness crashed
+    before exercising the patched code, import error in the harness
+    itself, or a timeout with no events). NOT when the exploit simply
+    failed to fire — that is "refuted".
+
+=== END REPLAY MODE OVERRIDE ===
+
+"""
+
+
 def build_phase_a_verdict_prompt(
     file_text: str,
     l1_output: dict,
     plans: list[dict],
     traces: list[dict],
     journal_summary: Any,
+    replay_mode: bool = False,
 ) -> str:
     payload = (
         f"\n\nINPUTS\n"
@@ -1838,7 +1880,10 @@ def build_phase_a_verdict_prompt(
         f"{json.dumps(journal_summary, indent=2, ensure_ascii=False, default=str)}\n\n"
         f"Output JSON conforming to the provided schema."
     )
-    return _PHASE_A_VERDICT_BODY + payload
+    # replay_mode (Phase C): prepend the replay calibration so the model
+    # reads it BEFORE the initial-validation rules it overrides.
+    body = (_PHASE_C_REPLAY_CALIBRATION + _PHASE_A_VERDICT_BODY) if replay_mode else _PHASE_A_VERDICT_BODY
+    return body + payload
 
 
 def build_phase_b_prompt(
