@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-_INSTALL_HINT = "`pip install argus-ai-scanner[dashboard]`"
+_INSTALL_HINT = "web dependencies missing — reinstall with `pip install --upgrade argus-ai-scanner`"
 _DB_HINT = (
     "set --db-url or ARGUS_DB_URL "
     "(e.g. postgresql://argus:argus@localhost:5432/argus)"

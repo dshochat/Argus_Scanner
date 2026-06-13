@@ -223,7 +223,7 @@ and verified). React + FastAPI + Postgres, shipped **pre-built in the wheel** so
 running it needs no Node.
 
 ```bash
-pip install "argus-ai-scanner[dashboard]"
+pip install argus-ai-scanner            # the dashboard ships with the base install
 
 # 1. A Postgres to store results (or point ARGUS_DB_URL at your own)
 docker compose -f dashboard/docker-compose.yml up -d

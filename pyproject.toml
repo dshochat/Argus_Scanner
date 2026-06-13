@@ -49,6 +49,13 @@ dependencies = [
     "requests>=2.32.0",
     "structlog>=24.4.0",
     "tiktoken>=0.7.0",
+    # Web dashboard — bundled into the base install so `argus dashboard` works
+    # out of the box (heavier: a web framework + async Postgres driver, but
+    # always present). See dashboard/ and docs/dashboard.md.
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.29.0",
 ]
 
 [project.urls]
@@ -84,15 +91,10 @@ mcp = [
     "mcp>=1.0.0",
 ]
 
-# Web dashboard (v1.13). Self-hosted UI over Postgres that visualizes the
-# scan -> validate -> remediate flow per file. Optional so the base scanner
-# stays DB-free. Install: pip install argus-ai-scanner[dashboard]
-dashboard = [
-    "fastapi>=0.110.0",
-    "uvicorn[standard]>=0.29.0",
-    "sqlalchemy[asyncio]>=2.0.0",
-    "asyncpg>=0.29.0",
-]
+# The dashboard's web/DB dependencies now live in the base install (above), so
+# `argus dashboard` works out of the box. This empty extra is kept as a
+# back-compat alias so `pip install argus-ai-scanner[dashboard]` still resolves.
+dashboard = []
 
 [project.scripts]
 argus = "scanner.cli:main"

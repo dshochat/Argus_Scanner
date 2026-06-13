@@ -14,8 +14,8 @@ import sys
 from typing import Any
 
 _INSTALL_HINT = (
-    "argus: dashboard persistence needs the optional extra — "
-    "`pip install argus-ai-scanner[dashboard]`"
+    "argus: dashboard web dependencies missing — "
+    "reinstall with `pip install --upgrade argus-ai-scanner`"
 )
 
 

@@ -14,13 +14,15 @@ pre-built inside the wheel, so running the dashboard needs no Node toolchain.
 
 ## Install
 
-The dashboard is an optional extra so the base scanner stays dependency-light:
+The dashboard's web/DB dependencies (`fastapi`, `uvicorn`, `sqlalchemy`,
+`asyncpg`) are bundled into the base install, so nothing extra is needed:
 
 ```bash
-pip install "argus-ai-scanner[dashboard]"
+pip install argus-ai-scanner
 ```
 
-This adds `fastapi`, `uvicorn`, `sqlalchemy`, and `asyncpg`.
+(The `argus-ai-scanner[dashboard]` extra still resolves as a back-compat alias.)
+You do need a **Postgres** to point it at — system service or container.
 
 ## Quick start
 
