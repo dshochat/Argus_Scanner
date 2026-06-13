@@ -1210,6 +1210,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _dash_ingest.add_argument("--db-url", default=None, help="Postgres URL (else $ARGUS_DB_URL).")
 
+    # ── argus doctor — runtime preflight (v1.13) ───────────────────────────
+    sub.add_parser(
+        "doctor",
+        help="Preflight: check Docker / gVisor (runsc) / sandbox images / "
+        "Postgres + deps and print fix-it commands for anything missing.",
+    )
+
     return parser
 
 
@@ -2644,6 +2651,13 @@ def main(argv: list[str] | None = None) -> int:
         from dashboard.cli import run_dashboard
 
         return run_dashboard(args)
+    if args.command == "doctor":
+        # Runtime preflight (v1.13). Loads .env first so it sees ARGUS_DAST_*
+        # / ARGUS_DB_URL the way a real scan would.
+        _load_argus_env()
+        from scanner.doctor import run_doctor
+
+        return run_doctor()
     return 1
 
 

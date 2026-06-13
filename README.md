@@ -210,6 +210,9 @@ argus scan path/to/file.py --scan-model claude-opus-4-8 --reasoning-model claude
 argus mcp enumerate --stdio "python -m my_mcp_server"     # recon only
 argus mcp scan --stdio "python3 -m my_mcp_server" --sandbox-pip my-mcp-pkg   # active probes; server runs in the sandbox (needs DAST configured — gVisor or Fly)
 argus mcp scan --url https://mcp.example.com/mcp --authorized   # remote (consent-gated)
+
+# Preflight — what's still missing? (Docker, gVisor/runsc, sandbox images, Postgres)
+argus doctor
 ```
 
 Full reference: `argus scan --help`, `argus scan-repo --help`, `argus install --help`, `argus mcp enumerate --help`.
