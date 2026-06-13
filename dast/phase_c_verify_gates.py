@@ -669,20 +669,35 @@ async def prepare_gate_plans(
 
     # Stage 3 plans
     if budget.variants > 0:
-        try:
-            resp = await inference(
-                build_adversarial_prompt(
-                    file_name=file_name,
-                    confirmed_findings=confirmed_findings,
-                    original_source=original_source,
-                    patched_source=patched_source,
-                    seed_commands=seed_commands,
-                    seed_payload=seed_payload,
-                    n=budget.variants,
-                ),
-                {"temperature": 0.0, "max_tokens": 3072, "seed": 0},
-                adversarial_schema(),
-            )
+        adv_prompt = build_adversarial_prompt(
+            file_name=file_name,
+            confirmed_findings=confirmed_findings,
+            original_source=original_source,
+            patched_source=patched_source,
+            seed_commands=seed_commands,
+            seed_payload=seed_payload,
+            n=budget.variants,
+        )
+        # The adversarial structured-output call intermittently comes back
+        # with a tool_use that fails schema validation (observed live: Opus
+        # with thinking on a ~7.6 KB patch returned a tool_use *missing* the
+        # required `variants` key — the adapter swallows it → empty obj → 0
+        # variants). An empty/invalid GENERATION is a transient model
+        # failure, NOT evidence the patch is variant-proof, so it must not
+        # silently zero the gate and cap a solid patch at MEDIUM. Retry once
+        # — temp/seed are fixed but the model's non-determinism makes the
+        # retry an independent draw; both attempts get generous token
+        # headroom so a long thinking pass can't truncate the tool call.
+        _adv_attempts = (
+            {"temperature": 0.0, "max_tokens": 4096, "seed": 0},
+            {"temperature": 0.0, "max_tokens": 4096, "seed": 0},
+        )
+        for _attempt, _params in enumerate(_adv_attempts):
+            try:
+                resp = await inference(adv_prompt, dict(_params), adversarial_schema())
+            except Exception as exc:  # noqa: BLE001
+                plans.notes.append(f"adversarial generation failed: {type(exc).__name__}")
+                break
             plans.tokens_in += (resp.get("usage") or {}).get("prompt_tokens", 0) or 0
             plans.tokens_out += (resp.get("usage") or {}).get("completion_tokens", 0) or 0
             obj = _json_loads_safe(resp.get("text", ""))
@@ -699,10 +714,12 @@ async def prepare_gate_plans(
                         commands=cmds,
                     )
                 )
-            if not plans.variants:
-                plans.notes.append("adversarial generation returned no usable variants")
-        except Exception as exc:  # noqa: BLE001
-            plans.notes.append(f"adversarial generation failed: {type(exc).__name__}")
+            if plans.variants:
+                break
+            if _attempt + 1 < len(_adv_attempts):
+                plans.notes.append("adversarial generation empty/invalid — retrying")
+        if not plans.variants:
+            plans.notes.append("adversarial generation returned no usable variants")
 
     # Deterministic DNS-rebinding (TOCTOU) probe — the one bypass class the
     # LLM encoding-variants can't surface. Added for SSRF patches via an

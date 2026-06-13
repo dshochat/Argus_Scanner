@@ -471,3 +471,75 @@ def test_functional_prompt_harness_is_language_aware() -> None:
     assert "python -c" in py
     assert "getaddrinfo" in py  # python mock intact
     assert "Stub Node" not in py
+
+
+def test_prepare_gate_plans_retries_empty_adversarial_generation() -> None:
+    """v16: an adversarial structured-output call that returns empty/invalid
+    (observed live: Opus-with-thinking returned a tool_use *missing* the
+    required `variants` key on a large patch) is a transient model failure,
+    NOT proof the patch is variant-proof. prepare_gate_plans retries once so
+    a solid patch isn't silently capped at MEDIUM by a flaky generation."""
+    calls = {"adv": 0}
+
+    async def _inf(prompt: str, opts: dict, schema: dict | None) -> dict:
+        if "Stage 2 (functional" in prompt:
+            return {
+                "text": '{"description":"b","benign_url":"https://example.com/x.png","commands":["c"]}',
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            }
+        # adversarial (Stage 3): empty obj on the 1st call, valid on retry.
+        calls["adv"] += 1
+        if calls["adv"] == 1:
+            return {"text": "{}", "usage": {"prompt_tokens": 20, "completion_tokens": 2}}
+        return {
+            "text": '{"variants":[{"description":"decimal IP","payload":"http://2130706433/",'
+            '"commands":["tsx -e \\"x\\""]}]}',
+            "usage": {"prompt_tokens": 20, "completion_tokens": 9},
+        }
+
+    plans = asyncio.run(
+        prepare_gate_plans(
+            inference=_inf,
+            file_name="vuln.ts",  # TS → no python rebinding probe to muddy the count
+            confirmed_findings=[{"cwe": "CWE-918", "description": "ssrf"}],
+            original_source="export function f(u){}",
+            patched_source="export function f(u){ validate(u) }",
+            seed_commands=['tsx -e "..."'],
+            seed_payload="http://localhost",
+            budget=verify_budget_for("high"),
+        )
+    )
+    assert calls["adv"] == 2, "an empty 1st generation must trigger exactly one retry"
+    assert len(plans.variants) == 1
+    assert plans.variants[0].payload == "http://2130706433/"
+    assert any("retrying" in n for n in plans.notes)
+
+
+def test_prepare_gate_plans_no_retry_when_first_adversarial_ok() -> None:
+    """The retry fires ONLY on an empty/invalid first attempt — a good first
+    generation must not spend a second (billable) call."""
+    calls = {"adv": 0}
+
+    async def _inf(prompt: str, opts: dict, schema: dict | None) -> dict:
+        if "Stage 2 (functional" in prompt:
+            return {"text": '{"description":"b","benign_url":"https://e/x","commands":["c"]}', "usage": {}}
+        calls["adv"] += 1
+        return {
+            "text": '{"variants":[{"description":"d","payload":"p","commands":["c"]}]}',
+            "usage": {},
+        }
+
+    plans = asyncio.run(
+        prepare_gate_plans(
+            inference=_inf,
+            file_name="x.py",
+            confirmed_findings=[{"cwe": "CWE-89", "description": "sqli"}],  # non-ssrf → no rebinding probe
+            original_source="def f(u): ...",
+            patched_source="def f(u): validate(u)",
+            seed_commands=["python -c 'pass'"],
+            seed_payload="x",
+            budget=verify_budget_for("high"),
+        )
+    )
+    assert calls["adv"] == 1, "a good first generation must not retry"
+    assert len(plans.variants) == 1
