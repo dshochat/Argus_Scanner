@@ -578,6 +578,23 @@ def _post_patch_status(claim_verdict: str | None) -> str:
     return "UNVERIFIABLE"
 
 
+def _confirmation_is_grounded(cited_event_ids: Any, real_event_ids: set[str]) -> bool:
+    """T19 precision guard: a CONFIRMED Phase A verdict must cite at least
+    one event_id that actually exists in the iteration's sandbox traces.
+
+    The verdict prompt requires a runtime side-effect event for a
+    "confirmed" claim, but nothing verified the model's citation was real —
+    a confidently-wrong model could fabricate a confirmation off a
+    non-existent event_id. This checks the citation against the genuine
+    trace events. Returns False (→ caller downgrades to inconclusive) when
+    the citation is empty, malformed, or wholly fabricated. The downgrade
+    is the SAFE direction: inconclusive keeps L1's verdict, never erases.
+    """
+    if not isinstance(cited_event_ids, list):
+        return False
+    return any(str(e) in real_event_ids for e in cited_event_ids)
+
+
 def _has_refutation_of_prior_confirmed(
     claim_verdicts: list,
     hyp_index: dict,
@@ -1696,6 +1713,14 @@ async def run_dast(
 
         prev_confirmed = set(prior_summary.confirmed_findings)
         new_confirmed_count = 0
+        # T19 precision: the REAL event IDs the sandbox produced this
+        # iteration. A CONFIRMED verdict must cite at least one of these
+        # (the prompt requires a runtime side-effect event for "confirmed");
+        # checking it in code stops a confidently-wrong model fabricating a
+        # confirmation off a non-existent event_id.
+        iter_event_ids: set[str] = {
+            str(ev.get("event_id")) for tr in trace_records for ev in (tr.get("events") or []) if ev.get("event_id")
+        }
         for cv in claim_verdicts:
             if not isinstance(cv, dict):
                 continue
@@ -1703,6 +1728,17 @@ async def run_dast(
             v = cv.get("verdict") or "inconclusive"
             ev_ids = cv.get("sandbox_event_ids") or []
             rationale = cv.get("rationale", "")[:300]
+            # T19: downgrade an UNGROUNDED confirmation (cites no real
+            # runtime event) to inconclusive. SAFE failure mode —
+            # inconclusive keeps L1's verdict, never erases a finding.
+            if v == "confirmed" and not _confirmation_is_grounded(ev_ids, iter_event_ids):
+                _cited = [str(e) for e in ev_ids] if isinstance(ev_ids, list) else []
+                v = "inconclusive"
+                rationale = (
+                    "[ungrounded_confirmation] downgraded confirmed->inconclusive: "
+                    f"cited sandbox_event_ids {_cited or '[]'} not found in this "
+                    "iteration's sandbox trace (no runtime side-effect evidence). " + rationale
+                )[:300]
             evidence_refs: list[str] = []
             # If we can map back to a finding ID via the L1 hypothesis,
             # record it as a Finding in the journal.

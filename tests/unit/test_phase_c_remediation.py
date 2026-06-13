@@ -29,7 +29,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from dast.orchestrator import _post_patch_status, _run_phase_c_fix_verify
+from dast.orchestrator import (
+    _confirmation_is_grounded,
+    _post_patch_status,
+    _run_phase_c_fix_verify,
+)
 from dast.sandbox.client import SandboxTrace
 
 # ── post-patch verdict → status mapping (regression for the inverted map) ──
@@ -58,6 +62,29 @@ def test_post_patch_status_missing_or_unknown_is_unverifiable() -> None:
     assert _post_patch_status("rejected") == "UNVERIFIABLE"
 
 
+# ── T19: CONFIRMED must cite a REAL sandbox event (anti-fabrication) ──
+
+
+def test_confirmation_grounded_when_cited_event_exists() -> None:
+    real = {"evt-aaa", "evt-bbb"}
+    assert _confirmation_is_grounded(["evt-bbb"], real) is True
+    # one real + one fabricated still counts as grounded.
+    assert _confirmation_is_grounded(["evt-nope", "evt-aaa"], real) is True
+
+
+def test_confirmation_ungrounded_when_citation_fabricated_or_empty() -> None:
+    real = {"evt-aaa"}
+    assert _confirmation_is_grounded(["evt-ghost"], real) is False  # fabricated id
+    assert _confirmation_is_grounded([], real) is False  # cites nothing
+    assert _confirmation_is_grounded(None, real) is False  # malformed
+    assert _confirmation_is_grounded(["evt-aaa"], set()) is False  # no real events at all
+
+
+def test_confirmation_grounded_coerces_non_str_ids() -> None:
+    # event ids compared as strings (defensive against int/None in the list).
+    assert _confirmation_is_grounded([123], {"123"}) is True
+
+
 def _make_inference_stub(
     patched_source: str,
     fix_summary: str = "fixed",
@@ -65,8 +92,8 @@ def _make_inference_stub(
     claim_verdicts: list[dict] | None = None,
 ) -> Any:
     """Build an inference callable that returns:
-      * patch JSON on the FIRST call (Step 1 — generate patch)
-      * verdict JSON on the SECOND call (Step 3 — re-judge)
+    * patch JSON on the FIRST call (Step 1 — generate patch)
+    * verdict JSON on the SECOND call (Step 3 — re-judge)
     """
     import json
 
@@ -189,11 +216,7 @@ async def test_phase_c_rejects_byte_identical_patch() -> None:
     unchanged, Phase C must reject with skipped_reason=
     patch_byte_identical_to_original instead of replaying and
     falsely reporting NEUTRALIZED."""
-    original = (
-        "def fetch(url):\n"
-        "    import urllib.request\n"
-        "    return urllib.request.urlopen(url).read()\n"
-    )
+    original = "def fetch(url):\n    import urllib.request\n    return urllib.request.urlopen(url).read()\n"
     file_record = {
         "file_id": "abc",
         "file_name": "x.py",
@@ -203,9 +226,7 @@ async def test_phase_c_rejects_byte_identical_patch() -> None:
     result = await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H001"],
-        l1_output={
-            "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
-        },
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
         iter1_plans=[],
         inference=inf,
         sandbox=_StubSandbox(),
@@ -230,9 +251,7 @@ async def test_phase_c_rejects_suspiciously_small_patch() -> None:
     result = await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H001"],
-        l1_output={
-            "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
-        },
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
         iter1_plans=[],
         inference=inf,
         sandbox=_StubSandbox(),
@@ -261,9 +280,7 @@ async def test_phase_c_rejects_suspiciously_large_patch() -> None:
     result = await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H001"],
-        l1_output={
-            "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
-        },
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
         iter1_plans=[],
         inference=inf,
         sandbox=_StubSandbox(),
@@ -348,17 +365,15 @@ async def test_phase_c_accepts_short_function_with_legitimate_growth() -> None:
     result = await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H001"],
-        l1_output={
-            "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
-        },
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
         iter1_plans=[],
         inference=inf,
         sandbox=_StubSandbox(),
         journal=_StubJournal(),
     )
-    assert (
-        result.get("skipped_reason") != "patch_size_suspicious"
-    ), f"compound size bound should accept short-function SSRF fix; got {result!r}"
+    assert result.get("skipped_reason") != "patch_size_suspicious", (
+        f"compound size bound should accept short-function SSRF fix; got {result!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -415,8 +430,8 @@ async def test_phase_c_accepts_thorough_fix_to_tiny_file() -> None:
     # The case must land in the headroom band the regression is about:
     # past 3× AND past the old +2 KB, but within the new +8 KB.
     assert len(patched) > len(original) * 3.0
-    assert len(patched) > len(original) + 2048   # old bound would reject
-    assert len(patched) < len(original) + 8192   # new bound admits
+    assert len(patched) > len(original) + 2048  # old bound would reject
+    assert len(patched) < len(original) + 8192  # new bound admits
     file_record = {
         "file_id": "abc",
         "file_name": "_demo_media_loader.py",
@@ -426,17 +441,14 @@ async def test_phase_c_accepts_thorough_fix_to_tiny_file() -> None:
     result = await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H001"],
-        l1_output={
-            "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
-        },
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
         iter1_plans=[],
         inference=inf,
         sandbox=_StubSandbox(),
         journal=_StubJournal(),
     )
     assert result.get("skipped_reason") != "patch_size_suspicious", (
-        "the +8 KB headroom must admit a thorough fix to a tiny file; "
-        f"got {result.get('skipped_reason')!r}"
+        f"the +8 KB headroom must admit a thorough fix to a tiny file; got {result.get('skipped_reason')!r}"
     )
 
 
@@ -450,11 +462,7 @@ async def test_phase_c_rejects_python_patch_with_syntax_error() -> None:
     error message surfaced. Without this, every replay errors with
     SyntaxError and the function returns all_replays_failed —
     misclassifying garbage as sandbox infra failure."""
-    original = (
-        "def fetch(url):\n"
-        "    import urllib.request\n"
-        "    return urllib.request.urlopen(url).read()\n"
-    )
+    original = "def fetch(url):\n    import urllib.request\n    return urllib.request.urlopen(url).read()\n"
     broken_patch = "def fetch(url):\n    return\n    INVALID PYTHON\n)) syntax error\n"
     file_record = {
         "file_id": "abc",
@@ -465,9 +473,7 @@ async def test_phase_c_rejects_python_patch_with_syntax_error() -> None:
     result = await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H001"],
-        l1_output={
-            "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
-        },
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
         iter1_plans=[],
         inference=inf,
         sandbox=_StubSandbox(),
@@ -501,9 +507,7 @@ async def test_phase_c_accepts_python_patch_with_valid_syntax() -> None:
     result = await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H001"],
-        l1_output={
-            "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
-        },
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
         iter1_plans=[],
         inference=inf,
         sandbox=_StubSandbox(),
@@ -562,11 +566,7 @@ async def test_phase_c_includes_dast_findings_in_confirmed() -> None:
     result = await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H001", "P3-fetch_url"],
-        l1_output={
-            "hypotheses": [
-                {"id": "H001", "finding_ref": "H001", "type": "ssrf"}
-            ]
-        },
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
         iter1_plans=[],
         inference=_capture_inf,
         sandbox=_StubSandbox(),
@@ -636,9 +636,7 @@ async def test_phase_c_replay_failures_surface_in_result() -> None:
     result = await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H001"],
-        l1_output={
-            "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
-        },
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
         iter1_plans=iter1,
         inference=inf,
         sandbox=_FailingSandbox(),
@@ -704,12 +702,7 @@ async def test_phase_c_partial_replay_failure_captures_error_details() -> None:
     result = await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H000"],
-        l1_output={
-            "hypotheses": [
-                {"id": f"H{i:03d}", "finding_ref": f"H{i:03d}", "type": "ssrf"}
-                for i in range(4)
-            ]
-        },
+        l1_output={"hypotheses": [{"id": f"H{i:03d}", "finding_ref": f"H{i:03d}", "type": "ssrf"} for i in range(4)]},
         iter1_plans=iter1,
         inference=inf,
         sandbox=_FlakeSandbox(),
@@ -751,9 +744,7 @@ async def test_phase_c_acquires_content_map_lock() -> None:
     await _run_phase_c_fix_verify(
         file_record=file_record,
         findings_validated=["H001"],
-        l1_output={
-            "hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]
-        },
+        l1_output={"hypotheses": [{"id": "H001", "finding_ref": "H001", "type": "ssrf"}]},
         iter1_plans=[],
         inference=inf,
         sandbox=sandbox,
@@ -762,8 +753,7 @@ async def test_phase_c_acquires_content_map_lock() -> None:
     # After the call, the sandbox client should have the lock attached.
     lock = getattr(sandbox, "_phase_c_content_lock", None)
     assert lock is not None, (
-        "Phase C must attach an asyncio.Lock to the sandbox client to "
-        "serialize file_content_map mutation"
+        "Phase C must attach an asyncio.Lock to the sandbox client to serialize file_content_map mutation"
     )
     assert isinstance(lock, asyncio.Lock)
     # Lock should NOT be held at exit (released in finally block).
@@ -841,15 +831,13 @@ def _gate_inference_stub(*, n_variants: int):
                 {
                     "description": f"technique {i}",
                     "payload": f"http://variant{i}/",
-                    "commands": [f"python -c \"print({i})\""],
+                    "commands": [f'python -c "print({i})"'],
                 }
                 for i in range(n_variants)
             ]
         }
     )
-    patch_json = json.dumps(
-        {"patched_source": _GATE_PATCH, "fix_summary": "resolve-to-IP", "per_finding_fixes": []}
-    )
+    patch_json = json.dumps({"patched_source": _GATE_PATCH, "fix_summary": "resolve-to-IP", "per_finding_fixes": []})
     verdict_json = json.dumps(
         {
             "current_verdict": {"verdict_label": "clean"},
